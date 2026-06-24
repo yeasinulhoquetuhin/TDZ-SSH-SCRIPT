@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-TDZ TUNNEL Manager — WebSocket-to-SSH Bridge
-=============================================
-Listens on 127.0.0.1:8890 (or any port). For each incoming connection:
-  1. Read the HTTP request line + headers (until \r\n\r\n)
+TDZ TUNNEL Manager — WebSocket-to-SSH Bridge  (v2 with branding)
+=================================================================
+Listens on 127.0.0.1:8890. For each incoming connection:
+  1. Read the HTTP request line + headers (until \\r\\n\\r\\n)
   2. Reply with HTTP/1.1 101 Switching Protocols
+       + optional custom headers loaded from /etc/tdztunnel/ws_branding.conf
   3. Connect to SSH (127.0.0.1:22) and bridge raw TCP bidirectionally
 
 This is what DarkTunnel / HTTP Custom / NPV / NapsternetV etc. expect when
@@ -14,6 +15,15 @@ they send a payload like:
 
 The "wss://" scheme and absolute-URI form confuse nginx (returns 400).
 This bridge accepts ANY HTTP-like request without strict validation.
+
+Branding config file format (/etc/tdztunnel/ws_branding.conf):
+  Plain text file. Each non-empty, non-comment line becomes a custom HTTP
+  header added to the 101 response. Examples:
+    X-Powered-By: VPS BY @TuhinBroh
+    X-Owner: Tuhin
+    X-Telegram: @TuhinBroh
+  If the file does not exist or is empty, only the standard 101 headers are
+  sent. Lines starting with '#' are ignored.
 """
 
 import socket
@@ -22,53 +32,103 @@ import threading
 import sys
 import os
 import signal
+import time
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("TDZ_WS_BRIDGE_PORT", "8890"))
 SSH_HOST    = os.environ.get("TDZ_WS_BRIDGE_SSH_HOST", "127.0.0.1")
 SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
 
-# Response sent back to client — this is what DarkTunnel expects
-SWITCHING_RESPONSE = (
+BRANDING_FILE = os.environ.get("TDZ_WS_BRIDGE_BRANDING", "/etc/tdztunnel/ws_branding.conf")
+
+# Standard 101 response — protocol-required headers
+SWITCHING_RESPONSE_BASE = (
     b"HTTP/1.1 101 Switching Protocols\r\n"
     b"Upgrade: websocket\r\n"
     b"Connection: Upgrade\r\n"
-    b"\r\n"
 )
 
-MAX_HEADER_BYTES = 65536  # max we'll read while waiting for \r\n\r\n
+MAX_HEADER_BYTES = 65536
 RECV_CHUNK = 65536
+BRANDING_CACHE_TTL = 30  # seconds — re-read branding file this often
+
+_branding_cache = {"bytes": b"", "mtime": 0, "ts": 0}
 
 def log(msg):
     sys.stderr.write(f"[tdz-ws-bridge] {msg}\n")
     sys.stderr.flush()
 
-def bridge_sockets(client_sock, ssh_sock):
+def load_branding_headers():
+    """Read /etc/tdztunnel/ws_branding.conf and return raw header bytes.
+    Cached for BRANDING_CACHE_TTL seconds OR until file mtime changes."""
+    now = time.time()
+    try:
+        st = os.stat(BRANDING_FILE)
+    except (OSError, FileNotFoundError):
+        _branding_cache["bytes"] = b""
+        _branding_cache["mtime"] = 0
+        _branding_cache["ts"] = now
+        return b""
+
+    # Re-read if cache expired or file changed
+    if (now - _branding_cache["ts"] < BRANDING_CACHE_TTL
+            and st.st_mtime == _branding_cache["mtime"]
+            and _branding_cache["bytes"] is not None):
+        return _branding_cache["bytes"]
+
+    extra = []
+    try:
+        with open(BRANDING_FILE, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\r\n")
+                if not line or line.lstrip().startswith("#"):
+                    continue
+                # Validate: must look like "Header-Name: value"
+                if ":" not in line:
+                    continue
+                # No CR/LF inside (would break HTTP framing)
+                if "\r" in line or "\n" in line:
+                    continue
+                extra.append(line)
+    except OSError:
+        extra = []
+
+    raw = "".join(h + "\r\n" for h in extra).encode("utf-8", errors="replace")
+    _branding_cache["bytes"] = raw
+    _branding_cache["mtime"] = st.st_mtime
+    _branding_cache["ts"] = now
+    return raw
+
+def build_switching_response():
+    """Build the full 101 response: base headers + custom branding + blank line."""
+    return SWITCHING_RESPONSE_BASE + load_branding_headers() + b"\r\n"
+
+def bridge_socks(c, s):
     """Bidirectionally bridge two sockets until either closes."""
-    socks = [client_sock, ssh_sock]
+    socks = [c, s]
     try:
         while True:
             r, _, _ = select.select(socks, [], [], 300)
             if not r:
                 # 5 min idle — keep alive
                 continue
-            for s in r:
+            for sock in r:
                 try:
-                    data = s.recv(RECV_CHUNK)
+                    data = sock.recv(RECV_CHUNK)
                 except (ConnectionResetError, OSError):
                     return
                 if not data:
                     return
-                other = ssh_sock if s is client_sock else client_sock
+                other = s if sock is c else c
                 try:
                     other.sendall(data)
                 except (ConnectionResetError, OSError):
                     return
     finally:
-        for s in (client_sock, ssh_sock):
-            try: s.shutdown(socket.SHUT_RDWR)
+        for sock in (c, s):
+            try: sock.shutdown(socket.SHUT_RDWR)
             except: pass
-            try: s.close()
+            try: sock.close()
             except: pass
 
 def handle_client(client_sock, client_addr):
@@ -99,12 +159,12 @@ def handle_client(client_sock, client_addr):
                 return
             # Push the already-read SSH banner back to SSH server
             ssh_sock.sendall(buf)
-            bridge_sockets(client_sock, ssh_sock)
+            bridge_socks(client_sock, ssh_sock)
             return
 
-        # Otherwise: it's an HTTP/WS upgrade request — send 101
+        # Otherwise: it's an HTTP/WS upgrade request — send 101 (with branding)
         try:
-            client_sock.sendall(SWITCHING_RESPONSE)
+            client_sock.sendall(build_switching_response())
         except OSError as e:
             log(f"failed to send 101 to {client_addr}: {e}")
             return
@@ -118,7 +178,7 @@ def handle_client(client_sock, client_addr):
 
         client_sock.settimeout(None)
         log(f"bridged {client_addr[0]}:{client_addr[1]} -> SSH {SSH_HOST}:{SSH_PORT}")
-        bridge_sockets(client_sock, ssh_sock)
+        bridge_socks(client_sock, ssh_sock)
     except Exception as e:
         log(f"error handling {client_addr}: {e}")
     finally:
@@ -127,6 +187,7 @@ def handle_client(client_sock, client_addr):
 
 def main():
     log(f"starting on {LISTEN_HOST}:{LISTEN_PORT} -> SSH {SSH_HOST}:{SSH_PORT}")
+    log(f"branding file: {BRANDING_FILE}")
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
