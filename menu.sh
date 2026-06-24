@@ -45,6 +45,10 @@ EDGE_PUBLIC_TLS_PORT="443"
 NGINX_INTERNAL_HTTP_PORT="8880"
 NGINX_INTERNAL_TLS_PORT="8443"
 HAPROXY_INTERNAL_DECRYPT_PORT="10443"
+# WebSocket-to-SSH bridge (DarkTunnel / HTTP Custom / NPV payload support)
+WS_SSH_BRIDGE_SCRIPT="/usr/local/bin/tdz-ws-ssh-bridge.py"
+WS_SSH_BRIDGE_SERVICE="/etc/systemd/system/tdz-ws-ssh-bridge.service"
+WS_SSH_BRIDGE_PORT="8890"
 DNSTT_SERVICE_FILE="/etc/systemd/system/dnstt.service"
 DNSTT_BINARY="/usr/local/bin/dnstt-server"
 DNSTT_KEYS_DIR="/etc/tdztunnel/dnstt"
@@ -2178,6 +2182,7 @@ ensure_edge_stack_packages() {
     command -v haproxy &> /dev/null || missing_packages+=("haproxy")
     command -v nginx &> /dev/null || missing_packages+=("nginx")
     command -v openssl &> /dev/null || missing_packages+=("openssl")
+    command -v python3 &> /dev/null || missing_packages+=("python3")
 
     if (( ${#missing_packages[@]} > 0 )); then
         echo -e "\n${C_BLUE}📦 Installing required packages: ${missing_packages[*]}${C_RESET}"
@@ -2413,6 +2418,160 @@ select_edge_certificate() {
     esac
 }
 
+# ============================================================================
+# WebSocket-to-SSH Bridge — accepts DarkTunnel-style WS upgrade payloads
+# (GET wss://[cf] HTTP/1.1 ... Upgrade: websocket) and bridges raw TCP to SSH.
+# Replaces nginx_cleartext for port 2086 because nginx returns 400 Bad Request
+# on the non-standard wss:// absolute-URI form.
+# ============================================================================
+write_ws_ssh_bridge_script() {
+    mkdir -p "$(dirname "$WS_SSH_BRIDGE_SCRIPT")"
+    cat > "$WS_SSH_BRIDGE_SCRIPT" <<'PYEOF'
+#!/usr/bin/env python3
+import socket, select, threading, sys, os, signal
+
+LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
+LISTEN_PORT = int(os.environ.get("TDZ_WS_BRIDGE_PORT", "8890"))
+SSH_HOST    = os.environ.get("TDZ_WS_BRIDGE_SSH_HOST", "127.0.0.1")
+SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
+
+SWITCHING_RESPONSE = (
+    b"HTTP/1.1 101 Switching Protocols\r\n"
+    b"Upgrade: websocket\r\n"
+    b"Connection: Upgrade\r\n"
+    b"\r\n"
+)
+MAX_HEADER_BYTES = 65536
+RECV_CHUNK = 65536
+
+def log(m):
+    sys.stderr.write(f"[tdz-ws-bridge] {m}\n"); sys.stderr.flush()
+
+def bridge_socks(c, s):
+    socks = [c, s]
+    try:
+        while True:
+            r, _, _ = select.select(socks, [], [], 300)
+            if not r: continue
+            for sock in r:
+                try: data = sock.recv(RECV_CHUNK)
+                except: return
+                if not data: return
+                other = s if sock is c else c
+                try: other.sendall(data)
+                except: return
+    finally:
+        for sock in (c, s):
+            try: sock.shutdown(socket.SHUT_RDWR)
+            except: pass
+            try: sock.close()
+            except: pass
+
+def handle(client, addr):
+    try:
+        client.settimeout(10)
+        buf = b""
+        while b"\r\n\r\n" not in buf and len(buf) < MAX_HEADER_BYTES:
+            try: chunk = client.recv(4096)
+            except socket.timeout: return
+            if not chunk: return
+            buf += chunk
+        # Raw SSH pass-through (port also accepts direct SSH clients)
+        if buf.startswith(b"SSH-"):
+            client.settimeout(None)
+            try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=5)
+            except Exception as e: log(f"ssh connect fail: {e}"); return
+            ssh.sendall(buf)
+            bridge_socks(client, ssh); return
+        # HTTP/WS upgrade — send 101 and bridge
+        try: client.sendall(SWITCHING_RESPONSE)
+        except OSError: return
+        try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=5)
+        except Exception as e: log(f"ssh connect fail: {e}"); return
+        client.settimeout(None)
+        log(f"bridged {addr[0]}:{addr[1]} -> SSH {SSH_HOST}:{SSH_PORT}")
+        bridge_socks(client, ssh)
+    except Exception as e:
+        log(f"err {addr}: {e}")
+    finally:
+        try: client.close()
+        except: pass
+
+def main():
+    log(f"starting on {LISTEN_HOST}:{LISTEN_PORT} -> SSH {SSH_HOST}:{SSH_PORT}")
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try: srv.bind((LISTEN_HOST, LISTEN_PORT))
+    except OSError as e: log(f"FATAL bind: {e}"); sys.exit(1)
+    srv.listen(128); log("listening")
+    def stop(*_):
+        try: srv.close()
+        except: pass
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGINT, stop)
+    while True:
+        try: c, a = srv.accept()
+        except OSError: break
+        c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        threading.Thread(target=handle, args=(c, a), daemon=True).start()
+
+if __name__ == "__main__": main()
+PYEOF
+    chmod +x "$WS_SSH_BRIDGE_SCRIPT"
+}
+
+write_ws_ssh_bridge_service() {
+    cat > "$WS_SSH_BRIDGE_SERVICE" <<EOF
+[Unit]
+Description=TDZ Tunnel WebSocket-to-SSH Bridge (DarkTunnel payload support)
+After=network-online.target ssh.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TDZ_WS_BRIDGE_HOST=127.0.0.1
+Environment=TDZ_WS_BRIDGE_PORT=${WS_SSH_BRIDGE_PORT}
+Environment=TDZ_WS_BRIDGE_SSH_HOST=127.0.0.1
+Environment=TDZ_WS_BRIDGE_SSH_PORT=22
+ExecStart=${WS_SSH_BRIDGE_SCRIPT}
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+install_ws_ssh_bridge() {
+    echo -e "${C_BLUE}📝 Writing WS-to-SSH bridge script...${C_RESET}"
+    write_ws_ssh_bridge_script
+    write_ws_ssh_bridge_service
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable tdz-ws-ssh-bridge >/dev/null 2>&1
+    systemctl restart tdz-ws-ssh-bridge || {
+        echo -e "${C_RED}❌ Failed to start WS-to-SSH bridge.${C_RESET}"
+        systemctl status tdz-ws-ssh-bridge --no-pager
+        return 1
+    }
+    sleep 1
+    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
+        echo -e "${C_GREEN}✅ WS-to-SSH bridge active on 127.0.0.1:${WS_SSH_BRIDGE_PORT}${C_RESET}"
+    else
+        echo -e "${C_RED}❌ WS-to-SSH bridge is not active.${C_RESET}"
+        return 1
+    fi
+}
+
+uninstall_ws_ssh_bridge() {
+    systemctl stop tdz-ws-ssh-bridge >/dev/null 2>&1
+    systemctl disable tdz-ws-ssh-bridge >/dev/null 2>&1
+    rm -f "$WS_SSH_BRIDGE_SERVICE" "$WS_SSH_BRIDGE_SCRIPT"
+    systemctl daemon-reload >/dev/null 2>&1
+}
+
 write_internal_nginx_config() {
     local server_name="$1"
     [[ -z "$server_name" ]] && server_name="_"
@@ -2493,7 +2652,11 @@ defaults
     timeout server  24h
 
 # ====================================================================
-# TIER 1: PORT ${EDGE_PUBLIC_HTTP_PORT} (Cleartext Payloads & Raw SSH)
+# TIER 1: PORT ${EDGE_PUBLIC_HTTP_PORT} (Cleartext WS Payloads & Raw SSH)
+# DarkTunnel / HTTP Custom / NPV send "GET wss://[cf] HTTP/1.1 ... Upgrade: websocket"
+# — nginx rejects wss:// absolute-URI with 400, so we route ALL HTTP on this port
+# to the dedicated WS-to-SSH bridge which replies 101 + bridges to SSH.
+# Raw SSH (SSH-2.0-...) goes direct to sshd.
 # ====================================================================
 frontend port_80_edge
     bind *:${EDGE_PUBLIC_HTTP_PORT}
@@ -2506,7 +2669,7 @@ frontend port_80_edge
     tcp-request content accept if HTTP
 
     use_backend direct_ssh if is_ssh
-    default_backend nginx_cleartext
+    default_backend ws_ssh_bridge
 
 # ====================================================================
 # TIER 1: PORT ${EDGE_PUBLIC_TLS_PORT} (TLS v2ray, SSL Payloads, Raw SSH)
@@ -2531,6 +2694,9 @@ frontend port_443_edge
 
 # ====================================================================
 # TIER 2: INTERNAL DECRYPTOR (Only for Any-SNI SSH-TLS)
+# After TLS is stripped, the inner stream may be:
+#   - Raw SSH banner -> direct_ssh
+#   - HTTP WS upgrade payload (GET wss://... Upgrade: websocket) -> ws_ssh_bridge
 # ====================================================================
 frontend internal_decryptor
     bind 127.0.0.1:${HAPROXY_INTERNAL_DECRYPT_PORT} ssl crt ${SSL_CERT_FILE}
@@ -2542,7 +2708,7 @@ frontend internal_decryptor
     tcp-request content accept if HTTP
 
     use_backend direct_ssh if is_ssh
-    default_backend nginx_cleartext
+    default_backend ws_ssh_bridge
 
 # ====================================================================
 # DESTINATION BACKENDS (Clean handoffs, no proxy headers)
@@ -2550,6 +2716,11 @@ frontend internal_decryptor
 backend direct_ssh
     mode tcp
     server ssh_server 127.0.0.1:22
+
+backend ws_ssh_bridge
+    mode tcp
+    option tcp-check
+    server ws_bridge 127.0.0.1:${WS_SSH_BRIDGE_PORT} check
 
 backend nginx_cleartext
     mode tcp
@@ -2585,6 +2756,9 @@ configure_edge_stack() {
 
     echo -e "${C_BLUE}📝 Writing HAProxy edge config (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})...${C_RESET}"
     write_haproxy_edge_config
+
+    echo -e "${C_BLUE}📝 Installing WS-to-SSH bridge (DarkTunnel payload support)...${C_RESET}"
+    install_ws_ssh_bridge || return 1
 
     echo -e "\n${C_BLUE}🧪 Validating Nginx configuration...${C_RESET}"
     if ! nginx -t >/dev/null 2>&1; then
@@ -2725,6 +2899,8 @@ EOF
     fi
 
     echo -e "${C_GREEN}✅ HAProxy edge stack has been removed.${C_RESET}"
+    echo -e "${C_GREEN}🛑 Stopping WS-to-SSH bridge...${C_RESET}"
+    uninstall_ws_ssh_bridge
     if systemctl is-active --quiet nginx; then
         echo -e "${C_DIM}The internal Nginx proxy is still installed on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
     fi
