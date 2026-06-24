@@ -49,7 +49,6 @@ DNSTT_SERVICE_FILE="/etc/systemd/system/dnstt.service"
 DNSTT_BINARY="/usr/local/bin/dnstt-server"
 DNSTT_KEYS_DIR="/etc/tdztunnel/dnstt"
 DNSTT_CONFIG_FILE="$DB_DIR/dnstt_info.conf"
-DNS_INFO_FILE="$DB_DIR/dns_info.conf"
 UDP_CUSTOM_DIR="/root/udp"
 UDP_CUSTOM_SERVICE_FILE="/etc/systemd/system/udp-custom.service"
 UDPGW_BINARY="/usr/local/bin/udpgw"
@@ -75,9 +74,6 @@ ZIVPN_SERVICE_FILE="/etc/systemd/system/zivpn.service"
 ZIVPN_CONFIG_FILE="$ZIVPN_DIR/config.json"
 ZIVPN_CERT_FILE="$ZIVPN_DIR/zivpn.crt"
 ZIVPN_KEY_FILE="$ZIVPN_DIR/zivpn.key"
-
-DESEC_TOKEN="V55cFY8zTictLCPfviiuX5DHjs15"
-DESEC_DOMAIN="manager.tdz-tunnel.qzz.io"
 
 SELECTED_USER=""
 UNINSTALL_MODE="interactive"
@@ -977,115 +973,78 @@ setup_ssh_login_info() {
 }
 
 
-generate_dns_record() {
-    echo -e "\n${C_BLUE}⚙️ Generating a random domain...${C_RESET}"
-    if ! command -v jq &> /dev/null; then
-        echo -e "${C_YELLOW}⚠️ jq not found, attempting to install...${C_RESET}"
-        tdz_apt_install jq >/dev/null 2>&1 || {
-            echo -e "${C_RED}❌ Failed to install jq. Cannot manage DNS records.${C_RESET}"
-            return 1
-        }
-    fi
-    local SERVER_IPV4
-    SERVER_IPV4=$(curl -s -4 icanhazip.com)
-    if ! _is_valid_ipv4 "$SERVER_IPV4"; then
-        echo -e "\n${C_RED}❌ Error: Could not retrieve a valid public IPv4 address from icanhazip.com.${C_RESET}"
-        echo -e "${C_YELLOW}ℹ️ Please check your server's network connection and DNS resolver settings.${C_RESET}"
-        echo -e "   Output received: '$SERVER_IPV4'"
-        return 1
-    fi
-
-    local SERVER_IPV6
-    SERVER_IPV6=$(curl -s -6 icanhazip.com --max-time 5)
-
-    local RANDOM_SUBDOMAIN="vps-$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)"
-    local FULL_DOMAIN="$RANDOM_SUBDOMAIN.$DESEC_DOMAIN"
-    local HAS_IPV6="false"
-
-    local API_DATA
-    API_DATA=$(printf '[{"subname": "%s", "type": "A", "ttl": 3600, "records": ["%s"]}]' "$RANDOM_SUBDOMAIN" "$SERVER_IPV4")
-
-    if [[ -n "$SERVER_IPV6" ]]; then
-        local aaaa_record
-        aaaa_record=$(printf ',{"subname": "%s", "type": "AAAA", "ttl": 3600, "records": ["%s"]}' "$RANDOM_SUBDOMAIN" "$SERVER_IPV6")
-        API_DATA="${API_DATA%?}${aaaa_record}]"
-        HAS_IPV6="true"
-    fi
-
-    local CREATE_RESPONSE
-    CREATE_RESPONSE=$(curl -s -w "%{http_code}" -X POST "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/" \
-        -H "Authorization: Token $DESEC_TOKEN" -H "Content-Type: application/json" \
-        --data "$API_DATA")
-    
-    local HTTP_CODE=${CREATE_RESPONSE: -3}
-    local RESPONSE_BODY=${CREATE_RESPONSE:0:${#CREATE_RESPONSE}-3}
-
-    if [[ "$HTTP_CODE" -ne 201 ]]; then
-        echo -e "${C_RED}❌ Failed to create DNS records. API returned HTTP $HTTP_CODE.${C_RESET}"
-        if ! echo "$RESPONSE_BODY" | jq . > /dev/null 2>&1; then
-            echo "Raw Response: $RESPONSE_BODY"
-        else
-            echo "Response: $RESPONSE_BODY" | jq
-        fi
-        return 1
-    fi
-    
-    cat > "$DNS_INFO_FILE" <<-EOF
-SUBDOMAIN="$RANDOM_SUBDOMAIN"
-FULL_DOMAIN="$FULL_DOMAIN"
-HAS_IPV6="$HAS_IPV6"
-EOF
-    echo -e "\n${C_GREEN}✅ Successfully created domain: ${C_YELLOW}$FULL_DOMAIN${C_RESET}"
-}
-
-delete_dns_record() {
-    if [ ! -f "$DNS_INFO_FILE" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ No domain to delete.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}🗑️ Deleting DNS records...${C_RESET}"
-    source "$DNS_INFO_FILE"
-    if [[ -z "$SUBDOMAIN" ]]; then
-        echo -e "${C_RED}❌ Could not read record details from config file. Skipping deletion.${C_RESET}"
-        return
-    fi
-
-    curl -s -X DELETE "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/$SUBDOMAIN/A/" \
-         -H "Authorization: Token $DESEC_TOKEN" > /dev/null
-
-    if [[ "$HAS_IPV6" == "true" ]]; then
-        curl -s -X DELETE "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/$SUBDOMAIN/AAAA/" \
-             -H "Authorization: Token $DESEC_TOKEN" > /dev/null
-    fi
-
-    echo -e "\n${C_GREEN}✅ Deleted domain: ${C_YELLOW}$FULL_DOMAIN${C_RESET}"
-    rm -f "$DNS_INFO_FILE"
-}
-
-dns_menu() {
+domain_cert_menu() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🌐 DNS Domain Management ---${C_RESET}"
-    if [ -f "$DNS_INFO_FILE" ]; then
-        source "$DNS_INFO_FILE"
-        echo -e "\nℹ️ A domain already exists for this server:"
-        echo -e "  - ${C_CYAN}Domain:${C_RESET} ${C_YELLOW}$FULL_DOMAIN${C_RESET}"
-        echo
-        read -p "👉 Do you want to DELETE this domain? (y/n): " choice
-        if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-            delete_dns_record
-        else
-            echo -e "\n${C_YELLOW}❌ Action cancelled.${C_RESET}"
+    echo -e "${C_BOLD}${C_NAVY}--- 🌐 Domain & SSL Certificate Management ---${C_RESET}"
+    echo -e "${C_DIM}Manage your own domain + Let's Encrypt certificate.${C_RESET}"
+
+    load_edge_cert_info
+
+    if [[ -n "$EDGE_DOMAIN" ]]; then
+        echo -e "\n${C_GREEN}ℹ️ Current certificate:${C_RESET}"
+        echo -e "  - ${C_CYAN}Domain:${C_RESET} ${C_YELLOW}$EDGE_DOMAIN${C_RESET}"
+        echo -e "  - ${C_CYAN}Mode:${C_RESET}   ${C_YELLOW}$EDGE_CERT_MODE${C_RESET}"
+        if [[ -n "$EDGE_EMAIL" ]]; then
+            echo -e "  - ${C_CYAN}Email:${C_RESET}  ${C_YELLOW}$EDGE_EMAIL${C_RESET}"
         fi
     else
-        echo -e "\nℹ️ No domain has been generated for this server yet."
-        echo
-        read -p "👉 Do you want to generate a new random domain now? (y/n): " choice
-        if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-            generate_dns_record
-        else
-            echo -e "\n${C_YELLOW}❌ Action cancelled.${C_RESET}"
-        fi
+        echo -e "\n${C_YELLOW}ℹ️ No domain/certificate configured yet.${C_RESET}"
     fi
+
+    echo -e "\n${C_BOLD}Select an action:${C_RESET}\n"
+    printf "  ${C_CHOICE}[ 1]${C_RESET} %-50s\n" "🔐 Configure domain + Let's Encrypt cert"
+    printf "  ${C_CHOICE}[ 2]${C_RESET} %-50s\n" "📜 Generate self-signed cert (no domain needed)"
+    printf "  ${C_CHOICE}[ 3]${C_RESET} %-50s\n" "🗑️ Remove current certificate"
+    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
+    echo
+    read -p "👉 Enter choice: " dc_choice
+
+    case "$dc_choice" in
+        1)
+            local domain_name email
+            echo -e "\n${C_BLUE}ℹ️ Before continuing, make sure your domain's A record points to this server's IP.${C_RESET}"
+            echo -e "${C_BLUE}ℹ️ Also make sure port 80 is open (certbot needs it for validation).${C_RESET}"
+            echo
+            read -p "👉 Enter your domain (e.g. vpn.example.com): " domain_name
+            if [[ -z "$domain_name" ]]; then
+                echo -e "\n${C_RED}❌ Domain cannot be empty.${C_RESET}"
+                return 1
+            fi
+            if _is_valid_ipv4 "$domain_name"; then
+                echo -e "\n${C_RED}❌ Certbot requires a real domain name, not a raw IP.${C_RESET}"
+                return 1
+            fi
+            read -p "👉 Enter your email for Let's Encrypt: " email
+            if [[ -z "$email" ]]; then
+                echo -e "\n${C_RED}❌ Email cannot be empty.${C_RESET}"
+                return 1
+            fi
+            obtain_certbot_edge_cert "$domain_name" "$email"
+            ;;
+        2)
+            local common_name
+            local preferred_host
+            preferred_host=$(detect_preferred_host)
+            read -p "👉 Enter certificate Common Name [$preferred_host]: " common_name
+            common_name=${common_name:-$preferred_host}
+            generate_self_signed_edge_cert "$common_name"
+            ;;
+        3)
+            if [[ -z "$EDGE_DOMAIN" && ! -f "$SSL_CERT_FILE" ]]; then
+                echo -e "\n${C_YELLOW}ℹ️ No certificate to remove.${C_RESET}"
+                return
+            fi
+            read -p "👉 Confirm removal? (y/n): " confirm
+            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+                rm -f "$SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
+                echo -e "\n${C_GREEN}✅ Certificate removed.${C_RESET}"
+            else
+                echo -e "\n${C_YELLOW}❌ Cancelled.${C_RESET}"
+            fi
+            ;;
+        0|"") return ;;
+        *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" && sleep 1 ;;
+    esac
 }
 
 _select_user_interface() {
@@ -2192,9 +2151,6 @@ detect_preferred_host() {
     if [[ -n "$EDGE_DOMAIN" ]]; then
         host_domain="$EDGE_DOMAIN"
     fi
-    if [[ -z "$host_domain" && -f "$DNS_INFO_FILE" ]]; then
-        host_domain=$(grep 'FULL_DOMAIN' "$DNS_INFO_FILE" | cut -d'"' -f2)
-    fi
     if [[ -z "$host_domain" && -f "$NGINX_CONFIG_FILE" ]]; then
         local nginx_domain
         nginx_domain=$(grep -oP 'server_name \K[^\s;]+' "$NGINX_CONFIG_FILE" 2>/dev/null | head -n 1)
@@ -2877,70 +2833,21 @@ install_dnstt() {
         return
     fi
     local FORWARD_TARGET="127.0.0.1:$forward_port"
-    
+
     local NS_DOMAIN=""
     local TUNNEL_DOMAIN=""
-    local DNSTT_RECORDS_MANAGED="true"
-    local NS_SUBDOMAIN=""
-    local TUNNEL_SUBDOMAIN=""
-    local HAS_IPV6="false"
+    local DNSTT_RECORDS_MANAGED="false"
 
-    read -p "👉 Auto-generate DNS records or use custom ones? (auto/custom) [auto]: " dns_choice
-    dns_choice=${dns_choice:-auto}
+    echo -e "\n${C_BLUE}ℹ️ DNSTT requires two DNS records that you must create yourself:${C_RESET}"
+    echo -e "   ${C_CYAN}1.${C_RESET} An NS record pointing a tunnel subdomain to a nameserver subdomain"
+    echo -e "   ${C_CYAN}2.${C_RESET} An A record pointing the nameserver subdomain to this server's IP"
+    echo -e "   ${C_DIM}(The script will not create these for you — set them up at your DNS provider.)${C_RESET}"
+    echo
+    read -p "👉 Enter your full nameserver domain (e.g., ns1.yourdomain.com): " NS_DOMAIN
+    if [[ -z "$NS_DOMAIN" ]]; then echo -e "\n${C_RED}❌ Nameserver domain cannot be empty. Aborting.${C_RESET}"; return; fi
+    read -p "👉 Enter your full tunnel domain (e.g., tun.yourdomain.com): " TUNNEL_DOMAIN
+    if [[ -z "$TUNNEL_DOMAIN" ]]; then echo -e "\n${C_RED}❌ Tunnel domain cannot be empty. Aborting.${C_RESET}"; return; fi
 
-    if [[ "$dns_choice" == "custom" ]]; then
-        DNSTT_RECORDS_MANAGED="false"
-        read -p "👉 Enter your full nameserver domain (e.g., ns1.yourdomain.com): " NS_DOMAIN
-        if [[ -z "$NS_DOMAIN" ]]; then echo -e "\n${C_RED}❌ Nameserver domain cannot be empty. Aborting.${C_RESET}"; return; fi
-        read -p "👉 Enter your full tunnel domain (e.g., tun.yourdomain.com): " TUNNEL_DOMAIN
-        if [[ -z "$TUNNEL_DOMAIN" ]]; then echo -e "\n${C_RED}❌ Tunnel domain cannot be empty. Aborting.${C_RESET}"; return; fi
-    else
-        echo -e "\n${C_BLUE}⚙️ Configuring DNS records for DNSTT...${C_RESET}"
-        local SERVER_IPV4
-        SERVER_IPV4=$(curl -s -4 icanhazip.com)
-        if ! _is_valid_ipv4 "$SERVER_IPV4"; then
-            echo -e "\n${C_RED}❌ Error: Could not retrieve a valid public IPv4 address from icanhazip.com.${C_RESET}"
-            echo -e "${C_YELLOW}ℹ️ Please check your server's network connection and DNS resolver settings.${C_RESET}"
-            echo -e "   Output received: '$SERVER_IPV4'"
-            return 1
-        fi
-        
-        local SERVER_IPV6
-        SERVER_IPV6=$(curl -s -6 icanhazip.com --max-time 5)
-        
-        local RANDOM_STR
-        RANDOM_STR=$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)
-        NS_SUBDOMAIN="ns-$RANDOM_STR"
-        TUNNEL_SUBDOMAIN="tun-$RANDOM_STR"
-        NS_DOMAIN="$NS_SUBDOMAIN.$DESEC_DOMAIN"
-        TUNNEL_DOMAIN="$TUNNEL_SUBDOMAIN.$DESEC_DOMAIN"
-
-        local API_DATA
-        API_DATA=$(printf '[{"subname": "%s", "type": "A", "ttl": 3600, "records": ["%s"]}, {"subname": "%s", "type": "NS", "ttl": 3600, "records": ["%s."]}]' \
-            "$NS_SUBDOMAIN" "$SERVER_IPV4" "$TUNNEL_SUBDOMAIN" "$NS_DOMAIN")
-
-        if [[ -n "$SERVER_IPV6" ]]; then
-            local aaaa_record
-            aaaa_record=$(printf ',{"subname": "%s", "type": "AAAA", "ttl": 3600, "records": ["%s"]}' "$NS_SUBDOMAIN" "$SERVER_IPV6")
-            API_DATA="${API_DATA%?}${aaaa_record}]"
-            HAS_IPV6="true"
-        fi
-
-        local CREATE_RESPONSE
-        CREATE_RESPONSE=$(curl -s -w "%{http_code}" -X POST "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/" \
-            -H "Authorization: Token $DESEC_TOKEN" -H "Content-Type: application/json" \
-            --data "$API_DATA")
-        
-        local HTTP_CODE=${CREATE_RESPONSE: -3}
-        local RESPONSE_BODY=${CREATE_RESPONSE:0:${#CREATE_RESPONSE}-3}
-
-        if [[ "$HTTP_CODE" -ne 201 ]]; then
-            echo -e "${C_RED}❌ Failed to create DNSTT records. API returned HTTP $HTTP_CODE.${C_RESET}"
-            echo "Response: $RESPONSE_BODY" | jq
-            return 1
-        fi
-    fi
-    
     read -p "👉 Enter MTU value (e.g., 512, 1200) or press [Enter] for default: " mtu_value
     local mtu_string=""
     if [[ "$mtu_value" =~ ^[0-9]+$ ]]; then
@@ -3028,7 +2935,7 @@ uninstall_dnstt() {
     fi
     local confirm="y"
     if [[ "$UNINSTALL_MODE" != "silent" ]]; then
-        read -p "👉 Are you sure you want to uninstall DNSTT? This will delete DNS records if they were auto-generated. (y/n): " confirm
+        read -p "👉 Are you sure you want to uninstall DNSTT? (y/n): " confirm
     fi
     if [[ "$confirm" != "y" ]]; then
         echo -e "\n${C_YELLOW}❌ Uninstallation cancelled.${C_RESET}"
@@ -3039,20 +2946,8 @@ uninstall_dnstt() {
     systemctl disable dnstt.service > /dev/null 2>&1
     if [ -f "$DNSTT_CONFIG_FILE" ]; then
         source "$DNSTT_CONFIG_FILE"
-        if [[ "$DNSTT_RECORDS_MANAGED" == "true" ]]; then
-            echo -e "${C_BLUE}🗑️ Removing auto-generated DNS records...${C_RESET}"
-            curl -s -X DELETE "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/$TUNNEL_SUBDOMAIN/NS/" \
-                 -H "Authorization: Token $DESEC_TOKEN" > /dev/null
-            curl -s -X DELETE "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/$NS_SUBDOMAIN/A/" \
-                 -H "Authorization: Token $DESEC_TOKEN" > /dev/null
-            if [[ "$HAS_IPV6" == "true" ]]; then
-                curl -s -X DELETE "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/$NS_SUBDOMAIN/AAAA/" \
-                     -H "Authorization: Token $DESEC_TOKEN" > /dev/null
-            fi
-            echo -e "${C_GREEN}✅ DNS records have been removed.${C_RESET}"
-        else
-            echo -e "${C_YELLOW}⚠️ DNS records were manually configured. Please delete them from your DNS provider.${C_RESET}"
-        fi
+        echo -e "${C_YELLOW}⚠️ DNS records (NS + A) for $NS_DOMAIN / $TUNNEL_DOMAIN were configured manually.${C_RESET}"
+        echo -e "${C_YELLOW}   Please delete them at your DNS provider if no longer needed.${C_RESET}"
     fi
     echo -e "${C_BLUE}🗑️ Removing service files and binaries...${C_RESET}"
     rm -f "$DNSTT_SERVICE_FILE"
@@ -3835,21 +3730,17 @@ protocol_menu() {
         echo -e "     ${C_ACCENT}--- TUNNELLING PROTOCOLS---${C_RESET}"
         printf "     ${C_CHOICE}[ 1]${C_RESET} %-45s %s\n" "🚀 Install badvpn (UDP 7300)" "$badvpn_status"
         printf "     ${C_CHOICE}[ 2]${C_RESET} %-45s\n" "🗑️ Uninstall badvpn"
-        printf "     ${C_CHOICE}[ 3]${C_RESET} %-45s %s\n" "🚀 Install udp-custom" "$udp_custom_status"
-        printf "     ${C_CHOICE}[ 4]${C_RESET} %-45s\n" "🗑️ Uninstall udp-custom"
-        printf "     ${C_CHOICE}[ 5]${C_RESET} %-45s %s\n" "🔒 Install ${ssl_tunnel_text}" "$ssl_tunnel_status"
-        printf "     ${C_CHOICE}[ 6]${C_RESET} %-45s\n" "🗑️ Uninstall HAProxy Edge Stack"
-        printf "     ${C_CHOICE}[ 7]${C_RESET} %-45s %s\n" "📡 Install/View DNSTT (Port 53)" "$dnstt_status"
-        printf "     ${C_CHOICE}[ 8]${C_RESET} %-45s\n" "🗑️ Uninstall DNSTT"
-        printf "     ${C_CHOICE}[ 9]${C_RESET} %-45s %s\n" "🦅 Install TDZ Proxy (Select Version)" "$tdzproxy_status"
-        printf "     ${C_CHOICE}[10]${C_RESET} %-45s\n" "🗑️ Uninstall TDZ Proxy"
-        printf "     ${C_CHOICE}[11]${C_RESET} %-45s %s\n" "🌐 Install/Manage Internal Nginx (8880/8443)" "$nginx_status"
-        printf "     ${C_CHOICE}[16]${C_RESET} %-45s %s\n" "🛡️ Install ZiVPN (UDP 5667)" "$zivpn_status"
-        printf "     ${C_CHOICE}[17]${C_RESET} %-45s\n" "🗑️ Uninstall ZiVPN"
+        printf "     ${C_CHOICE}[ 3]${C_RESET} %-45s %s\n" "🔒 Install ${ssl_tunnel_text}" "$ssl_tunnel_status"
+        printf "     ${C_CHOICE}[ 4]${C_RESET} %-45s\n" "🗑️ Uninstall HAProxy Edge Stack"
+        printf "     ${C_CHOICE}[ 5]${C_RESET} %-45s %s\n" "📡 Install/View DNSTT (Port 53)" "$dnstt_status"
+        printf "     ${C_CHOICE}[ 6]${C_RESET} %-45s\n" "🗑️ Uninstall DNSTT"
+        printf "     ${C_CHOICE}[ 7]${C_RESET} %-45s %s\n" "🌐 Install/Manage Internal Nginx (8880/8443)" "$nginx_status"
+        printf "     ${C_CHOICE}[ 8]${C_RESET} %-45s %s\n" "🛡️ Install ZiVPN (UDP 5667)" "$zivpn_status"
+        printf "     ${C_CHOICE}[ 9]${C_RESET} %-45s\n" "🗑️ Uninstall ZiVPN"
         
         echo -e "     ${C_ACCENT}--- 💻 MANAGEMENT PANELS ---${C_RESET}"
-        printf "     ${C_CHOICE}[12]${C_RESET} %-45s %s\n" "💻 Install X-UI Panel" "$xui_status"
-        printf "     ${C_CHOICE}[13]${C_RESET} %-45s\n" "🗑️ Uninstall X-UI Panel"
+        printf "     ${C_CHOICE}[10]${C_RESET} %-45s %s\n" "💻 Install X-UI Panel" "$xui_status"
+        printf "     ${C_CHOICE}[11]${C_RESET} %-45s\n" "🗑️ Uninstall X-UI Panel"
         
         echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
         echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return to Main Menu"
@@ -3860,13 +3751,11 @@ protocol_menu() {
         fi
         case $choice in
             1) install_badvpn; press_enter ;; 2) uninstall_badvpn; press_enter ;;
-            3) install_udp_custom; press_enter ;; 4) uninstall_udp_custom; press_enter ;;
-            5) install_ssl_tunnel; press_enter ;; 6) uninstall_ssl_tunnel; press_enter ;;
-            7) install_dnstt; press_enter ;; 8) uninstall_dnstt; press_enter ;;
-            9) install_tdz_proxy; press_enter ;; 10) uninstall_tdz_proxy; press_enter ;;
-            11) nginx_proxy_menu ;;
-            12) install_xui_panel; press_enter ;; 13) uninstall_xui_panel; press_enter ;;
-            16) install_zivpn; press_enter ;; 17) uninstall_zivpn; press_enter ;;
+            3) install_ssl_tunnel; press_enter ;; 4) uninstall_ssl_tunnel; press_enter ;;
+            5) install_dnstt; press_enter ;; 6) uninstall_dnstt; press_enter ;;
+            7) nginx_proxy_menu ;;
+            8) install_zivpn; press_enter ;; 9) uninstall_zivpn; press_enter ;;
+            10) install_xui_panel; press_enter ;; 11) uninstall_xui_panel; press_enter ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -3937,8 +3826,7 @@ uninstall_script() {
     uninstall_ssl_tunnel
     uninstall_tdz_proxy
     uninstall_zivpn
-    delete_dns_record
-    
+
     echo -e "\n${C_BLUE}🔄 Reloading systemd daemon...${C_RESET}"
     systemctl daemon-reload
     
@@ -4611,7 +4499,7 @@ main_menu() {
 
         echo
         echo -e "   ${C_TITLE}══════════════[ ${C_BOLD}⚙️ SYSTEM SETTINGS ${C_RESET}${C_TITLE}]═══════════════${C_RESET}"
-        printf "     ${C_CHOICE}[%2s]${C_RESET} %-28s ${C_CHOICE}[%2s]${C_RESET} %-28s\n" "15" "☁️  CloudFlare Free Domain" "16" "🎨 SSH Banner Config"
+        printf "     ${C_CHOICE}[%2s]${C_RESET} %-28s ${C_CHOICE}[%2s]${C_RESET} %-28s\n" "15" "🌐 Domain & SSL Certificate" "16" "🎨 SSH Banner Config"
         printf "     ${C_CHOICE}[%2s]${C_RESET} %-28s ${C_CHOICE}[%2s]${C_RESET} %-28s\n" "17" "🔄 Auto-Reboot Task" "18" "💾 Backup User Data"
         printf "     ${C_CHOICE}[%2s]${C_RESET} %-28s ${C_CHOICE}[%2s]${C_RESET} %-28s\n" "19" "📥 Restore User Data" "20" "🧹 Cleanup Expired Users"
 
@@ -4640,7 +4528,7 @@ main_menu() {
             13) traffic_monitor_menu ;;
             14) torrent_block_menu ;;
             
-            15) dns_menu; press_enter ;;
+            15) domain_cert_menu; press_enter ;;
             16) ssh_banner_menu ;;
             17) auto_reboot_menu ;;
             18) backup_user_data; press_enter ;;

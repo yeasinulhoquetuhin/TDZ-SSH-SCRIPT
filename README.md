@@ -18,11 +18,10 @@ directly on the server.
 - **stunnel4 TLS** — port `2288` for TLS-wrapped SSH (firewall bypass)
 - **WebSocket NTLS payload** — port `2289` for non-TLS WS payloads
 - **BadVPN / UDPGW** — UDP game tunneling support
-- **DNSTT** — DNS-based tunneling
+- **DNSTT** — DNS-based tunneling (manual NS + tunnel domain input)
 - **HAProxy + Nginx SSL termination** — reverse-proxy edge with shared certs
-- **TDZProxy** — custom proxy bridge with auto-update from GitHub Releases
+- **Let's Encrypt (certbot)** — automatic TLS certificate via Domain & SSL menu
 - **Dynamic per-user SSH banners** — login banner rotation
-- **desec.io DNS integration** — auto sub-domain assignment for users
 - **Premium UI** — Navy `#1e3a5f` + Cyan `#00d4ff` color theme
 
 ---
@@ -84,16 +83,26 @@ TDZ-SSH-SCRIPT/
 
 ## Configuration
 
-The DNS auto-subdomain feature uses desec.io. The token & domain are hardcoded
-near the top of `menu.sh`:
+DNS / Domain management is **fully manual**. From the menu:
 
-```bash
-DESEC_TOKEN="V55cFY8zTictLCPfviiuX5DHjs15"
-DESEC_DOMAIN="manager.tdz-tunnel.qzz.io"
+```
+Main Menu → 15) 🌐 Domain & SSL Certificate
 ```
 
-**Change these to your own desec.io token & domain before deploying.**
-You can get a free desec.io account at https://desec.io/.
+You will be prompted for:
+1. Your own domain (e.g. `vpn.example.com`)
+2. Your email (for Let's Encrypt)
+
+The script then runs `certbot certonly --standalone -d <domain>` and copies the
+issued cert into `/etc/tdztunnel/ssl/` for HAProxy / Nginx to use.
+
+**Pre-requisites for certbot:**
+- The domain's A record must already point to this server's public IP
+- Port 80 must be reachable from the internet
+- The script will temporarily stop HAProxy/Nginx to free port 80
+
+You can also generate a self-signed certificate (no domain needed) from the
+same menu — useful for internal testing.
 
 ---
 
