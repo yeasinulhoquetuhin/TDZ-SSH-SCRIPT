@@ -194,6 +194,71 @@ switch_ubuntu_to_old_releases() {
     rewrite_ubuntu_apt_sources "old-releases"
 }
 
+# Repair broken Debian sources.list (e.g. when VPS migrated from Tencent Cloud
+# where /etc/apt/sources.list still points to mirrors.tencentyun.com).
+# Replaces any unreachable mirror with deb.debian.org. Also fixes /tmp perms
+# (Tencent Cloud images often ship with /tmp = 700, which breaks apt-key).
+repair_debian_apt_mirrors() {
+    # Fix /tmp permissions first — apt-key needs 1777 to write temp config
+    if [[ -d /tmp ]]; then
+        local tmp_mode
+        tmp_mode=$(stat -c '%a' /tmp 2>/dev/null || echo "")
+        if [[ "$tmp_mode" != "1777" ]]; then
+            echo -e "${C_YELLOW}⚠️ /tmp permissions are $tmp_mode (should be 1777). Fixing...${C_RESET}"
+            chmod 1777 /tmp 2>/dev/null
+            chown root:root /tmp 2>/dev/null
+        fi
+        # Also ensure apt partial dir is writable by _apt user
+        if [[ -d /var/cache/apt/archives/partial ]]; then
+            chmod 755 /var/cache/apt/archives/partial 2>/dev/null
+            chown _apt:root /var/cache/apt/archives/partial 2>/dev/null
+        fi
+    fi
+
+    # Detect Debian
+    if [[ ! -f /etc/debian_version ]]; then
+        return 1
+    fi
+
+    local src="/etc/apt/sources.list"
+    [[ -f "$src" ]] || return 1
+
+    # Check if any broken mirror is referenced (Tencent, Aliyun, Huawei, etc.)
+    local has_broken=0
+    if grep -qE 'mirrors\.(tencentyun|aliyun|myhuaweicloud|cloud\.tencentova)\.com' "$src" 2>/dev/null; then
+        has_broken=1
+    fi
+
+    # Also check if DNS fails for the configured mirror host
+    if [[ $has_broken -eq 0 ]]; then
+        local first_mirror
+        first_mirror=$(grep -E '^deb ' "$src" 2>/dev/null | head -1 | awk '{print $2}' | sed -E 's|^(https?://)([^/]+)/.*|\2|')
+        if [[ -n "$first_mirror" ]] && ! getent hosts "$first_mirror" >/dev/null 2>&1; then
+            has_broken=1
+        fi
+    fi
+
+    [[ $has_broken -eq 1 ]] || return 1
+
+    local codename
+    codename=$(sed -n 's/VERSION_CODENAME=//p' /etc/os-release 2>/dev/null | head -1)
+    [[ -n "$codename" ]] || codename="bookworm"
+
+    echo -e "${C_YELLOW}⚠️ Debian apt sources reference an unreachable mirror. Switching to deb.debian.org ($codename)...${C_RESET}"
+
+    # Backup
+    cp "$src" "${src}.tdz-backup-$(date +%s)" 2>/dev/null
+
+    cat > "$src" <<EOF
+# TDZ TUNNEL — replaced broken mirror with public Debian mirror
+deb http://deb.debian.org/debian ${codename} main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${codename}-updates main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian-security ${codename}-security main contrib non-free non-free-firmware
+EOF
+
+    return 0
+}
+
 tdz_apt_update() {
     local -a apt_opts=(
         -o Acquire::Retries=3
@@ -210,6 +275,15 @@ tdz_apt_update() {
     if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
         APT_CACHE_READY=1
         return 0
+    fi
+
+    if repair_debian_apt_mirrors; then
+        echo -e "${C_YELLOW}⚠️ Debian mirror unreachable. Switching to deb.debian.org and retrying...${C_RESET}"
+        apt-get clean >/dev/null 2>&1 || true
+        if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
+            APT_CACHE_READY=1
+            return 0
+        fi
     fi
 
     if repair_ubuntu_apt_mirrors; then
@@ -4446,14 +4520,18 @@ show_banner() {
     echo
     # Rainbow title — each character cycles through the rainbow palette
     local rainbow_title
-    rainbow_title=$(_rainbow_text "╔═ TDZ TUNNEL MANAGER ═╗")
+    rainbow_title=$(_rainbow_text "TDZ TUNNEL MANAGER")
     echo -e "   ${rainbow_title}"
-    echo -e "   ${C_DIM}v4.5.0 Premium Edition  ${C_RESET}${C_DIM}|  Powered by Tuhin${C_RESET}"
-    echo -e "   ${C_BLUE}──────────────────────────────────────────────────────────${C_RESET}"
-    printf "   ${C_GRAY}%-10s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}│${C_RESET} ${C_GRAY}Uptime:${C_RESET} ${C_GREEN}%-14s${C_RESET}\n" "OS" "$BANNER_CACHE_OS_NAME" "$BANNER_CACHE_UP_TIME"
-    printf "   ${C_GRAY}%-10s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}│${C_RESET} ${C_GRAY}Sessions:${C_RESET} ${C_BLUE}${BANNER_CACHE_ONLINE_USERS}${C_RESET}\n" "Memory" "${BANNER_CACHE_RAM_USAGE}% Used"
-    printf "   ${C_GRAY}%-10s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}│${C_RESET} ${C_GRAY}Sys Load:${C_RESET} ${C_GREEN}${BANNER_CACHE_CPU_LOAD}${C_RESET}\n" "Users" "${BANNER_CACHE_TOTAL_USERS} Accounts"
-    echo -e "   ${C_BLUE}──────────────────────────────────────────────────────────${C_RESET}"
+    echo -e "   ${C_DIM}v4.5.0 Premium Edition  |  Powered by Tuhin${C_RESET}"
+    echo -e "   ${C_BLUE}----------------------------------------------------------${C_RESET}"
+    # Truncate OS name to fit (max 22 chars)
+    local os_short="${BANNER_CACHE_OS_NAME:0:22}"
+    # Truncate uptime to fit (max 26 chars)
+    local up_short="${BANNER_CACHE_UP_TIME:0:26}"
+    printf "   ${C_GRAY}%-9s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}|${C_RESET} ${C_GRAY}Up:${C_RESET} ${C_GREEN}%-26s${C_RESET}\n" "OS" "$os_short" "$up_short"
+    printf "   ${C_GRAY}%-9s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}|${C_RESET} ${C_GRAY}Sess:${C_RESET} ${C_BLUE}%-4s${C_RESET} ${C_GRAY}Load:${C_RESET} ${C_GREEN}%s${C_RESET}\n" "Memory" "${BANNER_CACHE_RAM_USAGE}% Used" "$BANNER_CACHE_ONLINE_USERS" "$BANNER_CACHE_CPU_LOAD"
+    printf "   ${C_GRAY}%-9s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}|${C_RESET} ${C_GRAY}Users:${C_RESET} ${C_BLUE}%-4s${C_RESET}\n" "Accts" "$BANNER_CACHE_TOTAL_USERS"
+    echo -e "   ${C_BLUE}----------------------------------------------------------${C_RESET}"
 }
 
 protocol_menu() {
@@ -5249,7 +5327,7 @@ main_menu() {
         systemctl is-active --quiet tdz-ws-ssh-bridge && ws_state="${C_STATUS_A}●${C_RESET}"
         local ws_brand_state="${C_STATUS_I}(none)${C_RESET}"
         [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]] && ws_brand_state="${C_STATUS_A}(set)${C_RESET}"
-        printf "   ${C_GRAY}Edge:${C_RESET} ${haprx_state} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}  ${C_GRAY}│${C_RESET}  ${nginx_state} Nginx ${NGINX_INTERNAL_TLS_PORT}  ${C_GRAY}│${C_RESET}  ${ws_state} WS-Bridge  ${C_GRAY}│${C_RESET}  Brand: ${ws_brand_state}\n"
+        printf "   ${C_GRAY}Edge:${C_RESET} ${haprx_state} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}  ${C_GRAY}|${C_RESET}  ${nginx_state} Nginx ${NGINX_INTERNAL_TLS_PORT}  ${C_GRAY}|${C_RESET}  ${ws_state} WS-Bridge  ${C_GRAY}|${C_RESET}  Brand: ${ws_brand_state}\n"
         echo
 
         echo -e "   ${C_TITLE}┌────────────────────────────────────────────────────────┐${C_RESET}"
@@ -5328,6 +5406,12 @@ main_menu() {
 if [[ "$1" == "--install-setup" ]]; then
     initial_setup
     exit 0
+fi
+
+# --source-only: source the script (define all functions) without running main_menu.
+# Useful for programmatic installation and testing.
+if [[ "$1" == "--source-only" ]]; then
+    return 0 2>/dev/null || exit 0
 fi
 
 require_interactive_terminal
