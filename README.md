@@ -115,7 +115,8 @@ same menu — useful for internal testing.
 | 2289 | WS | WebSocket NTLS payload |
 | 7300 | UDP | UDPGW (BadVPN) |
 | 5300 | DNS | DNSTT server |
-| 80 / 443 | HTTP/S | HAProxy / Nginx edge |
+| 2086 | HTTP | HAProxy edge (HTTP payloads / raw SSH / WebSocket) |
+| 443 | HTTPS | HAProxy edge (TLS / SNI / SSL payloads) |
 
 ---
 

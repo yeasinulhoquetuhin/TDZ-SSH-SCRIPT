@@ -40,7 +40,7 @@ SSL_CERT_CHAIN_FILE="$SSL_CERT_DIR/tdztunnel.crt"
 SSL_CERT_KEY_FILE="$SSL_CERT_DIR/tdztunnel.key"
 EDGE_CERT_INFO_FILE="$DB_DIR/edge_cert.conf"
 NGINX_PORTS_FILE="$DB_DIR/nginx_ports.conf"
-EDGE_PUBLIC_HTTP_PORT="80"
+EDGE_PUBLIC_HTTP_PORT="2086"
 EDGE_PUBLIC_TLS_PORT="443"
 NGINX_INTERNAL_HTTP_PORT="8880"
 NGINX_INTERNAL_TLS_PORT="8443"
@@ -1003,7 +1003,7 @@ domain_cert_menu() {
         1)
             local domain_name email
             echo -e "\n${C_BLUE}ℹ️ Before continuing, make sure your domain's A record points to this server's IP.${C_RESET}"
-            echo -e "${C_BLUE}ℹ️ Also make sure port 80 is open (certbot needs it for validation).${C_RESET}"
+            echo -e "${C_BLUE}ℹ️ Also make sure port 2086 is open (certbot needs port 80, but if you've changed defaults make sure port 80 is reachable for certbot validation).${C_RESET}"
             echo
             read -p "👉 Enter your domain (e.g. vpn.example.com): " domain_name
             if [[ -z "$domain_name" ]]; then
@@ -2636,7 +2636,7 @@ configure_edge_stack() {
 
 install_ssl_tunnel() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Installing HAProxy Edge Stack (80/443 -> 8880/8443) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Installing HAProxy Edge Stack (2086/443 -> 8880/8443) ---${C_RESET}"
     echo -e "\n${C_CYAN}This installer will configure:${C_RESET}"
     echo -e "   • HAProxy on ${C_WHITE}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
     echo -e "   • Internal Nginx on ${C_WHITE}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
@@ -3707,7 +3707,7 @@ protocol_menu() {
         local udp_custom_status; if systemctl is-active --quiet udp-custom; then udp_custom_status="${C_STATUS_A}(Active)${C_RESET}"; else udp_custom_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local zivpn_status; if systemctl is-active --quiet zivpn.service; then zivpn_status="${C_STATUS_A}(Active)${C_RESET}"; else zivpn_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         
-        local ssl_tunnel_text="HAProxy Edge Stack (80/443)"
+        local ssl_tunnel_text="HAProxy Edge Stack (2086/443)"
         local ssl_tunnel_status="${C_STATUS_I}(Inactive)${C_RESET}"
         if systemctl is-active --quiet haproxy; then
             ssl_tunnel_status="${C_STATUS_A}(Active)${C_RESET}"
@@ -4120,7 +4120,7 @@ generate_client_config() {
     if systemctl is-active --quiet haproxy; then
         echo -e "\n🔹 ${C_BOLD}HAProxy Edge Stack${C_RESET}:"
         echo -e "   • Host: $host_domain"
-        echo -e "   • Port 80: HTTP payloads / raw SSH"
+        echo -e "   • Port 2086: HTTP payloads / raw SSH"
         echo -e "   • Port 443: TLS / SNI / SSL payloads"
         echo -e "   • Internal handoff: Nginx ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
         echo -e "   • SNI (BugHost): $host_domain (or your preferred SNI)"
