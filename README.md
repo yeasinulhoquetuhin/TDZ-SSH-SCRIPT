@@ -21,8 +21,10 @@ directly on the server.
 - **DNSTT** — DNS-based tunneling (manual NS + tunnel domain input)
 - **HAProxy + Nginx SSL termination** — reverse-proxy edge with shared certs
 - **Let's Encrypt (certbot)** — automatic TLS certificate via Domain & SSL menu
-- **Dynamic per-user SSH banners** — login banner rotation
-- **Premium UI** — Navy `#1e3a5f` + Cyan `#00d4ff` color theme
+- **DarkTunnel WS-to-SSH bridge** — accepts non-standard `GET wss://[cf]` payloads on port `2080`, replies `101 Switching Protocols`, bridges to SSH
+- **🌈 101 Customizer** — set a custom name (e.g. `VPS BY: @TuhinBroh`) shown in the WS 101 response, with rainbow-color preview
+- **🎨 Branding & SSH banners** — rainbow per-character ANSI colors for SSH login banner
+- **Premium UI** — Navy `#1e3a5f` + Cyan `#00d4ff` color theme, rainbow title, live status pills
 
 ---
 
@@ -115,8 +117,37 @@ same menu — useful for internal testing.
 | 2289 | WS | WebSocket NTLS payload |
 | 7300 | UDP | UDPGW (BadVPN) |
 | 5300 | DNS | DNSTT server |
-| 2086 | HTTP | HAProxy edge (HTTP payloads / raw SSH / WebSocket) |
-| 443 | HTTPS | HAProxy edge (TLS / SNI / SSL payloads) |
+| 2080 | HTTP | HAProxy edge (HTTP payloads / raw SSH / WebSocket) |
+| 442 | HTTPS | HAProxy edge (TLS / SNI / SSL payloads) |
+| 8880 | HTTP | Internal Nginx proxy (loopback only) |
+| 8442 | HTTPS | Internal Nginx TLS proxy (loopback only) |
+| 8890 | TCP | WS-to-SSH bridge (loopback only, bridges DarkTunnel payloads to SSH) |
+
+---
+
+## 🌈 101 Switching Protocols Customizer
+
+When DarkTunnel / HTTP Custom / NPV clients send a WS upgrade request to port
+`2080`, the WS-to-SSH bridge replies with `HTTP/1.1 101 Switching Protocols`.
+You can customize this response by adding your own HTTP headers (e.g.
+`X-Powered-By: VPS BY @TuhinBroh`) — your name will be visible to anyone
+connecting to your VPS through these clients.
+
+From the menu:
+
+```
+Main Menu → 22) 🌈 101 Customizer
+```
+
+Options:
+1. **Quick Set Custom Name** — enter any name, see a rainbow-color preview
+2. **Preset names** — VPS BY @TuhinBroh / Premium SSH by Tuhin / TDZ TUNNEL Manager
+3. **Edit raw headers** — open `/etc/tdztunnel/ws_branding.conf` in nano/vi
+4. **Test Live Response** — send a real DarkTunnel payload and view the response
+5. **Clear Branding** — restore the default 101 response
+
+The bridge reloads the branding file every 30s automatically, and the
+dashboard also restarts the service immediately after any change.
 
 ---
 
