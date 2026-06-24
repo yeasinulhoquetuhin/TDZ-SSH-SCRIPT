@@ -5372,12 +5372,12 @@ main_menu() {
         tdz_box_top
         tdz_box_header "SERVER PROFILE"
         tdz_box_divider
-        tdz_kv2 "LOCATION" "${DASH_CACHE_LOCATION:0:24}" "ISP" "${DASH_CACHE_ISP:0:24}"
-        tdz_kv2 "PUBLIC IP" "${DASH_CACHE_PUBLIC_IP:0:24}" "DOMAIN" "${DASH_CACHE_DOMAIN:0:24}"
+        tdz_kv2 "LOC" "${DASH_CACHE_LOCATION:0:22}" "ISP" "${DASH_CACHE_ISP:0:22}"
+        tdz_kv2 "IP" "${DASH_CACHE_PUBLIC_IP:0:22}" "DOMAIN" "${DASH_CACHE_DOMAIN:0:22}"
         tdz_box_divider
-        tdz_kv2 "SYSTEM" "${DASH_CACHE_OS_NAME:0:24}" "UPTIME" "${DASH_CACHE_UPTIME:0:24}"
-        tdz_kv2 "CPU LOAD" "${DASH_CACHE_CPU_LOAD}" "MEMORY" "${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED})"
-        tdz_kv2 "ACCOUNTS" "${DASH_CACHE_TOTAL_USERS}" "ONLINE" "${DASH_CACHE_ONLINE_USERS}"
+        tdz_kv2 "OS" "${DASH_CACHE_OS_NAME:0:22}" "UPTIME" "${DASH_CACHE_UPTIME:0:22}"
+        tdz_kv2 "CPU" "${DASH_CACHE_CPU_LOAD}" "RAM" "${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED:0:18})"
+        tdz_kv2 "ACCT" "${DASH_CACHE_TOTAL_USERS}" "ONLINE" "${DASH_CACHE_ONLINE_USERS}"
         tdz_box_bot
 
         # ── SERVICE STATUS box ─────────────────────────────────────────
