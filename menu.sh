@@ -91,8 +91,135 @@ BANNER_CACHE_RAM_USAGE=""
 BANNER_CACHE_CPU_LOAD=""
 BANNER_CACHE_ONLINE_USERS=0
 BANNER_CACHE_TOTAL_USERS=0
+# Dashboard info cache (location, ISP, IP, domain, uptime, cpu, ram)
+DASH_CACHE_TTL=300          # 5 min — geo/IP lookup is rate-limited
+DASH_CACHE_TS=0
+DASH_CACHE_LOCATION="Unknown"
+DASH_CACHE_ISP="Unknown"
+DASH_CACHE_PUBLIC_IP="N/A"
+DASH_CACHE_DOMAIN="None"
+DASH_CACHE_OS_NAME="Linux"
+DASH_CACHE_UPTIME="unknown"
+DASH_CACHE_CPU_LOAD="0.00"
+DASH_CACHE_RAM_PCT="0"
+DASH_CACHE_RAM_USED="0M / 0M"
+DASH_CACHE_DISK_PCT="0"
+DASH_CACHE_TOTAL_USERS=0
+DASH_CACHE_ONLINE_USERS=0
 SSH_SESSION_CACHE_TTL=10
 SSH_SESSION_CACHE_TS=0
+
+# ── TDZ Dashboard Box-Layout Helpers (width 60) ─────────────────────────────
+TDZ_BOX_WIDTH=60
+
+_tdz_strip_ansi() {
+    printf '%s' "$1" | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g'
+}
+
+# Visible character width (ANSI stripped, character count not byte count)
+_tdz_w() {
+    local s
+    s=$(_tdz_strip_ansi "$1")
+    printf '%s' "$s" | wc -m | tr -d ' '
+}
+
+tdz_box_top() {
+    local color="${1:-$C_TITLE}"
+    printf "  %s┌" "$color"
+    printf '─%.0s' $(seq 1 $TDZ_BOX_WIDTH)
+    printf "┐%s\n" "$C_RESET"
+}
+
+tdz_box_bot() {
+    local color="${1:-$C_TITLE}"
+    printf "  %s└" "$color"
+    printf '─%.0s' $(seq 1 $TDZ_BOX_WIDTH)
+    printf "┘%s\n" "$C_RESET"
+}
+
+tdz_box_divider() {
+    local color="${1:-$C_TITLE}"
+    printf "  %s├" "$color"
+    printf '─%.0s' $(seq 1 $TDZ_BOX_WIDTH)
+    printf "┤%s\n" "$C_RESET"
+}
+
+# Section header row: │ ▶ TITLE (padded) │
+tdz_box_header() {
+    local text="$1"
+    local color="${2:-$C_TITLE}"
+    local tcolor="$C_GREEN"
+    [[ "$color" == "$C_DANGER" ]] && tcolor="$C_RED"
+    local content=" ${C_BOLD}${tcolor}▶ ${text}${C_RESET} "
+    local w
+    w=$(_tdz_w "$content")
+    local pad=$(( TDZ_BOX_WIDTH - w ))
+    [[ $pad -lt 0 ]] && pad=0
+    local padstr=""
+    [[ $pad -gt 0 ]] && printf -v padstr "%${pad}s" ""
+    printf "  %s│%s%s%s%s│%s\n" "$color" "$content" "$padstr" "$color" "" "$C_RESET"
+}
+
+# Single content row: │ content (padded) │
+tdz_row() {
+    local text="$1"
+    local color="${2:-$C_TITLE}"
+    local content=" $text "
+    local w
+    w=$(_tdz_w "$content")
+    local pad=$(( TDZ_BOX_WIDTH - w ))
+    [[ $pad -lt 0 ]] && pad=0
+    local padstr=""
+    [[ $pad -gt 0 ]] && printf -v padstr "%${pad}s" ""
+    printf "  %s│%s%s%s%s│%s\n" "$color" "$content" "$padstr" "$color" "" "$C_RESET"
+}
+
+# Two-column row: │ left (pad) │ right (pad) │
+tdz_row2() {
+    local left="$1" right="$2"
+    local color="${3:-$C_TITLE}"
+    local half=$(( (TDZ_BOX_WIDTH - 1) / 2 ))
+    local lw rw
+    lw=$(_tdz_w "$left")
+    rw=$(_tdz_w "$right")
+    local lpad=$(( half - lw - 1 ))
+    [[ $lpad -lt 0 ]] && lpad=0
+    local rpad=$(( half - rw - 1 ))
+    [[ $rpad -lt 0 ]] && rpad=0
+    local lpadstr="" rpadstr=""
+    [[ $lpad -gt 0 ]] && printf -v lpadstr "%${lpad}s" ""
+    [[ $rpad -gt 0 ]] && printf -v rpadstr "%${rpad}s" ""
+    printf "  %s│%s %s%s%s│%s %s%s %s│%s\n" \
+        "$color" "$C_RESET" "$left" "$lpadstr" "$color" \
+        "$C_RESET" "$right" "$rpadstr" "$color" "$C_RESET"
+}
+
+# Two-column label/value pairs: │ LABEL value (pad) │ LABEL value (pad) │
+tdz_kv2() {
+    local l_label="$1" l_val="$2" r_label="$3" r_val="$4"
+    local color="${5:-$C_TITLE}"
+    local left="${C_GRAY}${l_label}${C_RESET} ${C_WHITE}${l_val}${C_RESET}"
+    local right="${C_GRAY}${r_label}${C_RESET} ${C_WHITE}${r_val}${C_RESET}"
+    tdz_row2 "$left" "$right" "$color"
+}
+
+# Two-column menu row: │ [N] Text (pad) │ [N] Text (pad) │
+tdz_menu2() {
+    local l_num="$1" l_text="$2" r_num="$3" r_text="$4"
+    local color="${5:-$C_TITLE}"
+    local left="${C_CHOICE}${l_num}${C_RESET} ${C_WHITE}${l_text}${C_RESET}"
+    local right="${C_CHOICE}${r_num}${C_RESET} ${C_WHITE}${r_text}${C_RESET}"
+    tdz_row2 "$left" "$right" "$color"
+}
+
+# Single-column menu row: │ [N] Text (pad) │
+tdz_menu1() {
+    local num="$1" text="$2"
+    local color="${3:-$C_TITLE}"
+    local content="${C_CHOICE}${num}${C_RESET} ${C_WHITE}${text}${C_RESET}"
+    tdz_row "$content" "$color"
+}
+
 SSH_SESSION_CACHE_DB_MTIME=0
 SSH_SESSION_TOTAL=0
 APT_CACHE_READY=0
@@ -3057,171 +3184,6 @@ branding_menu() {
     done
 }
 
-# ============================================================================
-# 101 CUSTOMIZER — dedicated menu for customizing the 101 Switching Protocols
-# response. Lets the user set a small custom name (e.g. "VPS BY: @TuhinBroh")
-# as an X-Powered-By header. Shows a rainbow-color preview of the custom name.
-# ============================================================================
-customizer_101_menu() {
-    while true; do
-        clear; show_banner
-        echo -e "${C_BOLD}${C_PURPLE}════════════ 🌈 101 SWITCHING PROTOCOLS CUSTOMIZER ════════════${C_RESET}"
-        echo
-        echo -e "  ${C_DIM}Customize the HTTP response sent to DarkTunnel / HTTP Custom / NPV${C_RESET}"
-        echo -e "  ${C_DIM}clients when they send a WS upgrade request on port ${EDGE_PUBLIC_HTTP_PORT}.${C_RESET}"
-        echo -e "  ${C_DIM}File: ${C_YELLOW}${WS_BRANDING_FILE}${C_RESET}"
-        echo
-
-        # Show current branding with rainbow preview
-        if [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]]; then
-            echo -e "  ${C_BOLD}${C_GREEN}Current Branding:${C_RESET}"
-            local current_name
-            current_name=$(grep -E '^X-Powered-By:' "$WS_BRANDING_FILE" 2>/dev/null | head -1 | sed 's/^X-Powered-By:[[:space:]]*//')
-            if [[ -n "$current_name" ]]; then
-                echo -e "  ${C_DIM}Name:${C_RESET}  $(_rainbow_text "$current_name")"
-            fi
-            echo -e "  ${C_DIM}Raw headers:${C_RESET}"
-            while IFS= read -r line; do
-                [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-                echo -e "    ${C_CYAN}${line}${C_RESET}"
-            done < "$WS_BRANDING_FILE"
-        else
-            echo -e "  ${C_YELLOW}ℹ️ No custom branding set. Default 101 response is in use.${C_RESET}"
-        fi
-        echo
-
-        # Live preview box
-        echo -e "  ${C_TITLE}┌── Live Preview (101 Response) ──────────────────────────┐${C_RESET}"
-        echo -e "  ${C_TITLE}│${C_RESET}  ${C_GREEN}HTTP/1.1 101 Switching Protocols${C_RESET}              ${C_TITLE}│${C_RESET}"
-        echo -e "  ${C_TITLE}│${C_RESET}  ${C_GREEN}Upgrade: websocket${C_RESET}                          ${C_TITLE}│${C_RESET}"
-        echo -e "  ${C_TITLE}│${C_RESET}  ${C_GREEN}Connection: Upgrade${C_RESET}                          ${C_TITLE}│${C_RESET}"
-        if [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]]; then
-            while IFS= read -r line; do
-                [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-                local short_line="${line:0:42}"
-                printf "  ${C_TITLE}│${C_RESET}  ${C_CYAN}%-46s${C_TITLE}│${C_RESET}\n" "$short_line"
-            done < "$WS_BRANDING_FILE"
-        fi
-        echo -e "  ${C_TITLE}└──────────────────────────────────────────────────────────┘${C_RESET}"
-        echo
-
-        echo -e "  ${C_BOLD}Choose an option:${C_RESET}"
-        echo -e "   ${C_CHOICE}[1]${C_RESET} 🚀 Quick Set Custom Name        ${C_DIM}(with rainbow preview)${C_RESET}"
-        echo -e "   ${C_CHOICE}[2]${C_RESET} ✨ Preset: VPS BY @TuhinBroh    ${C_DIM}(rainbow name)${C_RESET}"
-        echo -e "   ${C_CHOICE}[3]${C_RESET} 💎 Preset: Premium SSH by Tuhin ${C_DIM}(rainbow name)${C_RESET}"
-        echo -e "   ${C_CHOICE}[4]${C_RESET} 🛡️  Preset: TDZ TUNNEL Manager   ${C_DIM}(rainbow name)${C_RESET}"
-        echo -e "   ${C_CHOICE}[5]${C_RESET} 📝 Edit raw headers file        ${C_DIM}(nano/vi)${C_RESET}"
-        echo -e "   ${C_CHOICE}[6]${C_RESET} 🧪 Test Live Response           ${C_DIM}(send real payload)${C_RESET}"
-        echo -e "   ${C_CHOICE}[7]${C_RESET} 🗑️  Clear Branding              ${C_DIM}(restore default)${C_RESET}"
-        echo -e "   ${C_WARN}[0]${C_RESET} ↩️  Return to Main Menu"
-        echo
-        if ! read -r -p "$(echo -e ${C_PROMPT}"👉 Select: "${C_RESET})" choice; then
-            echo; return
-        fi
-        case "$choice" in
-            1) customizer_101_quick_set ;;
-            2) customizer_101_preset "VPS BY @TuhinBroh" ;;
-            3) customizer_101_preset "Premium SSH by Tuhin" ;;
-            4) customizer_101_preset "TDZ TUNNEL Manager" ;;
-            5) customizer_101_edit_raw ;;
-            6) branding_test_response ;;
-            7) customizer_101_clear ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
-customizer_101_quick_set() {
-    echo -e "\n  ${C_CYAN}Enter the small name you want shown in the 101 response.${C_RESET}"
-    echo -e "  ${C_DIM}Example: ${C_YELLOW}VPS BY: @TuhinBroh${C_RESET}"
-    echo -e "  ${C_DIM}Example: ${C_YELLOW}Server-Tuhin${C_RESET}"
-    echo -e "  ${C_DIM}Example: ${C_YELLOW}My Premium VPS${C_RESET}"
-    echo
-    read -p "$(echo -e ${C_PROMPT}"👉 Your custom name: "${C_RESET})" custom_name
-    [[ -z "$custom_name" ]] && { echo -e "\n${C_RED}❌ Name cannot be empty.${C_RESET}"; press_enter; return; }
-
-    echo
-    echo -e "  ${C_BOLD}Rainbow preview:${C_RESET}"
-    echo -e "  ┌────────────────────────────────────────────────────────┐"
-    printf "  │ %-54s │\n" "$(_rainbow_text "$custom_name")"
-    echo -e "  └────────────────────────────────────────────────────────┘"
-    echo
-    read -p "$(echo -e ${C_PROMPT}"👉 Add Telegram handle? (optional, e.g. @TuhinBroh): "${C_RESET})" custom_tg
-
-    mkdir -p "$(dirname "$WS_BRANDING_FILE")"
-    cat > "$WS_BRANDING_FILE" <<EOF
-# Custom branding headers added to 101 Switching Protocols response
-# Set via TDZ TUNNEL 101 Customizer
-X-Powered-By: ${custom_name}
-X-Owner: ${custom_name}
-EOF
-    [[ -n "$custom_tg" ]] && echo "X-Telegram: ${custom_tg}" >> "$WS_BRANDING_FILE"
-
-    echo -e "\n${C_GREEN}✅ Custom name set: $(_rainbow_text "$custom_name")${C_RESET}"
-
-    # Restart bridge to pick up changes immediately
-    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        systemctl restart tdz-ws-ssh-bridge
-        echo -e "${C_DIM}WS bridge restarted to apply new branding.${C_RESET}"
-    fi
-    press_enter
-}
-
-customizer_101_preset() {
-    local preset_name="$1"
-    mkdir -p "$(dirname "$WS_BRANDING_FILE")"
-    cat > "$WS_BRANDING_FILE" <<EOF
-# Custom branding headers added to 101 Switching Protocols response
-# Preset: ${preset_name}
-X-Powered-By: ${preset_name}
-X-Owner: Tuhin
-X-Telegram: @TuhinBroh
-EOF
-    echo -e "\n${C_GREEN}✅ Preset applied: $(_rainbow_text "$preset_name")${C_RESET}"
-    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        systemctl restart tdz-ws-ssh-bridge
-        echo -e "${C_DIM}WS bridge restarted to apply new branding.${C_RESET}"
-    fi
-    press_enter
-}
-
-customizer_101_edit_raw() {
-    mkdir -p "$(dirname "$WS_BRANDING_FILE")"
-    [[ ! -f "$WS_BRANDING_FILE" ]] && echo "# Custom branding headers — one 'Header: value' per line" > "$WS_BRANDING_FILE"
-    echo -e "\n${C_CYAN}Opening editor. One 'Header: value' per line.${C_RESET}"
-    echo -e "${C_CYAN}Lines starting with '#' are ignored.${C_RESET}"
-    echo -e "${C_CYAN}Example: X-Powered-By: VPS BY @TuhinBroh${C_RESET}"
-    echo
-    sleep 1
-    if command -v nano &> /dev/null; then
-        nano "$WS_BRANDING_FILE"
-    elif command -v vim &> /dev/null; then
-        vim "$WS_BRANDING_FILE"
-    elif command -v vi &> /dev/null; then
-        vi "$WS_BRANDING_FILE"
-    else
-        echo -e "${C_RED}❌ No editor (nano/vim/vi) found.${C_RESET}"
-    fi
-    echo -e "\n${C_GREEN}✅ File saved.${C_RESET}"
-    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        systemctl restart tdz-ws-ssh-bridge
-        echo -e "${C_DIM}WS bridge restarted to apply changes.${C_RESET}"
-    fi
-    press_enter
-}
-
-customizer_101_clear() {
-    read -p "$(echo -e ${C_WARN}"👉 Remove all custom branding? (y/n): "${C_RESET})" confirm
-    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { echo -e "${C_YELLOW}Cancelled.${C_RESET}"; press_enter; return; }
-    rm -f "$WS_BRANDING_FILE"
-    echo -e "\n${C_GREEN}✅ Branding cleared. Default 101 response restored.${C_RESET}"
-    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        systemctl restart tdz-ws-ssh-bridge
-    fi
-    press_enter
-}
-
 write_internal_nginx_config() {
     local server_name="$1"
     [[ -z "$server_name" ]] && server_name="_"
@@ -4490,6 +4452,7 @@ count_managed_online_sessions() {
 invalidate_banner_cache() {
     BANNER_CACHE_TS=0
     SSH_SESSION_CACHE_TS=0
+    DASH_CACHE_TS=0
 }
 
 refresh_banner_cache() {
@@ -4514,24 +4477,103 @@ refresh_banner_cache() {
     BANNER_CACHE_TS=$now
 }
 
+# ── Refresh dashboard info cache (location/ISP/IP/domain/perf) ──────────────
+# Uses ip-api.com (free, no key, 45 req/min) with a 5-minute cache.
+refresh_dashboard_cache() {
+    local now
+    now=$(date +%s)
+    if (( DASH_CACHE_TS > 0 && now - DASH_CACHE_TS < DASH_CACHE_TTL )); then
+        return
+    fi
+
+    # OS + uptime (local, fast)
+    DASH_CACHE_OS_NAME=$(grep -oP 'PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null | cut -c1-28 || echo "Linux")
+    DASH_CACHE_UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' | cut -c1-20 || echo "unknown")
+
+    # CPU load (1-min avg)
+    DASH_CACHE_CPU_LOAD=$(awk '{printf "%.2f", $1}' /proc/loadavg 2>/dev/null || echo "0.00")
+
+    # RAM
+    local ram_pct ram_used
+    ram_pct=$(free | awk '/^Mem:/{if($2>0){printf "%.0f", $3*100/$2}else{print "0"}}')
+    ram_used=$(free -h | awk '/^Mem:/{print $3 " / " $2}' 2>/dev/null)
+    [[ -z "$ram_pct" ]] && ram_pct="0"
+    [[ -z "$ram_used" ]] && ram_used="0 / 0"
+    DASH_CACHE_RAM_PCT="$ram_pct"
+    DASH_CACHE_RAM_USED="$ram_used"
+
+    # Disk
+    DASH_CACHE_DISK_PCT=$(df / 2>/dev/null | awk 'NR==2{gsub(/%/,""); print $5}' || echo "0")
+
+    # User counts
+    if [[ -s "$DB_FILE" ]]; then
+        DASH_CACHE_TOTAL_USERS=$(grep -c . "$DB_FILE")
+    else
+        DASH_CACHE_TOTAL_USERS=0
+    fi
+    DASH_CACHE_ONLINE_USERS=$(count_managed_online_sessions)
+
+    # Custom domain (from edge_cert.conf, set by Domain & SSL menu)
+    local domain=""
+    if [[ -f "$EDGE_CERT_INFO_FILE" ]]; then
+        domain=$(grep -E '^EDGE_DOMAIN=' "$EDGE_CERT_INFO_FILE" 2>/dev/null | head -1 | sed -E 's/^EDGE_DOMAIN=//; s/^"//; s/"$//')
+    fi
+    [[ -z "$domain" ]] && domain="None"
+    DASH_CACHE_DOMAIN="$domain"
+
+    # Location / ISP / Public IP — fetch from ip-api.com (line mode, 4 fields)
+    # Fallback to ifconfig.me for IP only if ip-api fails
+    local api_data
+    api_data=$(curl -s --max-time 4 "http://ip-api.com/line/?fields=country,city,isp,query" 2>/dev/null)
+    if [[ -n "$api_data" && $(echo "$api_data" | wc -l) -ge 4 ]]; then
+        local country city isp pubip
+        country=$(echo "$api_data" | sed -n '1p')
+        city=$(echo "$api_data" | sed -n '2p')
+        isp=$(echo "$api_data" | sed -n '3p' | cut -c1-28)
+        pubip=$(echo "$api_data" | sed -n '4p')
+        [[ -n "$country" && -n "$city" ]] && DASH_CACHE_LOCATION="${country}, ${city}"
+        [[ -n "$isp" ]] && DASH_CACHE_ISP="$isp"
+        [[ -n "$pubip" ]] && DASH_CACHE_PUBLIC_IP="$pubip"
+    else
+        # Fallback: just get public IP
+        local pubip
+        pubip=$(curl -4 -s --max-time 4 ifconfig.me 2>/dev/null || echo "N/A")
+        DASH_CACHE_PUBLIC_IP="$pubip"
+    fi
+
+    DASH_CACHE_TS=$now
+}
+
 show_banner() {
     refresh_banner_cache
+    refresh_dashboard_cache
     [[ -t 1 ]] && clear
     echo
-    # Rainbow title — each character cycles through the rainbow palette
-    local rainbow_title
-    rainbow_title=$(_rainbow_text "TDZ TUNNEL MANAGER")
-    echo -e "   ${rainbow_title}"
-    echo -e "   ${C_DIM}v4.5.0 Premium Edition  |  Powered by Tuhin${C_RESET}"
-    echo -e "   ${C_BLUE}----------------------------------------------------------${C_RESET}"
-    # Truncate OS name to fit (max 22 chars)
-    local os_short="${BANNER_CACHE_OS_NAME:0:22}"
-    # Truncate uptime to fit (max 26 chars)
-    local up_short="${BANNER_CACHE_UP_TIME:0:26}"
-    printf "   ${C_GRAY}%-9s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}|${C_RESET} ${C_GRAY}Up:${C_RESET} ${C_GREEN}%-26s${C_RESET}\n" "OS" "$os_short" "$up_short"
-    printf "   ${C_GRAY}%-9s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}|${C_RESET} ${C_GRAY}Sess:${C_RESET} ${C_BLUE}%-4s${C_RESET} ${C_GRAY}Load:${C_RESET} ${C_GREEN}%s${C_RESET}\n" "Memory" "${BANNER_CACHE_RAM_USAGE}% Used" "$BANNER_CACHE_ONLINE_USERS" "$BANNER_CACHE_CPU_LOAD"
-    printf "   ${C_GRAY}%-9s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}|${C_RESET} ${C_GRAY}Users:${C_RESET} ${C_BLUE}%-4s${C_RESET}\n" "Accts" "$BANNER_CACHE_TOTAL_USERS"
-    echo -e "   ${C_BLUE}----------------------------------------------------------${C_RESET}"
+    # Top double-border header bar (60 chars wide inside borders)
+    echo -e "  ${C_CYAN}╔══════════════════════════════════════════════════════════╗${C_RESET}"
+    # Title line — centered, exactly 60 visible chars
+    local title_content="${C_BOLD}${C_CYAN}TDZ TUNNEL MANAGER${C_RESET}  ${C_DIM}v4.5.0 Premium${C_RESET}"
+    local title_clean="TDZ TUNNEL MANAGER  v4.5.0 Premium"
+    local title_pad=$(( (60 - ${#title_clean}) / 2 ))
+    [[ $title_pad -lt 0 ]] && title_pad=0
+    local title_lpad="" title_rpad=""
+    [[ $title_pad -gt 0 ]] && printf -v title_lpad "%${title_pad}s" ""
+    local title_rpad_len=$(( 60 - ${#title_clean} - title_pad ))
+    [[ $title_rpad_len -lt 0 ]] && title_rpad_len=0
+    [[ $title_rpad_len -gt 0 ]] && printf -v title_rpad "%${title_rpad_len}s" ""
+    printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$title_lpad" "$title_content" "$title_rpad"
+    # Subtitle line — centered, exactly 60 visible chars
+    local sub_content="${C_GRAY}Powered by Tuhin  •  @TuhinBroh${C_RESET}"
+    local sub_clean="Powered by Tuhin  •  @TuhinBroh"
+    local sub_pad=$(( (60 - ${#sub_clean}) / 2 ))
+    [[ $sub_pad -lt 0 ]] && sub_pad=0
+    local sub_lpad="" sub_rpad=""
+    [[ $sub_pad -gt 0 ]] && printf -v sub_lpad "%${sub_pad}s" ""
+    local sub_rpad_len=$(( 60 - ${#sub_clean} - sub_pad ))
+    [[ $sub_rpad_len -lt 0 ]] && sub_rpad_len=0
+    [[ $sub_rpad_len -gt 0 ]] && printf -v sub_rpad "%${sub_rpad_len}s" ""
+    printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$sub_lpad" "$sub_content" "$sub_rpad"
+    echo -e "  ${C_CYAN}╚══════════════════════════════════════════════════════════╝${C_RESET}"
 }
 
 protocol_menu() {
@@ -5316,55 +5358,77 @@ main_menu() {
     while true; do
         export UNINSTALL_MODE="interactive"
         show_banner
-        
-        echo
-        # Status pills
-        local haprx_state="${C_STATUS_I}●${C_RESET}"
+
+        # ── Service status pills ────────────────────────────────────────
+        local haprx_state="${C_STATUS_I}○${C_RESET}"
         systemctl is-active --quiet haproxy && haprx_state="${C_STATUS_A}●${C_RESET}"
-        local nginx_state="${C_STATUS_I}●${C_RESET}"
+        local nginx_state="${C_STATUS_I}○${C_RESET}"
         systemctl is-active --quiet nginx && nginx_state="${C_STATUS_A}●${C_RESET}"
-        local ws_state="${C_STATUS_I}●${C_RESET}"
+        local ws_state="${C_STATUS_I}○${C_RESET}"
         systemctl is-active --quiet tdz-ws-ssh-bridge && ws_state="${C_STATUS_A}●${C_RESET}"
-        local ws_brand_state="${C_STATUS_I}(none)${C_RESET}"
-        [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]] && ws_brand_state="${C_STATUS_A}(set)${C_RESET}"
-        printf "   ${C_GRAY}Edge:${C_RESET} ${haprx_state} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}  ${C_GRAY}|${C_RESET}  ${nginx_state} Nginx ${NGINX_INTERNAL_TLS_PORT}  ${C_GRAY}|${C_RESET}  ${ws_state} WS-Bridge  ${C_GRAY}|${C_RESET}  Brand: ${ws_brand_state}\n"
-        echo
 
-        echo -e "   ${C_TITLE}┌────────────────────────────────────────────────────────┐${C_RESET}"
-        echo -e "   ${C_TITLE}│${C_RESET}          ${C_BOLD}👤  USER  MANAGEMENT${C_RESET}                       ${C_TITLE}│${C_RESET}"
-        echo -e "   ${C_TITLE}├────────────────────────────────────────────────────────┤${C_RESET}"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 1]${C_RESET} ✨ Create User        ${C_CHOICE}[ 7]${C_RESET} 📋 List Users       ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 2]${C_RESET} 🗑️  Delete User       ${C_CHOICE}[ 8]${C_RESET} 📱 Client Config     ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 3]${C_RESET} 🔄 Renew Account     ${C_CHOICE}[ 9]${C_RESET} ⏱️  Trial Account     ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 4]${C_RESET} 🔒 Lock User         ${C_CHOICE}[10]${C_RESET} 📊 Bandwidth Usage   ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 5]${C_RESET} 🔓 Unlock Account    ${C_CHOICE}[11]${C_RESET} 👥 Bulk Create       ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 6]${C_RESET} ✏️  Edit Details      ${C_DIM}                            ${C_TITLE}│${C_RESET}\n"
-        echo -e "   ${C_TITLE}└────────────────────────────────────────────────────────┘${C_RESET}"
-
+        # ── SERVER PROFILE box ─────────────────────────────────────────
         echo
-        echo -e "   ${C_TITLE}┌────────────────────────────────────────────────────────┐${C_RESET}"
-        echo -e "   ${C_TITLE}│${C_RESET}          ${C_BOLD}🌐  VPN  &  PROTOCOLS${C_RESET}                         ${C_TITLE}│${C_RESET}"
-        echo -e "   ${C_TITLE}├────────────────────────────────────────────────────────┤${C_RESET}"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[12]${C_RESET} 🔌 Protocol Manager   ${C_CHOICE}[14]${C_RESET} 🚫 Block Torrent     ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[13]${C_RESET} 📈 Traffic Monitor    ${C_DIM}                            ${C_TITLE}│${C_RESET}\n"
-        echo -e "   ${C_TITLE}└────────────────────────────────────────────────────────┘${C_RESET}"
+        tdz_box_top
+        tdz_box_header "SERVER PROFILE"
+        tdz_box_divider
+        tdz_kv2 "LOCATION" "${DASH_CACHE_LOCATION:0:24}" "ISP" "${DASH_CACHE_ISP:0:24}"
+        tdz_kv2 "PUBLIC IP" "${DASH_CACHE_PUBLIC_IP:0:24}" "DOMAIN" "${DASH_CACHE_DOMAIN:0:24}"
+        tdz_box_divider
+        tdz_kv2 "SYSTEM" "${DASH_CACHE_OS_NAME:0:24}" "UPTIME" "${DASH_CACHE_UPTIME:0:24}"
+        tdz_kv2 "CPU LOAD" "${DASH_CACHE_CPU_LOAD}" "MEMORY" "${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED})"
+        tdz_kv2 "ACCOUNTS" "${DASH_CACHE_TOTAL_USERS}" "ONLINE" "${DASH_CACHE_ONLINE_USERS}"
+        tdz_box_bot
 
+        # ── SERVICE STATUS box ─────────────────────────────────────────
         echo
-        echo -e "   ${C_TITLE}┌────────────────────────────────────────────────────────┐${C_RESET}"
-        echo -e "   ${C_TITLE}│${C_RESET}          ${C_BOLD}⚙️   SYSTEM  &  BRANDING${C_RESET}                     ${C_TITLE}│${C_RESET}"
-        echo -e "   ${C_TITLE}├────────────────────────────────────────────────────────┤${C_RESET}"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[15]${C_RESET} 🌐 Domain & SSL Cert  ${C_CHOICE}[19]${C_RESET} 📥 Restore Data      ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[16]${C_RESET} 🎨 SSH Banner         ${C_CHOICE}[20]${C_RESET} 🧹 Cleanup Expired   ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[17]${C_RESET} 🔄 Auto-Reboot Task   ${C_CHOICE}[21]${C_RESET} 🎨 Branding & Custom  ${C_TITLE}│${C_RESET}\n"
-        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[18]${C_RESET} 💾 Backup Data        ${C_CHOICE}[22]${C_RESET} 🌈 101 Customizer     ${C_TITLE}│${C_RESET}\n"
-        echo -e "   ${C_TITLE}└────────────────────────────────────────────────────────┘${C_RESET}"
+        tdz_box_top
+        tdz_box_header "SERVICE STATUS"
+        tdz_box_divider
+        tdz_row "${haprx_state} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}   ${nginx_state} Nginx ${NGINX_INTERNAL_TLS_PORT}   ${ws_state} WS-Bridge ${WS_SSH_BRIDGE_PORT}"
+        tdz_box_bot
 
+        # ── USER MANAGEMENT box ────────────────────────────────────────
         echo
-        echo -e "   ${C_DANGER}┌────────────────────────────────────────────────────────┐${C_RESET}"
-        echo -e "   ${C_DANGER}│${C_RESET}              ${C_BOLD}🔥  DANGER  ZONE${C_RESET}                             ${C_DANGER}│${C_RESET}"
-        echo -e "   ${C_DANGER}├────────────────────────────────────────────────────────┤${C_RESET}"
-        printf "   ${C_DANGER}│${C_RESET} ${C_DANGER}[99]${C_RESET} Uninstall Script      ${C_WARN}[ 0]${C_RESET} Exit                  ${C_DANGER}│${C_RESET}\n"
-        echo -e "   ${C_DANGER}└────────────────────────────────────────────────────────┘${C_RESET}"
+        tdz_box_top
+        tdz_box_header "USER MANAGEMENT"
+        tdz_box_divider
+        tdz_menu2 "[ 1]" "Create User" "[ 7]" "List Users"
+        tdz_menu2 "[ 2]" "Delete User" "[ 8]" "Client Config"
+        tdz_menu2 "[ 3]" "Renew Account" "[ 9]" "Trial Account"
+        tdz_menu2 "[ 4]" "Lock User" "[10]" "Bandwidth Usage"
+        tdz_menu2 "[ 5]" "Unlock Account" "[11]" "Bulk Create"
+        tdz_menu1 "[ 6]" "Edit Details"
+        tdz_box_bot
+
+        # ── VPN & PROTOCOLS box ────────────────────────────────────────
+        echo
+        tdz_box_top
+        tdz_box_header "VPN & PROTOCOLS"
+        tdz_box_divider
+        tdz_menu2 "[12]" "Protocol Manager" "[14]" "Block Torrent"
+        tdz_menu1 "[13]" "Traffic Monitor"
+        tdz_box_bot
+
+        # ── SYSTEM & BRANDING box ──────────────────────────────────────
+        echo
+        tdz_box_top
+        tdz_box_header "SYSTEM & BRANDING"
+        tdz_box_divider
+        tdz_menu2 "[15]" "Domain & SSL Cert" "[19]" "Restore Data"
+        tdz_menu2 "[16]" "SSH Banner" "[20]" "Cleanup Expired"
+        tdz_menu2 "[17]" "Auto-Reboot Task" "[21]" "Branding & Custom"
+        tdz_menu1 "[18]" "Backup Data"
+        tdz_box_bot
+
+        # ── DANGER ZONE box (red) ──────────────────────────────────────
+        echo
+        tdz_box_top "$C_DANGER"
+        tdz_box_header "DANGER ZONE" "$C_DANGER"
+        tdz_box_divider "$C_DANGER"
+        tdz_menu2 "[99]" "Uninstall Script" "[ 0]" "Exit" "$C_DANGER"
+        tdz_box_bot "$C_DANGER"
+
         echo
         if ! read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice; then
             echo
@@ -5394,7 +5458,6 @@ main_menu() {
             19) restore_user_data; press_enter ;;
             20) cleanup_expired; press_enter ;;
             21) branding_menu ;;
-            22) customizer_101_menu ;;
 
             99) uninstall_script ;;
             0) exit 0 ;;
