@@ -40,10 +40,10 @@ SSL_CERT_CHAIN_FILE="$SSL_CERT_DIR/tdztunnel.crt"
 SSL_CERT_KEY_FILE="$SSL_CERT_DIR/tdztunnel.key"
 EDGE_CERT_INFO_FILE="$DB_DIR/edge_cert.conf"
 NGINX_PORTS_FILE="$DB_DIR/nginx_ports.conf"
-EDGE_PUBLIC_HTTP_PORT="2086"
-EDGE_PUBLIC_TLS_PORT="443"
+EDGE_PUBLIC_HTTP_PORT="2080"
+EDGE_PUBLIC_TLS_PORT="442"
 NGINX_INTERNAL_HTTP_PORT="8880"
-NGINX_INTERNAL_TLS_PORT="8443"
+NGINX_INTERNAL_TLS_PORT="8442"
 HAPROXY_INTERNAL_DECRYPT_PORT="10443"
 # WebSocket-to-SSH bridge (DarkTunnel / HTTP Custom / NPV payload support)
 WS_SSH_BRIDGE_SCRIPT="/usr/local/bin/tdz-ws-ssh-bridge.py"
@@ -1009,7 +1009,7 @@ domain_cert_menu() {
         1)
             local domain_name email
             echo -e "\n${C_BLUE}ℹ️ Before continuing, make sure your domain's A record points to this server's IP.${C_RESET}"
-            echo -e "${C_BLUE}ℹ️ Also make sure port 2086 is open (certbot needs port 80, but if you've changed defaults make sure port 80 is reachable for certbot validation).${C_RESET}"
+            echo -e "${C_BLUE}ℹ️ Also make sure port 80 is open (certbot needs port 80 for Let's Encrypt validation).${C_RESET}"
             echo
             read -p "👉 Enter your domain (e.g. vpn.example.com): " domain_name
             if [[ -z "$domain_name" ]]; then
@@ -2423,7 +2423,7 @@ select_edge_certificate() {
 # ============================================================================
 # WebSocket-to-SSH Bridge — accepts DarkTunnel-style WS upgrade payloads
 # (GET wss://[cf] HTTP/1.1 ... Upgrade: websocket) and bridges raw TCP to SSH.
-# Replaces nginx_cleartext for port 2086 because nginx returns 400 Bad Request
+# Replaces nginx_cleartext for port 2080 because nginx returns 400 Bad Request
 # on the non-standard wss:// absolute-URI form.
 # ============================================================================
 write_ws_ssh_bridge_script() {
@@ -2661,7 +2661,7 @@ branding_set_ws_headers() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- 🎨 Custom WS 101 Response Headers ---${C_RESET}"
     echo -e "\n${C_CYAN}Customize the HTTP headers sent with the '101 Switching Protocols' response${C_RESET}"
-    echo -e "${C_DIM}that DarkTunnel / HTTP Custom / NPV see when they connect to port 2086.${C_RESET}"
+    echo -e "${C_DIM}that DarkTunnel / HTTP Custom / NPV see when they connect to port 2080.${C_RESET}"
     echo -e "${C_DIM}File: ${WS_BRANDING_FILE}${C_RESET}"
     echo -e "${C_DIM}Format: one 'Header-Name: value' per line. Lines starting with '#' are ignored.${C_RESET}"
 
@@ -2983,6 +2983,171 @@ branding_menu() {
     done
 }
 
+# ============================================================================
+# 101 CUSTOMIZER — dedicated menu for customizing the 101 Switching Protocols
+# response. Lets the user set a small custom name (e.g. "VPS BY: @TuhinBroh")
+# as an X-Powered-By header. Shows a rainbow-color preview of the custom name.
+# ============================================================================
+customizer_101_menu() {
+    while true; do
+        clear; show_banner
+        echo -e "${C_BOLD}${C_PURPLE}════════════ 🌈 101 SWITCHING PROTOCOLS CUSTOMIZER ════════════${C_RESET}"
+        echo
+        echo -e "  ${C_DIM}Customize the HTTP response sent to DarkTunnel / HTTP Custom / NPV${C_RESET}"
+        echo -e "  ${C_DIM}clients when they send a WS upgrade request on port ${EDGE_PUBLIC_HTTP_PORT}.${C_RESET}"
+        echo -e "  ${C_DIM}File: ${C_YELLOW}${WS_BRANDING_FILE}${C_RESET}"
+        echo
+
+        # Show current branding with rainbow preview
+        if [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]]; then
+            echo -e "  ${C_BOLD}${C_GREEN}Current Branding:${C_RESET}"
+            local current_name
+            current_name=$(grep -E '^X-Powered-By:' "$WS_BRANDING_FILE" 2>/dev/null | head -1 | sed 's/^X-Powered-By:[[:space:]]*//')
+            if [[ -n "$current_name" ]]; then
+                echo -e "  ${C_DIM}Name:${C_RESET}  $(_rainbow_text "$current_name")"
+            fi
+            echo -e "  ${C_DIM}Raw headers:${C_RESET}"
+            while IFS= read -r line; do
+                [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+                echo -e "    ${C_CYAN}${line}${C_RESET}"
+            done < "$WS_BRANDING_FILE"
+        else
+            echo -e "  ${C_YELLOW}ℹ️ No custom branding set. Default 101 response is in use.${C_RESET}"
+        fi
+        echo
+
+        # Live preview box
+        echo -e "  ${C_TITLE}┌── Live Preview (101 Response) ──────────────────────────┐${C_RESET}"
+        echo -e "  ${C_TITLE}│${C_RESET}  ${C_GREEN}HTTP/1.1 101 Switching Protocols${C_RESET}              ${C_TITLE}│${C_RESET}"
+        echo -e "  ${C_TITLE}│${C_RESET}  ${C_GREEN}Upgrade: websocket${C_RESET}                          ${C_TITLE}│${C_RESET}"
+        echo -e "  ${C_TITLE}│${C_RESET}  ${C_GREEN}Connection: Upgrade${C_RESET}                          ${C_TITLE}│${C_RESET}"
+        if [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]]; then
+            while IFS= read -r line; do
+                [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+                local short_line="${line:0:42}"
+                printf "  ${C_TITLE}│${C_RESET}  ${C_CYAN}%-46s${C_TITLE}│${C_RESET}\n" "$short_line"
+            done < "$WS_BRANDING_FILE"
+        fi
+        echo -e "  ${C_TITLE}└──────────────────────────────────────────────────────────┘${C_RESET}"
+        echo
+
+        echo -e "  ${C_BOLD}Choose an option:${C_RESET}"
+        echo -e "   ${C_CHOICE}[1]${C_RESET} 🚀 Quick Set Custom Name        ${C_DIM}(with rainbow preview)${C_RESET}"
+        echo -e "   ${C_CHOICE}[2]${C_RESET} ✨ Preset: VPS BY @TuhinBroh    ${C_DIM}(rainbow name)${C_RESET}"
+        echo -e "   ${C_CHOICE}[3]${C_RESET} 💎 Preset: Premium SSH by Tuhin ${C_DIM}(rainbow name)${C_RESET}"
+        echo -e "   ${C_CHOICE}[4]${C_RESET} 🛡️  Preset: TDZ TUNNEL Manager   ${C_DIM}(rainbow name)${C_RESET}"
+        echo -e "   ${C_CHOICE}[5]${C_RESET} 📝 Edit raw headers file        ${C_DIM}(nano/vi)${C_RESET}"
+        echo -e "   ${C_CHOICE}[6]${C_RESET} 🧪 Test Live Response           ${C_DIM}(send real payload)${C_RESET}"
+        echo -e "   ${C_CHOICE}[7]${C_RESET} 🗑️  Clear Branding              ${C_DIM}(restore default)${C_RESET}"
+        echo -e "   ${C_WARN}[0]${C_RESET} ↩️  Return to Main Menu"
+        echo
+        if ! read -r -p "$(echo -e ${C_PROMPT}"👉 Select: "${C_RESET})" choice; then
+            echo; return
+        fi
+        case "$choice" in
+            1) customizer_101_quick_set ;;
+            2) customizer_101_preset "VPS BY @TuhinBroh" ;;
+            3) customizer_101_preset "Premium SSH by Tuhin" ;;
+            4) customizer_101_preset "TDZ TUNNEL Manager" ;;
+            5) customizer_101_edit_raw ;;
+            6) branding_test_response ;;
+            7) customizer_101_clear ;;
+            0) return ;;
+            *) invalid_option ;;
+        esac
+    done
+}
+
+customizer_101_quick_set() {
+    echo -e "\n  ${C_CYAN}Enter the small name you want shown in the 101 response.${C_RESET}"
+    echo -e "  ${C_DIM}Example: ${C_YELLOW}VPS BY: @TuhinBroh${C_RESET}"
+    echo -e "  ${C_DIM}Example: ${C_YELLOW}Server-Tuhin${C_RESET}"
+    echo -e "  ${C_DIM}Example: ${C_YELLOW}My Premium VPS${C_RESET}"
+    echo
+    read -p "$(echo -e ${C_PROMPT}"👉 Your custom name: "${C_RESET})" custom_name
+    [[ -z "$custom_name" ]] && { echo -e "\n${C_RED}❌ Name cannot be empty.${C_RESET}"; press_enter; return; }
+
+    echo
+    echo -e "  ${C_BOLD}Rainbow preview:${C_RESET}"
+    echo -e "  ┌────────────────────────────────────────────────────────┐"
+    printf "  │ %-54s │\n" "$(_rainbow_text "$custom_name")"
+    echo -e "  └────────────────────────────────────────────────────────┘"
+    echo
+    read -p "$(echo -e ${C_PROMPT}"👉 Add Telegram handle? (optional, e.g. @TuhinBroh): "${C_RESET})" custom_tg
+
+    mkdir -p "$(dirname "$WS_BRANDING_FILE")"
+    cat > "$WS_BRANDING_FILE" <<EOF
+# Custom branding headers added to 101 Switching Protocols response
+# Set via TDZ TUNNEL 101 Customizer
+X-Powered-By: ${custom_name}
+X-Owner: ${custom_name}
+EOF
+    [[ -n "$custom_tg" ]] && echo "X-Telegram: ${custom_tg}" >> "$WS_BRANDING_FILE"
+
+    echo -e "\n${C_GREEN}✅ Custom name set: $(_rainbow_text "$custom_name")${C_RESET}"
+
+    # Restart bridge to pick up changes immediately
+    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
+        systemctl restart tdz-ws-ssh-bridge
+        echo -e "${C_DIM}WS bridge restarted to apply new branding.${C_RESET}"
+    fi
+    press_enter
+}
+
+customizer_101_preset() {
+    local preset_name="$1"
+    mkdir -p "$(dirname "$WS_BRANDING_FILE")"
+    cat > "$WS_BRANDING_FILE" <<EOF
+# Custom branding headers added to 101 Switching Protocols response
+# Preset: ${preset_name}
+X-Powered-By: ${preset_name}
+X-Owner: Tuhin
+X-Telegram: @TuhinBroh
+EOF
+    echo -e "\n${C_GREEN}✅ Preset applied: $(_rainbow_text "$preset_name")${C_RESET}"
+    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
+        systemctl restart tdz-ws-ssh-bridge
+        echo -e "${C_DIM}WS bridge restarted to apply new branding.${C_RESET}"
+    fi
+    press_enter
+}
+
+customizer_101_edit_raw() {
+    mkdir -p "$(dirname "$WS_BRANDING_FILE")"
+    [[ ! -f "$WS_BRANDING_FILE" ]] && echo "# Custom branding headers — one 'Header: value' per line" > "$WS_BRANDING_FILE"
+    echo -e "\n${C_CYAN}Opening editor. One 'Header: value' per line.${C_RESET}"
+    echo -e "${C_CYAN}Lines starting with '#' are ignored.${C_RESET}"
+    echo -e "${C_CYAN}Example: X-Powered-By: VPS BY @TuhinBroh${C_RESET}"
+    echo
+    sleep 1
+    if command -v nano &> /dev/null; then
+        nano "$WS_BRANDING_FILE"
+    elif command -v vim &> /dev/null; then
+        vim "$WS_BRANDING_FILE"
+    elif command -v vi &> /dev/null; then
+        vi "$WS_BRANDING_FILE"
+    else
+        echo -e "${C_RED}❌ No editor (nano/vim/vi) found.${C_RESET}"
+    fi
+    echo -e "\n${C_GREEN}✅ File saved.${C_RESET}"
+    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
+        systemctl restart tdz-ws-ssh-bridge
+        echo -e "${C_DIM}WS bridge restarted to apply changes.${C_RESET}"
+    fi
+    press_enter
+}
+
+customizer_101_clear() {
+    read -p "$(echo -e ${C_WARN}"👉 Remove all custom branding? (y/n): "${C_RESET})" confirm
+    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { echo -e "${C_YELLOW}Cancelled.${C_RESET}"; press_enter; return; }
+    rm -f "$WS_BRANDING_FILE"
+    echo -e "\n${C_GREEN}✅ Branding cleared. Default 101 response restored.${C_RESET}"
+    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
+        systemctl restart tdz-ws-ssh-bridge
+    fi
+    press_enter
+}
+
 write_internal_nginx_config() {
     local server_name="$1"
     [[ -z "$server_name" ]] && server_name="_"
@@ -3139,7 +3304,7 @@ backend nginx_cleartext
 
 backend nginx_tls
     mode tcp
-    server nginx_8443 127.0.0.1:${NGINX_INTERNAL_TLS_PORT}
+    server nginx_8442 127.0.0.1:${NGINX_INTERNAL_TLS_PORT}
 
 backend loopback_ssl_terminator
     mode tcp
@@ -3221,7 +3386,7 @@ configure_edge_stack() {
 
 install_ssl_tunnel() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Installing HAProxy Edge Stack (2086/443 -> 8880/8443) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Installing HAProxy Edge Stack (2080/442 -> 8880/8442) ---${C_RESET}"
     echo -e "\n${C_CYAN}This installer will configure:${C_RESET}"
     echo -e "   • HAProxy on ${C_WHITE}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
     echo -e "   • Internal Nginx on ${C_WHITE}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
@@ -3921,7 +4086,7 @@ purge_nginx() {
 
 install_nginx_proxy() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Reconfiguring Internal Nginx Proxy (8880/8443) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Reconfiguring Internal Nginx Proxy (8880/8442) ---${C_RESET}"
     echo -e "\n${C_CYAN}This keeps HAProxy on ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} and rewrites the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
 
     if [ ! -s "$SSL_CERT_FILE" ] || [ ! -s "$SSL_CERT_CHAIN_FILE" ] || [ ! -s "$SSL_CERT_KEY_FILE" ]; then
@@ -4279,12 +4444,16 @@ show_banner() {
     refresh_banner_cache
     [[ -t 1 ]] && clear
     echo
-    echo -e "${C_TITLE}   TDZ Tunnel Manager ${C_RESET}${C_DIM}| v4.0.0 Premium Edition${C_RESET}"
-    echo -e "${C_BLUE}   ─────────────────────────────────────────────────────────${C_RESET}"
-    printf "   ${C_GRAY}%-10s${C_RESET} %-20s ${C_GRAY}|${C_RESET} %s\n" "OS" "$BANNER_CACHE_OS_NAME" "Uptime: $BANNER_CACHE_UP_TIME"
-    printf "   ${C_GRAY}%-10s${C_RESET} %-20s ${C_GRAY}|${C_RESET} %s\n" "Memory" "${BANNER_CACHE_RAM_USAGE}% Used" "Online Sessions: ${C_WHITE}${BANNER_CACHE_ONLINE_USERS}${C_RESET}"
-    printf "   ${C_GRAY}%-10s${C_RESET} %-20s ${C_GRAY}|${C_RESET} %s\n" "Users" "${BANNER_CACHE_TOTAL_USERS} Managed Accounts" "Sys Load (1m): ${C_GREEN}${BANNER_CACHE_CPU_LOAD}${C_RESET}"
-    echo -e "${C_BLUE}   ─────────────────────────────────────────────────────────${C_RESET}"
+    # Rainbow title — each character cycles through the rainbow palette
+    local rainbow_title
+    rainbow_title=$(_rainbow_text "╔═ TDZ TUNNEL MANAGER ═╗")
+    echo -e "   ${rainbow_title}"
+    echo -e "   ${C_DIM}v4.5.0 Premium Edition  ${C_RESET}${C_DIM}|  Powered by Tuhin${C_RESET}"
+    echo -e "   ${C_BLUE}──────────────────────────────────────────────────────────${C_RESET}"
+    printf "   ${C_GRAY}%-10s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}│${C_RESET} ${C_GRAY}Uptime:${C_RESET} ${C_GREEN}%-14s${C_RESET}\n" "OS" "$BANNER_CACHE_OS_NAME" "$BANNER_CACHE_UP_TIME"
+    printf "   ${C_GRAY}%-10s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}│${C_RESET} ${C_GRAY}Sessions:${C_RESET} ${C_BLUE}${BANNER_CACHE_ONLINE_USERS}${C_RESET}\n" "Memory" "${BANNER_CACHE_RAM_USAGE}% Used"
+    printf "   ${C_GRAY}%-10s${C_RESET} ${C_WHITE}%-22s${C_RESET} ${C_GRAY}│${C_RESET} ${C_GRAY}Sys Load:${C_RESET} ${C_GREEN}${BANNER_CACHE_CPU_LOAD}${C_RESET}\n" "Users" "${BANNER_CACHE_TOTAL_USERS} Accounts"
+    echo -e "   ${C_BLUE}──────────────────────────────────────────────────────────${C_RESET}"
 }
 
 protocol_menu() {
@@ -4294,7 +4463,7 @@ protocol_menu() {
         local udp_custom_status; if systemctl is-active --quiet udp-custom; then udp_custom_status="${C_STATUS_A}(Active)${C_RESET}"; else udp_custom_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local zivpn_status; if systemctl is-active --quiet zivpn.service; then zivpn_status="${C_STATUS_A}(Active)${C_RESET}"; else zivpn_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         
-        local ssl_tunnel_text="HAProxy Edge Stack (2086/443)"
+        local ssl_tunnel_text="HAProxy Edge Stack (2080/442)"
         local ssl_tunnel_status="${C_STATUS_I}(Inactive)${C_RESET}"
         if systemctl is-active --quiet haproxy; then
             ssl_tunnel_status="${C_STATUS_A}(Active)${C_RESET}"
@@ -4321,7 +4490,7 @@ protocol_menu() {
         printf "     ${C_CHOICE}[ 4]${C_RESET} %-45s\n" "🗑️ Uninstall HAProxy Edge Stack"
         printf "     ${C_CHOICE}[ 5]${C_RESET} %-45s %s\n" "📡 Install/View DNSTT (Port 53)" "$dnstt_status"
         printf "     ${C_CHOICE}[ 6]${C_RESET} %-45s\n" "🗑️ Uninstall DNSTT"
-        printf "     ${C_CHOICE}[ 7]${C_RESET} %-45s %s\n" "🌐 Install/Manage Internal Nginx (8880/8443)" "$nginx_status"
+        printf "     ${C_CHOICE}[ 7]${C_RESET} %-45s %s\n" "🌐 Install/Manage Internal Nginx (8880/8442)" "$nginx_status"
         printf "     ${C_CHOICE}[ 8]${C_RESET} %-45s %s\n" "🛡️ Install ZiVPN (UDP 5667)" "$zivpn_status"
         printf "     ${C_CHOICE}[ 9]${C_RESET} %-45s\n" "🗑️ Uninstall ZiVPN"
         
@@ -4707,8 +4876,8 @@ generate_client_config() {
     if systemctl is-active --quiet haproxy; then
         echo -e "\n🔹 ${C_BOLD}HAProxy Edge Stack${C_RESET}:"
         echo -e "   • Host: $host_domain"
-        echo -e "   • Port 2086: HTTP payloads / raw SSH"
-        echo -e "   • Port 443: TLS / SNI / SSL payloads"
+        echo -e "   • Port 2080: HTTP payloads / raw SSH"
+        echo -e "   • Port 442: TLS / SNI / SSL payloads"
         echo -e "   • Internal handoff: Nginx ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
         echo -e "   • SNI (BugHost): $host_domain (or your preferred SNI)"
     elif systemctl is-active --quiet nginx; then
@@ -5071,42 +5240,54 @@ main_menu() {
         show_banner
         
         echo
+        # Status pills
+        local haprx_state="${C_STATUS_I}●${C_RESET}"
+        systemctl is-active --quiet haproxy && haprx_state="${C_STATUS_A}●${C_RESET}"
+        local nginx_state="${C_STATUS_I}●${C_RESET}"
+        systemctl is-active --quiet nginx && nginx_state="${C_STATUS_A}●${C_RESET}"
+        local ws_state="${C_STATUS_I}●${C_RESET}"
+        systemctl is-active --quiet tdz-ws-ssh-bridge && ws_state="${C_STATUS_A}●${C_RESET}"
+        local ws_brand_state="${C_STATUS_I}(none)${C_RESET}"
+        [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]] && ws_brand_state="${C_STATUS_A}(set)${C_RESET}"
+        printf "   ${C_GRAY}Edge:${C_RESET} ${haprx_state} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}  ${C_GRAY}│${C_RESET}  ${nginx_state} Nginx ${NGINX_INTERNAL_TLS_PORT}  ${C_GRAY}│${C_RESET}  ${ws_state} WS-Bridge  ${C_GRAY}│${C_RESET}  Brand: ${ws_brand_state}\n"
         echo
-        echo -e "   ${C_TITLE}╔══════════════════════════════════════════════════════╗${C_RESET}"
-        echo -e "   ${C_TITLE}║${C_RESET}              ${C_BOLD}👤  USER  MANAGEMENT${C_RESET}                 ${C_TITLE}║${C_RESET}"
-        echo -e "   ${C_TITLE}╠══════════════════════════════════════════════════════╣${C_RESET}"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[ 1]${C_RESET} ✨ Create User          ${C_CHOICE}[ 2]${C_RESET} 🗑️  Delete User       ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[ 3]${C_RESET} 🔄 Renew Account        ${C_CHOICE}[ 4]${C_RESET} 🔒 Lock User         ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[ 5]${C_RESET} 🔓 Unlock Account       ${C_CHOICE}[ 6]${C_RESET} ✏️  Edit Details       ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[ 7]${C_RESET} 📋 List Users           ${C_CHOICE}[ 8]${C_RESET} 📱 Client Config     ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[ 9]${C_RESET} ⏱️  Trial Account        ${C_CHOICE}[10]${C_RESET} 📊 Bandwidth Usage   ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[11]${C_RESET} 👥 Bulk Create Users    ${C_DIM}                            ║${C_RESET}\n"
-        echo -e "   ${C_TITLE}╚══════════════════════════════════════════════════════╝${C_RESET}"
+
+        echo -e "   ${C_TITLE}┌────────────────────────────────────────────────────────┐${C_RESET}"
+        echo -e "   ${C_TITLE}│${C_RESET}          ${C_BOLD}👤  USER  MANAGEMENT${C_RESET}                       ${C_TITLE}│${C_RESET}"
+        echo -e "   ${C_TITLE}├────────────────────────────────────────────────────────┤${C_RESET}"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 1]${C_RESET} ✨ Create User        ${C_CHOICE}[ 7]${C_RESET} 📋 List Users       ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 2]${C_RESET} 🗑️  Delete User       ${C_CHOICE}[ 8]${C_RESET} 📱 Client Config     ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 3]${C_RESET} 🔄 Renew Account     ${C_CHOICE}[ 9]${C_RESET} ⏱️  Trial Account     ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 4]${C_RESET} 🔒 Lock User         ${C_CHOICE}[10]${C_RESET} 📊 Bandwidth Usage   ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 5]${C_RESET} 🔓 Unlock Account    ${C_CHOICE}[11]${C_RESET} 👥 Bulk Create       ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[ 6]${C_RESET} ✏️  Edit Details      ${C_DIM}                            ${C_TITLE}│${C_RESET}\n"
+        echo -e "   ${C_TITLE}└────────────────────────────────────────────────────────┘${C_RESET}"
 
         echo
-        echo -e "   ${C_TITLE}╔══════════════════════════════════════════════════════╗${C_RESET}"
-        echo -e "   ${C_TITLE}║${C_RESET}         ${C_BOLD}🌐  VPN  &  PROTOCOLS${C_RESET}                    ${C_TITLE}║${C_RESET}"
-        echo -e "   ${C_TITLE}╠══════════════════════════════════════════════════════╣${C_RESET}"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[12]${C_RESET} 🔌 Protocol Manager     ${C_CHOICE}[13]${C_RESET} 📈 Traffic Monitor   ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[14]${C_RESET} 🚫 Block Torrent        ${C_DIM}                            ║${C_RESET}\n"
-        echo -e "   ${C_TITLE}╚══════════════════════════════════════════════════════╝${C_RESET}"
+        echo -e "   ${C_TITLE}┌────────────────────────────────────────────────────────┐${C_RESET}"
+        echo -e "   ${C_TITLE}│${C_RESET}          ${C_BOLD}🌐  VPN  &  PROTOCOLS${C_RESET}                         ${C_TITLE}│${C_RESET}"
+        echo -e "   ${C_TITLE}├────────────────────────────────────────────────────────┤${C_RESET}"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[12]${C_RESET} 🔌 Protocol Manager   ${C_CHOICE}[14]${C_RESET} 🚫 Block Torrent     ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[13]${C_RESET} 📈 Traffic Monitor    ${C_DIM}                            ${C_TITLE}│${C_RESET}\n"
+        echo -e "   ${C_TITLE}└────────────────────────────────────────────────────────┘${C_RESET}"
 
         echo
-        echo -e "   ${C_TITLE}╔══════════════════════════════════════════════════════╗${C_RESET}"
-        echo -e "   ${C_TITLE}║${C_RESET}         ${C_BOLD}⚙️   SYSTEM  SETTINGS${C_RESET}                     ${C_TITLE}║${C_RESET}"
-        echo -e "   ${C_TITLE}╠══════════════════════════════════════════════════════╣${C_RESET}"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[15]${C_RESET} 🌐 Domain & SSL Cert    ${C_CHOICE}[16]${C_RESET} 🎨 SSH Banner        ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[17]${C_RESET} 🔄 Auto-Reboot Task     ${C_CHOICE}[18]${C_RESET} 💾 Backup Data       ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[19]${C_RESET} 📥 Restore Data         ${C_CHOICE}[20]${C_RESET} 🧹 Cleanup Expired   ${C_TITLE}║${C_RESET}\n"
-        printf "   ${C_TITLE}║${C_RESET} ${C_CHOICE}[21]${C_RESET} 🎨 Branding & Custom    ${C_DIM}                            ║${C_RESET}\n"
-        echo -e "   ${C_TITLE}╚══════════════════════════════════════════════════════╝${C_RESET}"
+        echo -e "   ${C_TITLE}┌────────────────────────────────────────────────────────┐${C_RESET}"
+        echo -e "   ${C_TITLE}│${C_RESET}          ${C_BOLD}⚙️   SYSTEM  &  BRANDING${C_RESET}                     ${C_TITLE}│${C_RESET}"
+        echo -e "   ${C_TITLE}├────────────────────────────────────────────────────────┤${C_RESET}"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[15]${C_RESET} 🌐 Domain & SSL Cert  ${C_CHOICE}[19]${C_RESET} 📥 Restore Data      ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[16]${C_RESET} 🎨 SSH Banner         ${C_CHOICE}[20]${C_RESET} 🧹 Cleanup Expired   ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[17]${C_RESET} 🔄 Auto-Reboot Task   ${C_CHOICE}[21]${C_RESET} 🎨 Branding & Custom  ${C_TITLE}│${C_RESET}\n"
+        printf "   ${C_TITLE}│${C_RESET} ${C_CHOICE}[18]${C_RESET} 💾 Backup Data        ${C_CHOICE}[22]${C_RESET} 🌈 101 Customizer     ${C_TITLE}│${C_RESET}\n"
+        echo -e "   ${C_TITLE}└────────────────────────────────────────────────────────┘${C_RESET}"
 
         echo
-        echo -e "   ${C_DANGER}╔══════════════════════════════════════════════════════╗${C_RESET}"
-        echo -e "   ${C_DANGER}║${C_RESET}              ${C_BOLD}🔥  DANGER  ZONE${C_RESET}                         ${C_DANGER}║${C_RESET}"
-        echo -e "   ${C_DANGER}╠══════════════════════════════════════════════════════╣${C_RESET}"
-        printf "   ${C_DANGER}║${C_RESET} ${C_DANGER}[99]${C_RESET} Uninstall Script        ${C_WARN}[ 0]${C_RESET} Exit                ${C_DANGER}║${C_RESET}\n"
-        echo -e "   ${C_DANGER}╚══════════════════════════════════════════════════════╝${C_RESET}"        echo
+        echo -e "   ${C_DANGER}┌────────────────────────────────────────────────────────┐${C_RESET}"
+        echo -e "   ${C_DANGER}│${C_RESET}              ${C_BOLD}🔥  DANGER  ZONE${C_RESET}                             ${C_DANGER}│${C_RESET}"
+        echo -e "   ${C_DANGER}├────────────────────────────────────────────────────────┤${C_RESET}"
+        printf "   ${C_DANGER}│${C_RESET} ${C_DANGER}[99]${C_RESET} Uninstall Script      ${C_WARN}[ 0]${C_RESET} Exit                  ${C_DANGER}│${C_RESET}\n"
+        echo -e "   ${C_DANGER}└────────────────────────────────────────────────────────┘${C_RESET}"
+        echo
         if ! read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice; then
             echo
             exit 0
@@ -5135,6 +5316,7 @@ main_menu() {
             19) restore_user_data; press_enter ;;
             20) cleanup_expired; press_enter ;;
             21) branding_menu ;;
+            22) customizer_101_menu ;;
 
             99) uninstall_script ;;
             0) exit 0 ;;
