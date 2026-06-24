@@ -3,6 +3,9 @@
 This guide walks you through pushing the rebranded **TDZ TUNNEL Manager** to your
 own GitHub account at `github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT`.
 
+> **⚡ Fast path:** Skip to **Step 3** and run `bash push_to_github.sh` —
+> the included helper does everything for you in one command.
+
 ---
 
 ## Step 0 — Prerequisites
@@ -84,6 +87,30 @@ Files:
 ---
 
 ## Step 3 — Add the remote and push
+
+### Option 0 — Fast path (one command, recommended)
+
+A helper script is included that does everything for you:
+
+```bash
+cd /home/z/my-project/download/TDZ-SSH-SCRIPT
+bash push_to_github.sh
+```
+
+When prompted:
+- **Username:** `yeasinulhoquetuhin`
+- **Password:** paste your **Personal Access Token** (NOT your GitHub password)
+
+The script will:
+1. Add the remote
+2. Configure credential storage (so you only paste the token once)
+3. Push the `main` branch
+4. Verify the `install.sh` raw URL is publicly reachable
+
+If you don't have a PAT yet, create one at:
+<https://github.com/settings/tokens/new?scopes=repo>
+
+---
 
 ### Option A — SSH (recommended if you set up an SSH key)
 
