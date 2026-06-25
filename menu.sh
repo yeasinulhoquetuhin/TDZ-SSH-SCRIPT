@@ -5306,14 +5306,12 @@ main_menu() {
         #   OS  | UPTIME
         #   CPU | RAM       (both shown as % like RAM)
         #   ACCT | ONLINE
-        local _cpu_core_word="core"
-        (( DASH_CACHE_CPU_CORES > 1 )) && _cpu_core_word="cores"
         # CPU usage as a real percentage (0..100, top-style). Computed from
         # /proc/stat jiffy deltas — never exceeds 100% regardless of load average.
-        # Previous formula (load_avg / cores * 100) could show 300% on a 1-core VPS.
+        # Display ONLY the percentage — no load average / core count, per user request.
         local _cpu_pct
         _cpu_pct=$(compute_cpu_pct)
-        local _cpu_val="${_cpu_pct}% (${DASH_CACHE_CPU_LOAD} load, ${DASH_CACHE_CPU_CORES} ${_cpu_core_word})"
+        local _cpu_val="${_cpu_pct}%"
         local _ram_val="${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED})"
         echo
         tdz_box_top
