@@ -101,6 +101,7 @@ DASH_CACHE_OS_NAME="Linux"
 DASH_CACHE_UPTIME="unknown"
 DASH_CACHE_CPU_LOAD="0.00"
 DASH_CACHE_CPU_CORES=1
+DASH_CACHE_CPU_PCT="0"
 DASH_CPU_PREV_IDLE=0
 DASH_CPU_PREV_TOTAL=0
 DASH_CACHE_RAM_PCT="0"
@@ -110,6 +111,44 @@ DASH_CACHE_TOTAL_USERS=0
 DASH_CACHE_ONLINE_USERS=0
 SSH_SESSION_CACHE_TTL=10
 SSH_SESSION_CACHE_TS=0
+
+# CPU percentage computed from /proc/stat deltas (top-style).
+# Returns an integer 0..100 — never exceeds 100% regardless of load average.
+# Self-contained, no side effects beyond updating the prev-sample state vars.
+compute_cpu_pct() {
+    local line cpu user nice system idle iowait irq softirq steal total non_idle
+    local prev_idle prev_total diff_total diff_idle pct
+
+    line=$(head -n1 /proc/stat 2>/dev/null)
+    [[ -z "$line" ]] && { echo 0; return; }
+
+    read -r cpu user nice system idle iowait irq softirq steal _rest <<< "$line"
+    user=${user:-0}; nice=${nice:-0}; system=${system:-0}; idle=${idle:-0}
+    iowait=${iowait:-0}; irq=${irq:-0}; softirq=${softirq:-0}; steal=${steal:-0}
+
+    total=$(( idle + iowait + user + nice + system + irq + softirq + steal ))
+
+    prev_idle=$DASH_CPU_PREV_IDLE
+    prev_total=$DASH_CPU_PREV_TOTAL
+    DASH_CPU_PREV_IDLE=$idle
+    DASH_CPU_PREV_TOTAL=$total
+
+    if (( prev_total == 0 )); then
+        echo 0
+        return
+    fi
+
+    diff_total=$(( total - prev_total ))
+    diff_idle=$(( idle - prev_idle ))
+    if (( diff_total <= 0 )); then
+        echo 0
+        return
+    fi
+    pct=$(( (diff_total - diff_idle) * 100 / diff_total ))
+    (( pct < 0 )) && pct=0
+    (( pct > 100 )) && pct=100
+    echo "$pct"
+}
 
 # ── TDZ Dashboard Box-Layout Helpers (width 60) ─────────────────────────────
 TDZ_BOX_WIDTH=64
@@ -515,96 +554,6 @@ ensure_tdztunnel_dirs() {
     touch "$DB_FILE"
 }
 
-# Hardened sshd settings that complement the WS-bridge keepalive options.
-# Without ClientAliveInterval, sshd never probes idle sessions and depends
-# entirely on TCP keepalive (which we now enable on the bridge). Adding
-# these gives sshd its own way to detect dead peers and reap them.
-# UseDNS=no also speeds up login (no reverse DNS lookup) which helps with
-# the "first connection feels slow" symptom on mobile networks.
-harden_sshd_for_tunnel_stability() {
-    local conf="/etc/ssh/sshd_config.d/tdztunnel-stability.conf"
-    local need_reload=false
-
-    mkdir -p /etc/ssh/sshd_config.d
-
-    # Ensure main sshd_config includes the drop-in directory
-    if ! grep -qE "^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*\.conf" /etc/ssh/sshd_config 2>/dev/null; then
-        echo "Include /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config
-        need_reload=true
-    fi
-
-    # Conservative hardening — DO NOT touch MaxStartups. The previous setting
-    # (30:30:100) combined with bursts of WS-bridge reconnections could fill
-    # the unauthenticated slot pool on a 1-core VPS and lock out the admin.
-    local new_conf="# TDZ Tunnel - stability hardening (do not edit, managed by menu)\n"
-    new_conf+="# Aggressive ClientAlive probes — server-side keepalive for SSH sessions\n"
-    new_conf+="ClientAliveInterval 30\n"
-    new_conf+="ClientAliveCountMax 3\n"
-    new_conf+="# Skip slow reverse DNS lookup on login — speeds up mobile handshakes\n"
-    new_conf+="UseDNS no\n"
-    new_conf+="# Don't kick users off during slow auth on mobile networks\n"
-    new_conf+="LoginGraceTime 120\n"
-
-    local current_conf
-    current_conf=$(printf '%b' "$new_conf")
-    if [[ ! -f "$conf" ]] || ! cmp -s <(printf '%b' "$new_conf") "$conf" 2>/dev/null; then
-        printf '%b' "$new_conf" > "$conf"
-        need_reload=true
-    fi
-
-    if $need_reload; then
-        # Validate before reload so a bad config doesn't lock us out
-        if sshd -t 2>/dev/null; then
-            systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
-        else
-            echo -e "${C_YELLOW}⚠️ sshd config validation failed — keeping old config.${C_RESET}" >&2
-            rm -f "$conf"
-        fi
-    fi
-}
-
-# CPU percentage computed from /proc/stat deltas (top-style).
-# Returns an integer 0..100 — never exceeds 100% regardless of load average.
-compute_cpu_pct() {
-    local first line cpu user nice system idle iowait irq softirq steal total non_idle
-    local prev_idle prev_total diff_idle diff_total diff_total_non_idle pct
-
-    # Read /proc/stat first line (aggregate CPU)
-    line=$(head -n1 /proc/stat 2>/dev/null)
-    [[ -z "$line" ]] && { echo 0; return; }
-
-    read -r cpu user nice system idle iowait irq softirq steal _rest <<< "$line"
-    user=${user:-0}; nice=${nice:-0}; system=${system:-0}; idle=${idle:-0}
-    iowait=${iowait:-0}; irq=${irq:-0}; softirq=${softirq:-0}; steal=${steal:-0}
-
-    non_idle=$(( user + nice + system + irq + softirq + steal ))
-    total=$(( idle + iowait + non_idle ))
-
-    prev_idle=$DASH_CPU_PREV_IDLE
-    prev_total=$DASH_CPU_PREV_TOTAL
-
-    DASH_CPU_PREV_IDLE=$idle
-    DASH_CPU_PREV_TOTAL=$total
-
-    # Need two samples to compute a delta. On the very first call we have no
-    # previous sample — return a safe 0 so the dashboard still renders.
-    if (( prev_total == 0 )); then
-        echo 0
-        return
-    fi
-
-    diff_total=$(( total - prev_total ))
-    diff_idle=$(( idle - prev_idle ))
-    if (( diff_total <= 0 )); then
-        echo 0
-        return
-    fi
-    pct=$(( (diff_total - diff_idle) * 100 / diff_total ))
-    (( pct < 0 )) && pct=0
-    (( pct > 100 )) && pct=100
-    echo "$pct"
-}
-
 ensure_tdztunnel_system_group() {
     getent group "$TDZ_USERS_GROUP" >/dev/null 2>&1 || groupadd "$TDZ_USERS_GROUP" >/dev/null 2>&1 || true
 }
@@ -713,9 +662,6 @@ initial_setup() {
     ensure_tdztunnel_dirs
     ensure_tdztunnel_system_group
     
-    echo -e "${C_BLUE}🔹 Hardening sshd for tunnel stability...${C_RESET}"
-    harden_sshd_for_tunnel_stability
-
     echo -e "${C_BLUE}🔹 Configuring user limiter service...${C_RESET}"
     setup_limiter_service
     
@@ -727,9 +673,7 @@ initial_setup() {
     
     echo -e "${C_BLUE}🔹 Cleaning legacy dynamic SSH banner hooks...${C_RESET}"
     disable_dynamic_ssh_banner_system
-    # sshd was already reloaded inside harden_sshd_for_tunnel_stability() above
-    # if the drop-in config changed. Avoid a second reload here — every extra
-    # reload on a busy 1-core VPS risks dropping active tunnels.
+    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
     
     if [ ! -f "$INSTALL_FLAG_FILE" ]; then
         touch "$INSTALL_FLAG_FILE"
@@ -886,9 +830,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ Tunnel limiter version 2026-06-25.2
-# Fixed: over-limit handling no longer kills in a tight loop. Reconnect-storm
-# safe — single kill per 5-min window, longer unlock delay, per-user state.
+# TDZ Tunnel limiter version 2026-04-17.2
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
 PID_DIR="$BW_DIR/pidtrack"
@@ -924,43 +866,45 @@ while true; do
     declare -A locked_users=()
     declare -A uid_to_user=()
     declare -A loginuid_pids=()
-    declare -A who_online=()
-    declare -A managed_user_lookup=()
-
-    while IFS=: read -r managed_user _rest; do
-        [[ -n "$managed_user" && "$managed_user" != \#* ]] && managed_user_lookup["$managed_user"]=1
-    done < "$DB_FILE"
 
     while IFS=: read -r username _ uid _rest; do
         [[ -n "$username" && "$uid" =~ ^[0-9]+$ ]] && uid_to_user["$uid"]="$username"
     done < /etc/passwd
 
-    # METHOD A: `who` — primary detector, catches all logged-in managed users
-    # and counts their distinct login sessions.
-    while read -r who_line; do
-        who_user=$(echo "$who_line" | awk '{print $1}')
-        [[ -z "$who_user" ]] && continue
-        [[ -n "${managed_user_lookup[$who_user]+x}" ]] || continue
-        who_online["$who_user"]=$(( ${who_online["$who_user"]:-0} + 1 ))
-    done < <(who 2>/dev/null)
-
-    # METHOD B: ps -C sshd — secondary, catches pre-shell sshd children
     while read -r ssh_pid ssh_owner; do
         [[ "$ssh_pid" =~ ^[0-9]+$ ]] || continue
 
-        if [[ -n "$ssh_owner" && "$ssh_owner" != "root" && "$ssh_owner" != "sshd" && -n "${managed_user_lookup[$ssh_owner]+x}" ]]; then
+        if [[ -n "$ssh_owner" && "$ssh_owner" != "root" && "$ssh_owner" != "sshd" ]]; then
             session_pids["$ssh_owner"]+="$ssh_pid "
         fi
     done < <(ps -C sshd -o pid=,user= 2>/dev/null)
 
-    # METHOD C: per-user process scan — catches ALL PIDs owned by managed users
-    # (bash, sftp-server, scp, etc.). Critical for bandwidth tracking because
-    # the WS-bridge tunnel's sshd child exec's the shell early — `ps -C sshd`
-    # misses it. /proc/$pid/io works on any process owned by the user.
-    while read -r _u _pid; do
-        [[ -n "$_u" && -n "${managed_user_lookup[$_u]+x}" && "$_pid" =~ ^[0-9]+$ ]] || continue
-        session_pids[$_u]="${session_pids[$_u]}$_pid "
-    done < <(ps -eo user=,pid= --no-headers 2>/dev/null)
+    for p in /proc/[0-9]*/loginuid; do
+        [[ -f "$p" ]] || continue
+        login_uid=""
+        read -r login_uid < "$p" || login_uid=""
+        [[ "$login_uid" =~ ^[0-9]+$ && "$login_uid" != "4294967295" ]] || continue
+
+        session_user="${uid_to_user[$login_uid]}"
+        [[ -n "$session_user" ]] || continue
+
+        pid_dir=$(dirname "$p")
+        pid_num=$(basename "$pid_dir")
+        comm=""
+        read -r comm < "$pid_dir/comm" || comm=""
+        [[ "$comm" == "sshd" ]] || continue
+
+        ppid_val=""
+        while read -r key value; do
+            if [[ "$key" == "PPid:" ]]; then
+                ppid_val="${value:-}"
+                break
+            fi
+        done < "$pid_dir/status"
+        [[ "$ppid_val" == "1" ]] && continue
+
+        loginuid_pids["$session_user"]+="$pid_num "
+    done
 
     while read -r passwd_user _ passwd_status _rest; do
         [[ "$passwd_status" == "L" ]] && locked_users["$passwd_user"]=1
@@ -975,23 +919,17 @@ while true; do
         [[ -z "$user" || "$user" == \#* ]] && continue
 
         declare -A unique_pids=()
-        pid_candidates="${session_pids[$user]:-}"
+        pid_candidates=""
+        if [[ -n "${session_pids[$user]}" ]]; then
+            pid_candidates="${session_pids[$user]}"
+        else
+            pid_candidates="${loginuid_pids[$user]}"
+        fi
         for pid in $pid_candidates; do
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_pids["$pid"]=1
         done
 
-        # Online if `who` shows them OR they have live PIDs
-        local_user_online=false
-        if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ]]; then
-            local_user_online=true
-        fi
-
-        # Connection count: distinct sessions from `who` (1 minimum if PIDs exist)
-        online_count=${who_online[$user]:-0}
-        if (( online_count == 0 )) && [[ "$local_user_online" == true ]]; then
-            online_count=1
-        fi
-
+        online_count=${#unique_pids[@]}
         user_locked=false
         if [[ -n "${locked_users[$user]+x}" ]]; then
             user_locked=true
@@ -1012,47 +950,15 @@ while true; do
 
         [[ "$limit" =~ ^[0-9]+$ ]] || limit=1
         if (( online_count > limit )); then
-            # Over-limit handling — designed to AVOID a reconnect storm:
-            #   1. Lock the account (usermod -L) — blocks new SSH auth
-            #   2. Kill existing sessions ONCE per lock cycle
-            #   3. Schedule unlock after 300s (long enough for client auto-retry
-            #      backoff to kick in; short enough to not strand users)
-            #   4. While locked, do NOT keep killing — that creates a tight loop
-            #      that saturates a 1-core VPS and locks out the admin.
-            #
-            # Per-user state file tracks the last kill timestamp so we don't
-            # re-kill more than once every 5 minutes even if `who`/`ps` lag.
-            kill_state_file="$PID_DIR/${user}.overlimit_lock"
-            should_kill=false
             if ! $user_locked; then
-                should_kill=true
-            else
-                # Already locked — only re-kill if 5+ minutes have passed
-                # since the last kill. This breaks the tight kill-reconnect-kill
-                # loop that was saturating CPU on 1-core VPS.
-                last_kill=0
-                [[ -f "$kill_state_file" ]] && read -r last_kill < "$kill_state_file" 2>/dev/null
-                [[ "$last_kill" =~ ^[0-9]+$ ]] || last_kill=0
-                if (( current_ts - last_kill > 300 )); then
-                    should_kill=true
-                fi
-            fi
-
-            if $should_kill; then
                 usermod -L "$user" &>/dev/null
                 killall -u "$user" -9 &>/dev/null
-                printf '%s\n' "$current_ts" > "$kill_state_file"
-                if ! $user_locked; then
-                    # First over-limit event for this cycle — schedule unlock.
-                    # 300s gives mobile clients time to back off their retry loop.
-                    (sleep 300; usermod -U "$user" &>/dev/null; rm -f "$kill_state_file" 2>/dev/null) &
-                    locked_users["$user"]=1
-                    user_locked=true
-                fi
+                (sleep 120; usermod -U "$user" &>/dev/null) &
+                locked_users["$user"]=1
+                user_locked=true
+            else
+                killall -u "$user" -9 &>/dev/null
             fi
-        else
-            # Under limit — clear any stale over-limit state file
-            rm -f "$PID_DIR/${user}.overlimit_lock" 2>/dev/null
         fi
 
         if $dynamic_banners_enabled; then
@@ -1102,7 +1008,7 @@ while true; do
             [[ "$accumulated" =~ ^[0-9]+$ ]] || accumulated=0
         fi
 
-        if [[ "$local_user_online" != true ]]; then
+        if (( ${#unique_pids[@]} == 0 )); then
             rm -f "$PID_DIR/${user}__"*.last 2>/dev/null
             continue
         fi
@@ -1197,12 +1103,9 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ Tunnel limiter version 2026-06-25.2"
+    local limiter_marker="# TDZ Tunnel limiter version 2026-04-17.2"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
-    # Ensure sshd is hardened (idempotent — only writes if config differs)
-    # sshd hardening is done during initial_setup; skip here to avoid any chance
-    # of disturbing an already-running sshd on a tiny 1-core VPS.
     if [[ ! -f "$LIMITER_SCRIPT" ]] || ! grep -Fqx "$limiter_marker" "$LIMITER_SCRIPT" 2>/dev/null; then
         setup_limiter_service >/dev/null 2>&1
     fi
@@ -1212,12 +1115,8 @@ sync_runtime_components_if_needed() {
     if [[ -f "/etc/tdztunnel/banners_enabled" ]]; then
         update_ssh_banners_config
     elif [[ -f "$SSHD_TDZ_CONFIG" ]]; then
-        # Stale dynamic-banner config detected. Clean it up but DO NOT reload
-        # sshd here — on a saturated 1-core VPS, an unexpected sshd reload can
-        # drop active sessions and contribute to admin lockout. The next
-        # `menu` invocation or `systemctl reload sshd` (manual) will pick up
-        # the change.
         disable_dynamic_ssh_banner_system
+        systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
     fi
 }
 
@@ -2827,74 +2726,13 @@ b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
 MAX_HEADER_BYTES = 65536
-# RECV_CHUNK increased from 64KB -> 1MB. Each recv() syscall in Python has
-# ~10-50μs overhead. At 64KB chunks, a 50Mbps stream needs ~100 syscalls/sec
-# per direction = 200 syscalls/sec = 2-10ms of pure Python overhead per second.
-# At 1MB chunks, that drops to ~6 syscalls/sec per direction. Massive win for
-# speed tests and large downloads.
-RECV_CHUNK = 1024 * 1024  # 1 MB
-# Kernel socket buffers. Default Linux SO_RCVBUF is ~200KB which is WAY too
-# small for high-BDP paths (BD <-> SG at 80ms RTT × 100Mbps = 1MB BDP).
-# Without bigger buffers, the kernel throttles the sender via TCP window
-# scale, capping throughput at ~20-30 Mbps even when both ends could go faster.
-# 4MB lets the kernel buffer ~40MB of in-flight data per direction.
-SOCKET_BUF_SIZE = 4 * 1024 * 1024  # 4 MB
+RECV_CHUNK = 65536
 BRANDING_CACHE_TTL = 30
-# Tuned for stability over mobile / carrier-grade NAT (BD, SG, etc.)
-#   - HANDSHAKE_TIMEOUT: increased from 10s to 30s for slow mobile handshakes
-#   - SSH_CONNECT_TIMEOUT: increased from 5s to 10s
-#   - BRIDGE_IDLE_TIMEOUT: reduced from 300s to 60s so dead peers are detected
-#     faster. Combined with SO_KEEPALIVE (60s idle, 10s interval, 3 probes),
-#     a silently-dropped connection is reaped within ~90s instead of staying
-#     half-open for 5 minutes.
-HANDSHAKE_TIMEOUT = 30
-SSH_CONNECT_TIMEOUT = 10
-BRIDGE_IDLE_TIMEOUT = 60
-# TCP keepalive parameters (Linux specific) - fights NAT idle eviction
-KEEPALIVE_IDLE = 60     # send first keepalive probe after 60s idle
-KEEPALIVE_INTERVAL = 10 # then probe every 10s
-KEEPALIVE_COUNT = 3     # after 3 failed probes (~90s), declare dead
 
 _branding_cache = {"bytes": b"", "mtime": 0, "ts": 0}
 
 def log(m):
     sys.stderr.write(f"[tdz-ws-bridge] {m}\n"); sys.stderr.flush()
-
-def set_tcp_keepalive(sock):
-    """Enable SO_KEEPALIVE + aggressive TCP_KEEPIDLE/INTVL/CNT.
-    Critical for mobile/CGNAT environments where idle TCP connections get
-    silently dropped by carrier NAT after ~5 minutes of inactivity.
-    Without this, the tunnel "times out" periodically even though the
-    server itself is fine."""
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-    except OSError:
-        return
-    if hasattr(socket, "TCP_KEEPIDLE"):
-        try: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, KEEPALIVE_IDLE)
-        except OSError: pass
-    if hasattr(socket, "TCP_KEEPINTVL"):
-        try: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, KEEPALIVE_INTERVAL)
-        except OSError: pass
-    if hasattr(socket, "TCP_KEEPCNT"):
-        try: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, KEEPALIVE_COUNT)
-        except OSError: pass
-
-def set_nodelay(sock):
-    """Disable Nagle's algorithm so small SSH packets are not buffered.
-    Without this, interactive SSH feels laggy / stalls."""
-    try: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    except OSError: pass
-
-def set_large_buffers(sock):
-    """Set SO_RCVBUF and SO_SNDBUF to SOCKET_BUF_SIZE (4MB).
-    Default Linux socket buffers (~200KB) cap throughput at ~20-30 Mbps
-    on long-RTT paths due to TCP window size limits. 4MB buffers let the
-    kernel sustain ~400 Mbps over a 80ms RTT path."""
-    try: sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKET_BUF_SIZE)
-    except OSError: pass
-    try: sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCKET_BUF_SIZE)
-    except OSError: pass
 
 def load_branding_headers():
     now = time.time()
@@ -2930,62 +2768,28 @@ def build_switching_response():
     return SWITCHING_RESPONSE_BASE + load_branding_headers() + b"\r\n"
 
 def bridge_socks(c, s):
-    """High-throughput bidirectional TCP bridge.
-    Optimizations vs. naive version:
-      - TCP_NODELAY on BOTH sockets (was client-only)
-      - SO_KEEPALIVE + aggressive TCP_KEEPIDLE/INTVL/CNT on both
-      - SO_RCVBUF/SO_SNDBUF 4MB on both (was kernel default ~200KB)
-      - Pre-allocated 1MB bytearrays with recv_into() (was recv() allocating
-        a new bytes object every call — ~10μs GC pressure per call × 100+ Hz
-        = several % of CPU wasted on allocation alone)
-      - sendall() is CPython-optimized internally; kept as-is.
-    """
-    set_nodelay(c)
-    set_nodelay(s)
-    set_tcp_keepalive(c)
-    set_tcp_keepalive(s)
-    set_large_buffers(c)
-    set_large_buffers(s)
-    # Pre-allocate recv buffers ONCE per connection, reuse across iterations.
-    # Avoids ~10μs of allocation + GC per recv() call. At 100 Hz recv rate
-    # that's 1ms/sec saved — sounds small but adds up under load.
-    c_buf = bytearray(RECV_CHUNK)
-    s_buf = bytearray(RECV_CHUNK)
     socks = [c, s]
     try:
         while True:
-            r, _, _ = select.select(socks, [], [], BRIDGE_IDLE_TIMEOUT)
-            if not r:
-                # Idle cycle — keepalive will detect dead peers.
-                # recv() on next loop will return empty if socket died.
-                continue
+            r, _, _ = select.select(socks, [], [], 300)
+            if not r: continue
             for sock in r:
+                try: data = sock.recv(RECV_CHUNK)
+                except: return
+                if not data: return
                 other = s if sock is c else c
-                buf = c_buf if sock is c else s_buf
-                try:
-                    n = sock.recv_into(buf, RECV_CHUNK)
-                except OSError:
-                    return
-                if not n:
-                    return
-                try:
-                    # sendall with memoryview of exactly the bytes we got —
-                    # avoids creating a sliced copy.
-                    other.sendall(memoryview(buf)[:n])
-                except OSError:
-                    return
+                try: other.sendall(data)
+                except: return
     finally:
         for sock in (c, s):
             try: sock.shutdown(socket.SHUT_RDWR)
-            except OSError: pass
+            except: pass
             try: sock.close()
-            except OSError: pass
+            except: pass
 
 def handle(client, addr):
     try:
-        # Increased handshake timeout: mobile networks (especially on first
-        # TLS+WS handshake through HAProxy) can take 15-25s on slow links.
-        client.settimeout(HANDSHAKE_TIMEOUT)
+        client.settimeout(10)
         buf = b""
         while b"\r\n\r\n" not in buf and len(buf) < MAX_HEADER_BYTES:
             try: chunk = client.recv(4096)
@@ -2994,13 +2798,13 @@ def handle(client, addr):
             buf += chunk
         if buf.startswith(b"SSH-"):
             client.settimeout(None)
-            try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
+            try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=5)
             except Exception as e: log(f"ssh connect fail: {e}"); return
             ssh.sendall(buf)
             bridge_socks(client, ssh); return
         try: client.sendall(build_switching_response())
         except OSError: return
-        try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
+        try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=5)
         except Exception as e: log(f"ssh connect fail: {e}"); return
         client.settimeout(None)
         log(f"bridged {addr[0]}:{addr[1]} -> SSH {SSH_HOST}:{SSH_PORT}")
@@ -3009,7 +2813,7 @@ def handle(client, addr):
         log(f"err {addr}: {e}")
     finally:
         try: client.close()
-        except OSError: pass
+        except: pass
 
 def main():
     log(f"starting on {LISTEN_HOST}:{LISTEN_PORT} -> SSH {SSH_HOST}:{SSH_PORT}")
@@ -3027,15 +2831,7 @@ def main():
     while True:
         try: c, a = srv.accept()
         except OSError: break
-        # Apply all stability + throughput socket options on accepted socket.
-        # (keepalive + nodelay + large buffers — bridge_socks re-applies
-        # them too, but setting them early means even the handshake benefits
-        # from large buffers.)
         c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        try: c.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKET_BUF_SIZE)
-        except OSError: pass
-        try: c.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCKET_BUF_SIZE)
-        except OSError: pass
         threading.Thread(target=handle, args=(c, a), daemon=True).start()
 
 if __name__ == "__main__": main()
@@ -3171,18 +2967,9 @@ defaults
     mode    tcp
     option  tcplog
     option  dontlognull
-    # Increased from 5s -> 2s for faster failure detection on bad backends.
-    timeout connect 2s
+    timeout connect 5s
     timeout client  24h
     timeout server  24h
-    # HAProxy default SO_RCVBUF/SO_SNDBUF are tiny (~16KB). Bumping to 4MB
-    # lets HAProxy's TCP window match the bridge's 4MB buffers, preventing
-    # backpressure stalls that cap throughput at ~20-30 Mbps on long-RTT paths.
-    tune.bufsize 1048576
-    tune.rcvbuf.client 4194304
-    tune.rcvbuf.server 4194304
-    tune.sndbuf.client 4194304
-    tune.sndbuf.server 4194304
 
 # ====================================================================
 # TIER 1: PORT ${EDGE_PUBLIC_HTTP_PORT} (Cleartext WS Payloads & Raw SSH)
@@ -3194,11 +2981,7 @@ defaults
 frontend port_80_edge
     bind *:${EDGE_PUBLIC_HTTP_PORT}
     mode tcp
-    # Reduced from 2s -> 500ms: DarkTunnel/HTTP Custom/NPV all send their
-    # WS upgrade request in the very first packet, so 500ms is plenty of time
-    # to identify the protocol. 2s was adding 1.5s of unnecessary latency to
-    # every new connection.
-    tcp-request inspect-delay 500ms
+    tcp-request inspect-delay 2s
 
     acl is_ssh payload(0,7) -m bin 5353482d322e30
 
@@ -3214,7 +2997,7 @@ frontend port_80_edge
 frontend port_443_edge
     bind *:${EDGE_PUBLIC_TLS_PORT}
     mode tcp
-    tcp-request inspect-delay 500ms
+    tcp-request inspect-delay 2s
 
     acl is_ssh payload(0,7) -m bin 5353482d322e30
     acl is_tls req.ssl_hello_type 1
@@ -3238,7 +3021,7 @@ frontend port_443_edge
 frontend internal_decryptor
     bind 127.0.0.1:${HAPROXY_INTERNAL_DECRYPT_PORT} ssl crt ${SSL_CERT_FILE}
     mode tcp
-    tcp-request inspect-delay 500ms
+    tcp-request inspect-delay 2s
 
     acl is_ssh payload(0,7) -m bin 5353482d322e30
     tcp-request content accept if is_ssh
@@ -3256,15 +3039,8 @@ backend direct_ssh
 
 backend ws_ssh_bridge
     mode tcp
-    # Removed `option tcp-check` + `check` keyword on server line.
-    # These caused HAProxy to open a fresh TCP connection to the bridge every
-    # 2 seconds for health checks. Each check made the bridge spawn a thread,
-    # accept the conn, send the 101 Switching Protocols response, then try to
-    # open an SSH connection that immediately closed. Wasted CPU + file
-    # descriptors + created micro-bursts that interfered with active tunnels.
-    # systemd already restarts the bridge if it crashes, so HAProxy health
-    # checks are redundant here.
-    server ws_bridge 127.0.0.1:${WS_SSH_BRIDGE_PORT}
+    option tcp-check
+    server ws_bridge 127.0.0.1:${WS_SSH_BRIDGE_PORT} check
 
 backend nginx_cleartext
     mode tcp
@@ -4324,7 +4100,6 @@ refresh_ssh_session_cache() {
     local -A uid_user_lookup=()
     local -A session_pids=()
     local -A loginuid_pids=()
-    local -A who_online=()
     local managed_user system_user system_uid ssh_pid ssh_owner candidate_user login_uid
 
     while IFS=: read -r managed_user _rest; do
@@ -4335,22 +4110,6 @@ refresh_ssh_session_cache() {
         [[ -n "$system_user" && "$system_uid" =~ ^[0-9]+$ ]] && uid_user_lookup["$system_uid"]="$system_user"
     done < /etc/passwd
 
-    # ── METHOD A: `who` — catches ALL logged-in users (records utmp).
-    # Works for direct-SSH, WS-bridge, HAProxy — any session sshd logged in.
-    # This is the primary detector and the most reliable.
-    # Also counts distinct login sessions per user (for connection-limit enforcement).
-    local who_line
-    while read -r who_line; do
-        # who output: "username pts/0 2026-06-25 12:34 (1.2.3.4)"
-        who_user=$(echo "$who_line" | awk '{print $1}')
-        [[ -z "$who_user" ]] && continue
-        [[ -n "${managed_user_lookup[$who_user]+x}" ]] || continue
-        who_online["$who_user"]=$(( ${who_online["$who_user"]:-0} + 1 ))
-    done < <(who 2>/dev/null)
-
-    # ── METHOD B: ps -C sshd — catches pre-shell sshd children owned by user.
-    # Backward-compatible secondary detector. Misses users whose shell already exec'd
-    # (process is no longer named "sshd"), but Method A covers that.
     while read -r ssh_pid ssh_owner; do
         [[ "$ssh_pid" =~ ^[0-9]+$ ]] || continue
 
@@ -4368,15 +4127,6 @@ refresh_ssh_session_cache() {
         fi
     done < <(ps -C sshd -o pid=,user= 2>/dev/null)
 
-    # ── METHOD C: per-user process scan — catches ALL PIDs owned by managed users
-    # (bash, sftp-server, scp, etc.). Needed for bandwidth tracking via /proc/$pid/io
-    # because Method A (`who`) gives us no PIDs, and Method B misses post-exec shells.
-    local _u _pid
-    while read -r _u _pid; do
-        [[ -n "$_u" && -n "${managed_user_lookup[$_u]+x}" && "$_pid" =~ ^[0-9]+$ ]] || continue
-        session_pids[$_u]="${session_pids[$_u]}$_pid "
-    done < <(ps -eo user=,pid= --no-headers 2>/dev/null)
-
     local user pid pid_candidates
     for user in "${!managed_user_lookup[@]}"; do
         declare -A unique_pids=()
@@ -4390,16 +4140,12 @@ refresh_ssh_session_cache() {
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_pids["$pid"]=1
         done
 
-        # Mark online if `who` shows them OR they have live PIDs
-        if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ]]; then
-            # CONNS count: distinct login sessions from `who` (1 minimum if PIDs exist)
-            local _conns=${who_online[$user]:-0}
-            (( _conns == 0 )) && _conns=1
-            SSH_SESSION_COUNTS["$user"]=$_conns
+        SSH_SESSION_COUNTS["$user"]=${#unique_pids[@]}
+        if (( ${#unique_pids[@]} > 0 )); then
             for pid in "${!unique_pids[@]}"; do
                 SSH_SESSION_PIDS["$user"]+="$pid "
             done
-            SSH_SESSION_TOTAL=$((SSH_SESSION_TOTAL + 1))
+            SSH_SESSION_TOTAL=$((SSH_SESSION_TOTAL + ${#unique_pids[@]}))
         fi
     done
 
@@ -4458,7 +4204,8 @@ refresh_dashboard_cache() {
     _cores=$(nproc 2>/dev/null || echo 1)
     [[ -z "$_cores" || "$_cores" -lt 1 ]] && _cores=1
     DASH_CACHE_CPU_CORES=$_cores
-    # CPU percentage snapshot — computed separately by compute_cpu_pct()
+    # CPU usage as a real percentage (0..100, top-style). Computed from
+    # /proc/stat jiffy deltas — never exceeds 100% regardless of load average.
     DASH_CACHE_CPU_PCT=$(compute_cpu_pct)
 
     # RAM
@@ -4518,7 +4265,7 @@ show_banner() {
     [[ -t 1 ]] && clear
     echo
     # ╔══ Top double-border banner ══╗  (inner width 64)
-    echo -e "  ${C_CYAN}╔════════════════════════════════════════════════════════════════╗${C_RESET}"
+    echo -e "  ${C_CYAN}╔══════════════════════════════════════════════════════════════════╗${C_RESET}"
     # Title line — centered, 64 visible chars
     local title_content="${C_BOLD}${C_CYAN}TDZ SSH TUNNEL${C_RESET} ${C_YELLOW}v0.0.1 BETA${C_RESET}"
     local title_clean="TDZ SSH TUNNEL v0.0.1 BETA"
@@ -4531,8 +4278,8 @@ show_banner() {
     [[ $title_rpad_len -gt 0 ]] && printf -v title_rpad "%${title_rpad_len}s" ""
     printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$title_lpad" "$title_content" "$title_rpad"
     # Subtitle line — centered
-    local sub_content="${C_GRAY}Powered By: @TuhinBroh${C_RESET}"
-    local sub_clean="Powered By: @TuhinBroh"
+    local sub_content="${C_GRAY}Powered By @TuhinBroh${C_RESET}"
+    local sub_clean="Powered By @TuhinBroh"
     local sub_pad=$(( (64 - ${#sub_clean}) / 2 ))
     [[ $sub_pad -lt 0 ]] && sub_pad=0
     local sub_lpad="" sub_rpad=""
@@ -4541,7 +4288,7 @@ show_banner() {
     [[ $sub_rpad_len -lt 0 ]] && sub_rpad_len=0
     [[ $sub_rpad_len -gt 0 ]] && printf -v sub_rpad "%${sub_rpad_len}s" ""
     printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$sub_lpad" "$sub_content" "$sub_rpad"
-    echo -e "  ${C_CYAN}╚════════════════════════════════════════════════════════════════╝${C_RESET}"
+    echo -e "  ${C_CYAN}╚══════════════════════════════════════════════════════════════════╝${C_RESET}"
 }
 
 protocol_menu() {
@@ -5341,32 +5088,25 @@ main_menu() {
         systemctl is-active --quiet udpgw               && pill_udpgw="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet dnstt               && pill_dnstt="${C_STATUS_A}●${C_RESET}"
 
-        # ── SECTION 1: SERVER PROFILE ──
-        # Layout (per user request, 2026-06-25):
-        #   LOC | IP        (left = identity / right = address)
-        #   ISP | DOMAIN    (left = identity / right = address)
-        #   OS  | UPTIME
-        #   CPU | RAM       (both shown as % like RAM)
-        #   ACCT | ONLINE
+        # ── SECTION 1: SERVER PROFILE (matches reference screenshot) ──
+        # Layout: LOC | ISP, IP | DOMAIN, OS | UPTIME, CPU | RAM, ACCT | ONLINE
         local _cpu_core_word="core"
         (( DASH_CACHE_CPU_CORES > 1 )) && _cpu_core_word="cores"
-        # CPU usage as percentage (top-style: average over /proc/stat since last sample).
-        # Load-average based % can exceed 100% and was misleading — replaced with real CPU utilisation.
-        local _cpu_pct
-        _cpu_pct=$(compute_cpu_pct)
-        local _cpu_val="${_cpu_pct}% (${DASH_CACHE_CPU_LOAD} load, ${DASH_CACHE_CPU_CORES} ${_cpu_core_word})"
+        # CPU shown as a real percentage (0..100) — matches RAM % display style.
+        # Never shows above 100% even under heavy load.
+        local _cpu_val="${DASH_CACHE_CPU_PCT}% (${DASH_CACHE_CPU_LOAD} load, ${DASH_CACHE_CPU_CORES} ${_cpu_core_word})"
         local _ram_val="${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED})"
         echo
         tdz_box_top
         tdz_box_header "SERVER PROFILE"
         tdz_box_divider
-        tdz_kv2 "LOC"    "${DASH_CACHE_LOCATION:0:22}"  "IP"     "${DASH_CACHE_PUBLIC_IP:0:24}"
-        tdz_kv2 "ISP"    "${DASH_CACHE_ISP:0:22}"       "DOMAIN" "${DASH_CACHE_DOMAIN:0:24}"
+        tdz_kv2 "LOC"   "${DASH_CACHE_LOCATION:0:22}"  "ISP"    "${DASH_CACHE_ISP:0:24}"
+        tdz_kv2 "IP"    "${DASH_CACHE_PUBLIC_IP:0:22}" "DOMAIN" "${DASH_CACHE_DOMAIN:0:24}"
         tdz_box_divider
-        tdz_kv2 "OS"     "${DASH_CACHE_OS_NAME:0:22}"   "UPTIME" "${DASH_CACHE_UPTIME:0:24}"
-        tdz_kv2 "CPU"    "${_cpu_val:0:22}"             "RAM"    "${_ram_val:0:24}"
+        tdz_kv2 "OS"    "${DASH_CACHE_OS_NAME:0:22}"  "UPTIME" "${DASH_CACHE_UPTIME:0:24}"
+        tdz_kv2 "CPU"   "${_cpu_val:0:22}"            "RAM"    "${_ram_val:0:24}"
         tdz_box_divider
-        tdz_kv2 "ACCT"   "${DASH_CACHE_TOTAL_USERS} total" "ONLINE" "${DASH_CACHE_ONLINE_USERS} now"
+        tdz_kv2 "ACCT"  "${DASH_CACHE_TOTAL_USERS} total" "ONLINE" "${DASH_CACHE_ONLINE_USERS} now"
         tdz_box_bot
 
         # ── SECTION 2: SERVICE STATUS (live pills) ────────────────────
@@ -5418,7 +5158,7 @@ main_menu() {
         tdz_box_bot "$C_DANGER"
 
         echo
-        if ! read -r -p "$(echo -e ${C_PROMPT}"  Select an option: "${C_RESET})" choice; then
+        if ! read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice; then
             echo
             exit 0
         fi
