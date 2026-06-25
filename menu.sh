@@ -101,6 +101,8 @@ DASH_CACHE_OS_NAME="Linux"
 DASH_CACHE_UPTIME="unknown"
 DASH_CACHE_CPU_LOAD="0.00"
 DASH_CACHE_CPU_CORES=1
+DASH_CPU_PREV_IDLE=0
+DASH_CPU_PREV_TOTAL=0
 DASH_CACHE_RAM_PCT="0"
 DASH_CACHE_RAM_USED="0M / 0M"
 DASH_CACHE_DISK_PCT="0"
@@ -531,6 +533,9 @@ harden_sshd_for_tunnel_stability() {
         need_reload=true
     fi
 
+    # Conservative hardening — DO NOT touch MaxStartups. The previous setting
+    # (30:30:100) combined with bursts of WS-bridge reconnections could fill
+    # the unauthenticated slot pool on a 1-core VPS and lock out the admin.
     local new_conf="# TDZ Tunnel - stability hardening (do not edit, managed by menu)\n"
     new_conf+="# Aggressive ClientAlive probes — server-side keepalive for SSH sessions\n"
     new_conf+="ClientAliveInterval 30\n"
@@ -538,9 +543,7 @@ harden_sshd_for_tunnel_stability() {
     new_conf+="# Skip slow reverse DNS lookup on login — speeds up mobile handshakes\n"
     new_conf+="UseDNS no\n"
     new_conf+="# Don't kick users off during slow auth on mobile networks\n"
-    new_conf+="LoginGraceTime 60\n"
-    new_conf+="# Allow enough unauthenticated connection slots for bursty reconnects\n"
-    new_conf+="MaxStartups 30:30:100\n"
+    new_conf+="LoginGraceTime 120\n"
 
     local current_conf
     current_conf=$(printf '%b' "$new_conf")
@@ -558,6 +561,48 @@ harden_sshd_for_tunnel_stability() {
             rm -f "$conf"
         fi
     fi
+}
+
+# CPU percentage computed from /proc/stat deltas (top-style).
+# Returns an integer 0..100 — never exceeds 100% regardless of load average.
+compute_cpu_pct() {
+    local first line cpu user nice system idle iowait irq softirq steal total non_idle
+    local prev_idle prev_total diff_idle diff_total diff_total_non_idle pct
+
+    # Read /proc/stat first line (aggregate CPU)
+    line=$(head -n1 /proc/stat 2>/dev/null)
+    [[ -z "$line" ]] && { echo 0; return; }
+
+    read -r cpu user nice system idle iowait irq softirq steal _rest <<< "$line"
+    user=${user:-0}; nice=${nice:-0}; system=${system:-0}; idle=${idle:-0}
+    iowait=${iowait:-0}; irq=${irq:-0}; softirq=${softirq:-0}; steal=${steal:-0}
+
+    non_idle=$(( user + nice + system + irq + softirq + steal ))
+    total=$(( idle + iowait + non_idle ))
+
+    prev_idle=$DASH_CPU_PREV_IDLE
+    prev_total=$DASH_CPU_PREV_TOTAL
+
+    DASH_CPU_PREV_IDLE=$idle
+    DASH_CPU_PREV_TOTAL=$total
+
+    # Need two samples to compute a delta. On the very first call we have no
+    # previous sample — return a safe 0 so the dashboard still renders.
+    if (( prev_total == 0 )); then
+        echo 0
+        return
+    fi
+
+    diff_total=$(( total - prev_total ))
+    diff_idle=$(( idle - prev_idle ))
+    if (( diff_total <= 0 )); then
+        echo 0
+        return
+    fi
+    pct=$(( (diff_total - diff_idle) * 100 / diff_total ))
+    (( pct < 0 )) && pct=0
+    (( pct > 100 )) && pct=100
+    echo "$pct"
 }
 
 ensure_tdztunnel_system_group() {
@@ -682,7 +727,9 @@ initial_setup() {
     
     echo -e "${C_BLUE}🔹 Cleaning legacy dynamic SSH banner hooks...${C_RESET}"
     disable_dynamic_ssh_banner_system
-    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
+    # sshd was already reloaded inside harden_sshd_for_tunnel_stability() above
+    # if the drop-in config changed. Avoid a second reload here — every extra
+    # reload on a busy 1-core VPS risks dropping active tunnels.
     
     if [ ! -f "$INSTALL_FLAG_FILE" ]; then
         touch "$INSTALL_FLAG_FILE"
@@ -839,9 +886,9 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ Tunnel limiter version 2026-06-25.1
-# Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
-# This catches users connected via WS-bridge (whose sshd child already exec'd shell).
+# TDZ Tunnel limiter version 2026-06-25.2
+# Fixed: over-limit handling no longer kills in a tight loop. Reconnect-storm
+# safe — single kill per 5-min window, longer unlock delay, per-user state.
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
 PID_DIR="$BW_DIR/pidtrack"
@@ -965,15 +1012,47 @@ while true; do
 
         [[ "$limit" =~ ^[0-9]+$ ]] || limit=1
         if (( online_count > limit )); then
+            # Over-limit handling — designed to AVOID a reconnect storm:
+            #   1. Lock the account (usermod -L) — blocks new SSH auth
+            #   2. Kill existing sessions ONCE per lock cycle
+            #   3. Schedule unlock after 300s (long enough for client auto-retry
+            #      backoff to kick in; short enough to not strand users)
+            #   4. While locked, do NOT keep killing — that creates a tight loop
+            #      that saturates a 1-core VPS and locks out the admin.
+            #
+            # Per-user state file tracks the last kill timestamp so we don't
+            # re-kill more than once every 5 minutes even if `who`/`ps` lag.
+            kill_state_file="$PID_DIR/${user}.overlimit_lock"
+            should_kill=false
             if ! $user_locked; then
+                should_kill=true
+            else
+                # Already locked — only re-kill if 5+ minutes have passed
+                # since the last kill. This breaks the tight kill-reconnect-kill
+                # loop that was saturating CPU on 1-core VPS.
+                last_kill=0
+                [[ -f "$kill_state_file" ]] && read -r last_kill < "$kill_state_file" 2>/dev/null
+                [[ "$last_kill" =~ ^[0-9]+$ ]] || last_kill=0
+                if (( current_ts - last_kill > 300 )); then
+                    should_kill=true
+                fi
+            fi
+
+            if $should_kill; then
                 usermod -L "$user" &>/dev/null
                 killall -u "$user" -9 &>/dev/null
-                (sleep 120; usermod -U "$user" &>/dev/null) &
-                locked_users["$user"]=1
-                user_locked=true
-            else
-                killall -u "$user" -9 &>/dev/null
+                printf '%s\n' "$current_ts" > "$kill_state_file"
+                if ! $user_locked; then
+                    # First over-limit event for this cycle — schedule unlock.
+                    # 300s gives mobile clients time to back off their retry loop.
+                    (sleep 300; usermod -U "$user" &>/dev/null; rm -f "$kill_state_file" 2>/dev/null) &
+                    locked_users["$user"]=1
+                    user_locked=true
+                fi
             fi
+        else
+            # Under limit — clear any stale over-limit state file
+            rm -f "$PID_DIR/${user}.overlimit_lock" 2>/dev/null
         fi
 
         if $dynamic_banners_enabled; then
@@ -1118,11 +1197,12 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ Tunnel limiter version 2026-06-25.1"
+    local limiter_marker="# TDZ Tunnel limiter version 2026-06-25.2"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
-    harden_sshd_for_tunnel_stability
+    # sshd hardening is done during initial_setup; skip here to avoid any chance
+    # of disturbing an already-running sshd on a tiny 1-core VPS.
     if [[ ! -f "$LIMITER_SCRIPT" ]] || ! grep -Fqx "$limiter_marker" "$LIMITER_SCRIPT" 2>/dev/null; then
         setup_limiter_service >/dev/null 2>&1
     fi
@@ -1132,8 +1212,12 @@ sync_runtime_components_if_needed() {
     if [[ -f "/etc/tdztunnel/banners_enabled" ]]; then
         update_ssh_banners_config
     elif [[ -f "$SSHD_TDZ_CONFIG" ]]; then
+        # Stale dynamic-banner config detected. Clean it up but DO NOT reload
+        # sshd here — on a saturated 1-core VPS, an unexpected sshd reload can
+        # drop active sessions and contribute to admin lockout. The next
+        # `menu` invocation or `systemctl reload sshd` (manual) will pick up
+        # the change.
         disable_dynamic_ssh_banner_system
-        systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
     fi
 }
 
@@ -4374,6 +4458,8 @@ refresh_dashboard_cache() {
     _cores=$(nproc 2>/dev/null || echo 1)
     [[ -z "$_cores" || "$_cores" -lt 1 ]] && _cores=1
     DASH_CACHE_CPU_CORES=$_cores
+    # CPU percentage snapshot — computed separately by compute_cpu_pct()
+    DASH_CACHE_CPU_PCT=$(compute_cpu_pct)
 
     # RAM
     local ram_pct ram_used
@@ -5264,10 +5350,10 @@ main_menu() {
         #   ACCT | ONLINE
         local _cpu_core_word="core"
         (( DASH_CACHE_CPU_CORES > 1 )) && _cpu_core_word="cores"
-        # CPU as percentage (load_avg / cores * 100) — mirrors RAM % display
+        # CPU usage as percentage (top-style: average over /proc/stat since last sample).
+        # Load-average based % can exceed 100% and was misleading — replaced with real CPU utilisation.
         local _cpu_pct
-        _cpu_pct=$(awk -v load="$DASH_CACHE_CPU_LOAD" -v cores="$DASH_CACHE_CPU_CORES" \
-            'BEGIN { if (cores+0 > 0) { printf "%.0f", (load+0) * 100 / cores } else { print 0 } }')
+        _cpu_pct=$(compute_cpu_pct)
         local _cpu_val="${_cpu_pct}% (${DASH_CACHE_CPU_LOAD} load, ${DASH_CACHE_CPU_CORES} ${_cpu_core_word})"
         local _ram_val="${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED})"
         echo
