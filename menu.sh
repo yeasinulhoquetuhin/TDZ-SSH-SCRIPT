@@ -5,13 +5,14 @@ C_BOLD=$'\033[1m'
 C_DIM=$'\033[2m'
 C_UL=$'\033[4m'
 
-# TDZ TUNNEL Premium Color Palette - Navy + Cyan
+# TDZ TUNNEL Premium Color Palette - Bright Cyan-Blue + Cyan Accent
+# (Bright enough to read on black terminals; previous navy was invisible.)
 C_RED=$'\033[38;5;196m'           # Bright Red
 C_GREEN=$'\033[38;5;46m'          # Neon Green
 C_YELLOW=$'\033[38;5;226m'        # Bright Yellow
-C_NAVY=$'\033[38;2;30;58;95m'     # Navy #1e3a5f  (brand primary)
+C_NAVY=$'\033[38;5;39m'           # Bright cyan-blue (replaces too-dark #1e3a5f)
 C_BLUE=$'\033[38;2;0;212;255m'    # Cyan #00d4ff  (brand accent)
-C_PURPLE=$'\033[38;2;30;58;95m'   # alias -> Navy
+C_PURPLE=$'\033[38;5;99m'         # Soft purple
 C_CYAN=$'\033[38;2;0;212;255m'    # Cyan #00d4ff
 C_WHITE=$'\033[38;5;255m'         # Bright White
 C_GRAY=$'\033[38;5;245m'          # Gray
@@ -49,8 +50,6 @@ HAPROXY_INTERNAL_DECRYPT_PORT="10443"
 WS_SSH_BRIDGE_SCRIPT="/usr/local/bin/tdz-ws-ssh-bridge.py"
 WS_SSH_BRIDGE_SERVICE="/etc/systemd/system/tdz-ws-ssh-bridge.service"
 WS_SSH_BRIDGE_PORT="8890"
-# Branding config (custom HTTP headers added to the 101 Switching Protocols response)
-WS_BRANDING_FILE="/etc/tdztunnel/ws_branding.conf"
 SSH_BANNER_FILE="/etc/tdztunnel/bannerssh"
 DNSTT_SERVICE_FILE="/etc/systemd/system/dnstt.service"
 DNSTT_BINARY="/usr/local/bin/dnstt-server"
@@ -101,6 +100,7 @@ DASH_CACHE_DOMAIN="None"
 DASH_CACHE_OS_NAME="Linux"
 DASH_CACHE_UPTIME="unknown"
 DASH_CACHE_CPU_LOAD="0.00"
+DASH_CACHE_CPU_CORES=1
 DASH_CACHE_RAM_PCT="0"
 DASH_CACHE_RAM_USED="0M / 0M"
 DASH_CACHE_DISK_PCT="0"
@@ -110,7 +110,7 @@ SSH_SESSION_CACHE_TTL=10
 SSH_SESSION_CACHE_TS=0
 
 # ── TDZ Dashboard Box-Layout Helpers (width 60) ─────────────────────────────
-TDZ_BOX_WIDTH=60
+TDZ_BOX_WIDTH=64
 
 _tdz_strip_ansi() {
     printf '%s' "$1" | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g'
@@ -210,6 +210,45 @@ tdz_menu2() {
     local left="${C_CHOICE}${l_num}${C_RESET} ${C_WHITE}${l_text}${C_RESET}"
     local right="${C_CHOICE}${r_num}${C_RESET} ${C_WHITE}${r_text}${C_RESET}"
     tdz_row2 "$left" "$right" "$color"
+}
+
+# Visual progress bar: 10 segments, filled by pct.
+# Usage: tdz_bar <0-100> [color]
+tdz_bar() {
+    local pct="${1:-0}"
+    local color="${2:-$C_GREEN}"
+    pct=${pct%.*}            # truncate any decimal
+    [[ "$pct" -gt 100 ]] && pct=100
+    [[ "$pct" -lt 0 ]] && pct=0
+    local filled=$(( pct / 10 ))
+    local empty=$(( 10 - filled ))
+    local bar=""
+    local i
+    for ((i=0; i<filled; i++)); do bar+="█"; done
+    for ((i=0; i<empty; i++)); do bar+="░"; done
+    printf "%s%s%s" "$color" "$bar" "$C_RESET"
+}
+
+# Two-column key/value with progress bar:
+# │ LABEL  [bar] pct% (extra)  │ LABEL  [bar] pct% (extra) │
+tdz_kv_bar() {
+    local l_label="$1" l_pct="$2" l_extra="$3"
+    local r_label="$4" r_pct="$5" r_extra="$6"
+    local l_bar_color="$C_GREEN"
+    (( l_pct >= 70 )) && l_bar_color="$C_YELLOW"
+    (( l_pct >= 90 )) && l_bar_color="$C_RED"
+    local r_bar_color="$C_GREEN"
+    (( r_pct >= 70 )) && r_bar_color="$C_YELLOW"
+    (( r_pct >= 90 )) && r_bar_color="$C_RED"
+    local l_padded l_extra_disp
+    printf -v l_padded "%-9s" "$l_label"
+    l_extra_disp="${l_extra:+ ${C_GRAY}${l_extra}${C_RESET}}"
+    local r_padded r_extra_disp
+    printf -v r_padded "%-9s" "$r_label"
+    r_extra_disp="${r_extra:+ ${C_GRAY}${r_extra}${C_RESET}}"
+    local left="${C_GRAY}${l_padded}${C_RESET}$(tdz_bar "$l_pct" "$l_bar_color") ${C_WHITE}${l_pct}%${C_RESET}${l_extra_disp}"
+    local right="${C_GRAY}${r_padded}${C_RESET}$(tdz_bar "$r_pct" "$r_bar_color") ${C_WHITE}${r_pct}%${C_RESET}${r_extra_disp}"
+    tdz_row2 "$left" "$right"
 }
 
 # Single-column menu row: │ [N] Text (pad) │
@@ -2631,7 +2670,7 @@ write_ws_ssh_bridge_script() {
     mkdir -p "$(dirname "$WS_SSH_BRIDGE_SCRIPT")"
     cat > "$WS_SSH_BRIDGE_SCRIPT" <<'PYEOF'
 #!/usr/bin/env python3
-"""TDZ TUNNEL WebSocket-to-SSH Bridge v2 (with branding support)."""
+"""TDZ SSH TUNNEL WebSocket-to-SSH Bridge v2 (with branding support)."""
 import socket, select, threading, sys, os, signal, time
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
@@ -2641,9 +2680,9 @@ SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
 BRANDING_FILE = os.environ.get("TDZ_WS_BRIDGE_BRANDING", "/etc/tdztunnel/ws_branding.conf")
 
 SWITCHING_RESPONSE_BASE = (
-    b"HTTP/1.1 101 Switching Protocols\r\n"
-    b"Upgrade: websocket\r\n"
-    b"Connection: Upgrade\r\n"
+b'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> <font color="#0057B7" size="7">tuhinbro.com</font></b>\r\n'
+b"Upgrade: websocket\r\n"
+b"Connection: Upgrade\r\n"
 )
 MAX_HEADER_BYTES = 65536
 RECV_CHUNK = 65536
@@ -2811,378 +2850,6 @@ uninstall_ws_ssh_bridge() {
     systemctl daemon-reload >/dev/null 2>&1
 }
 
-# ============================================================================
-# BRANDING & CUSTOMIZATION
-# Lets the user:
-#   1. Set custom HTTP headers on the 101 Switching Protocols response
-#      (e.g. X-Powered-By: VPS BY @TuhinBroh)
-#   2. Set a custom SSH login banner with rainbow-color presets
-#   3. Edit the ws_branding.conf file directly with nano/vi
-# ============================================================================
-
-# Returns a string with each character wrapped in a different ANSI color,
-# cycling through a 7-color rainbow palette.
-_rainbow_text() {
-    local text="$1"
-    local i=0
-    local out=""
-    local -a palette=(
-        $'\033[38;5;196m'   # red
-        $'\033[38;5;208m'   # orange
-        $'\033[38;5;226m'   # yellow
-        $'\033[38;5;46m'    # green
-        $'\033[38;5;51m'    # cyan
-        $'\033[38;5;57m'    # blue
-        $'\033[38;5;201m'   # magenta
-    )
-    local n=${#palette[@]}
-    local reset=$'\033[0m'
-    # Iterate UTF-8 safe — use grep -o . with LC_ALL=C to handle multibyte
-    local chars
-    chars=$(printf '%s' "$text" | LC_ALL=C.UTF-8 grep -o .)
-    while IFS= read -r ch; do
-        if [[ "$ch" == " " ]]; then
-            out+=" "
-        else
-            out+="${palette[$((i % n))]}${ch}${reset}"
-            i=$((i + 1))
-        fi
-    done <<< "$chars"
-    printf '%s' "$out"
-}
-
-# Returns a string with all chars in one solid color (arg 2 = 256-color code)
-_solid_color_text() {
-    local text="$1"
-    local code="${2:-255}"
-    printf '\033[38;5;%sm%s\033[0m' "$code" "$text"
-}
-
-branding_set_ws_headers() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🎨 Custom WS 101 Response Headers ---${C_RESET}"
-    echo -e "\n${C_CYAN}Customize the HTTP headers sent with the '101 Switching Protocols' response${C_RESET}"
-    echo -e "${C_DIM}that DarkTunnel / HTTP Custom / NPV see when they connect to port 2080.${C_RESET}"
-    echo -e "${C_DIM}File: ${WS_BRANDING_FILE}${C_RESET}"
-    echo -e "${C_DIM}Format: one 'Header-Name: value' per line. Lines starting with '#' are ignored.${C_RESET}"
-
-    echo -e "\n${C_BOLD}Choose a preset or set your own:${C_RESET}"
-    echo -e "  ${C_CHOICE}[1]${C_RESET}  VPS BY @TuhinBroh   ${C_DIM}(X-Powered-By: VPS BY @TuhinBroh)${C_RESET}"
-    echo -e "  ${C_CHOICE}[2]${C_RESET}  Premium SSH         ${C_DIM}(X-Powered-By: Premium SSH by Tuhin)${C_RESET}"
-    echo -e "  ${C_CHOICE}[3]${C_RESET}  TDZ TUNNEL           ${C_DIM}(X-Powered-By: TDZ TUNNEL Manager)${C_RESET}"
-    echo -e "  ${C_CHOICE}[4]${C_RESET}  Custom name          ${C_DIM}(enter your own name)${C_RESET}"
-    echo -e "  ${C_CHOICE}[5]${C_RESET}  Edit file manually   ${C_DIM}(open in nano/vi)${C_RESET}"
-    echo -e "  ${C_CHOICE}[6]${C_RESET}  Clear / Remove branding"
-    echo -e "  ${C_WARN}[0]${C_RESET}  Return"
-    echo
-    read -p "$(echo -e ${C_PROMPT}"👉 Select: "${C_RESET})" choice
-    case "$choice" in
-        1)
-            mkdir -p "$(dirname "$WS_BRANDING_FILE")"
-            cat > "$WS_BRANDING_FILE" <<EOF
-# Custom branding headers added to 101 Switching Protocols response
-X-Powered-By: VPS BY @TuhinBroh
-X-Owner: Tuhin
-X-Telegram: @TuhinBroh
-EOF
-            echo -e "\n${C_GREEN}✅ Branding set: VPS BY @TuhinBroh${C_RESET}"
-            ;;
-        2)
-            mkdir -p "$(dirname "$WS_BRANDING_FILE")"
-            cat > "$WS_BRANDING_FILE" <<EOF
-# Custom branding headers added to 101 Switching Protocols response
-X-Powered-By: Premium SSH by Tuhin
-X-Owner: Tuhin
-X-Telegram: @TuhinBroh
-EOF
-            echo -e "\n${C_GREEN}✅ Branding set: Premium SSH by Tuhin${C_RESET}"
-            ;;
-        3)
-            mkdir -p "$(dirname "$WS_BRANDING_FILE")"
-            cat > "$WS_BRANDING_FILE" <<EOF
-# Custom branding headers added to 101 Switching Protocols response
-X-Powered-By: TDZ TUNNEL Manager
-X-Owner: Tuhin
-X-Telegram: @TuhinBroh
-EOF
-            echo -e "\n${C_GREEN}✅ Branding set: TDZ TUNNEL Manager${C_RESET}"
-            ;;
-        4)
-            read -p "$(echo -e ${C_PROMPT}"👉 Enter your name (e.g. TuhinBroh): "${C_RESET})" custom_name
-            [[ -z "$custom_name" ]] && { echo -e "${C_RED}❌ Name cannot be empty.${C_RESET}"; press_enter; return; }
-            read -p "$(echo -e ${C_PROMPT}"👉 Enter your Telegram handle (e.g. @TuhinBroh): "${C_RESET})" custom_tg
-            mkdir -p "$(dirname "$WS_BRANDING_FILE")"
-            cat > "$WS_BRANDING_FILE" <<EOF
-# Custom branding headers added to 101 Switching Protocols response
-X-Powered-By: VPS BY ${custom_name}
-X-Owner: ${custom_name}
-X-Telegram: ${custom_tg}
-EOF
-            echo -e "\n${C_GREEN}✅ Custom branding set: VPS BY ${custom_name}${C_RESET}"
-            ;;
-        5)
-            mkdir -p "$(dirname "$WS_BRANDING_FILE")"
-            [[ ! -f "$WS_BRANDING_FILE" ]] && echo "# Custom branding headers — one 'Header: value' per line" > "$WS_BRANDING_FILE"
-            if command -v nano &> /dev/null; then
-                nano "$WS_BRANDING_FILE"
-            elif command -v vim &> /dev/null; then
-                vim "$WS_BRANDING_FILE"
-            elif command -v vi &> /dev/null; then
-                vi "$WS_BRANDING_FILE"
-            else
-                echo -e "${C_RED}❌ No editor (nano/vim/vi) found.${C_RESET}"
-            fi
-            echo -e "\n${C_GREEN}✅ File saved.${C_RESET}"
-            ;;
-        6)
-            rm -f "$WS_BRANDING_FILE"
-            echo -e "\n${C_GREEN}✅ Branding removed (default 101 response restored).${C_RESET}"
-            ;;
-        0) return ;;
-        *) invalid_option; return ;;
-    esac
-
-    # Restart bridge so it picks up the new branding file (also it auto-reloads every 30s)
-    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        systemctl restart tdz-ws-ssh-bridge
-        echo -e "${C_DIM}WS bridge restarted to pick up new branding.${C_RESET}"
-    fi
-    press_enter
-}
-
-branding_test_response() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🧪 Test 101 Response (Local) ---${C_RESET}"
-    echo -e "\n${C_DIM}Sending DarkTunnel-style WS payload to 127.0.0.1:${WS_SSH_BRIDGE_PORT}...${C_RESET}"
-    if ! systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        echo -e "${C_RED}❌ WS bridge is not running. Install HAProxy Edge Stack first.${C_RESET}"
-        press_enter; return
-    fi
-    python3 - <<'PYTEST'
-import socket, time
-try:
-    s = socket.create_connection(("127.0.0.1", 8890), timeout=5)
-    s.settimeout(5)
-    s.sendall(
-        b"GET wss://telegram.org HTTP/1.1\r\n"
-        b"Host: telegram.org\r\n"
-        b"User-Agent: TDZ-Test/1.0\r\n"
-        b"Connection: Upgrade\r\n"
-        b"Upgrade: websocket\r\n"
-        b"\r\n"
-    )
-    time.sleep(1)
-    data = b""
-    try:
-        while True:
-            chunk = s.recv(512)
-            if not chunk: break
-            data += chunk
-            if len(data) > 500: break
-    except socket.timeout:
-        pass
-    s.close()
-    print("\n" + "=" * 50)
-    print("RESPONSE FROM BRIDGE:")
-    print("=" * 50)
-    print(data.decode(errors='replace'))
-    print("=" * 50)
-    if b"101 Switching Protocols" in data:
-        print("✅ SUCCESS — 101 response received")
-        if b"X-Powered-By" in data:
-            print("✅ Custom branding header present!")
-        else:
-            print("ℹ️  No custom branding header (set one from Branding menu)")
-    else:
-        print("❌ FAIL — no 101 response")
-except Exception as e:
-    print(f"❌ ERROR: {e}")
-PYTEST
-    press_enter
-}
-
-branding_set_ssh_banner_preset() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🎨 SSH Login Banner (Custom Presets) ---${C_RESET}"
-    echo -e "\n${C_CYAN}Choose a preset banner. Each character will be rainbow-colored.${C_RESET}"
-    echo -e "${C_DIM}Banner file: ${SSH_BANNER_FILE}${C_RESET}"
-    echo -e "${C_DIM}Shown to SSH clients BEFORE authentication.${C_RESET}"
-
-    echo -e "\n${C_BOLD}Presets:${C_RESET}"
-    echo -e "  ${C_CHOICE}[1]${C_RESET}  VPS BY @TuhinBroh   (rainbow)"
-    echo -e "  ${C_CHOICE}[2]${C_RESET}  VPS BY @TuhinBroh   (solid cyan)"
-    echo -e "  ${C_CHOICE}[3]${C_RESET}  Premium SSH         (rainbow)"
-    echo -e "  ${C_CHOICE}[4]${C_RESET}  TDZ TUNNEL           (rainbow)"
-    echo -e "  ${C_CHOICE}[5]${C_RESET}  Custom name (rainbow)"
-    echo -e "  ${C_CHOICE}[6]${C_RESET}  Paste your own (raw)"
-    echo -e "  ${C_WARN}[0]${C_RESET}  Return"
-    echo
-    read -p "$(echo -e ${C_PROMPT}"👉 Select: "${C_RESET})" choice
-    case "$choice" in
-        1)
-            local line=$(_rainbow_text "=== VPS BY @TuhinBroh ===")
-            {
-                printf '%s\n\n' "$line"
-                printf 'Welcome to TDZ TUNNEL\n'
-                printf 'Powered by Tuhin\n'
-            } > "$SSH_BANNER_FILE"
-            chmod 644 "$SSH_BANNER_FILE"
-            _enable_banner_in_sshd_config
-            _restart_ssh
-            echo -e "\n${C_GREEN}✅ SSH banner set (rainbow 'VPS BY @TuhinBroh').${C_RESET}"
-            ;;
-        2)
-            local line=$(_solid_color_text "=== VPS BY @TuhinBroh ===" 51)
-            {
-                printf '%s\n\n' "$line"
-                printf 'Welcome to TDZ TUNNEL\n'
-                printf 'Powered by Tuhin\n'
-            } > "$SSH_BANNER_FILE"
-            chmod 644 "$SSH_BANNER_FILE"
-            _enable_banner_in_sshd_config
-            _restart_ssh
-            echo -e "\n${C_GREEN}✅ SSH banner set (solid cyan 'VPS BY @TuhinBroh').${C_RESET}"
-            ;;
-        3)
-            local line=$(_rainbow_text "=== PREMIUM SSH by Tuhin ===")
-            {
-                printf '%s\n\n' "$line"
-                printf '--- TERM OF SERVICE ---\n'
-                printf 'NO SPAM\nNO DDOS\nNO HACKING\nMULTI LOGIN BANNED\n\n'
-                printf 'By Tuhin\n'
-            } > "$SSH_BANNER_FILE"
-            chmod 644 "$SSH_BANNER_FILE"
-            _enable_banner_in_sshd_config
-            _restart_ssh
-            echo -e "\n${C_GREEN}✅ SSH banner set (rainbow 'Premium SSH by Tuhin').${C_RESET}"
-            ;;
-        4)
-            local line=$(_rainbow_text "=== TDZ TUNNEL Manager ===")
-            {
-                printf '%s\n\n' "$line"
-                printf 'Premium SSH Tunneling Service\n'
-                printf 'Powered by Tuhin\n'
-            } > "$SSH_BANNER_FILE"
-            chmod 644 "$SSH_BANNER_FILE"
-            _enable_banner_in_sshd_config
-            _restart_ssh
-            echo -e "\n${C_GREEN}✅ SSH banner set (rainbow 'TDZ TUNNEL Manager').${C_RESET}"
-            ;;
-        5)
-            read -p "$(echo -e ${C_PROMPT}"👉 Enter banner text (one line): "${C_RESET})" custom_text
-            [[ -z "$custom_text" ]] && { echo -e "${C_RED}❌ Text cannot be empty.${C_RESET}"; press_enter; return; }
-            local line=$(_rainbow_text "=== ${custom_text} ===")
-            {
-                printf '%s\n\n' "$line"
-                printf 'Welcome to TDZ TUNNEL\n'
-                printf 'Powered by Tuhin\n'
-            } > "$SSH_BANNER_FILE"
-            chmod 644 "$SSH_BANNER_FILE"
-            _enable_banner_in_sshd_config
-            _restart_ssh
-            echo -e "\n${C_GREEN}✅ SSH banner set (rainbow '${custom_text}').${C_RESET}"
-            ;;
-        6)
-            set_ssh_banner_paste
-            return
-            ;;
-        0) return ;;
-        *) invalid_option; return ;;
-    esac
-    press_enter
-}
-
-branding_view_current() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 👁️ Current Branding Settings ---${C_RESET}"
-
-    echo -e "\n${C_BOLD}${C_CYAN}[1] WS 101 Response Headers${C_RESET}  ${C_DIM}(${WS_BRANDING_FILE})${C_RESET}"
-    if [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]]; then
-        echo -e "${C_GREEN}--- BEGIN ---${C_RESET}"
-        cat "$WS_BRANDING_FILE"
-        echo -e "${C_GREEN}---- END ----${C_RESET}"
-    else
-        echo -e "${C_YELLOW}ℹ️ No custom branding set (default 101 response).${C_RESET}"
-    fi
-
-    echo -e "\n${C_BOLD}${C_CYAN}[2] SSH Login Banner${C_RESET}  ${C_DIM}(${SSH_BANNER_FILE})${C_RESET}"
-    if [[ -f "$SSH_BANNER_FILE" && -s "$SSH_BANNER_FILE" ]]; then
-        echo -e "${C_GREEN}--- BEGIN ---${C_RESET}"
-        cat "$SSH_BANNER_FILE"
-        echo -e "${C_GREEN}---- END ----${C_RESET}"
-    else
-        echo -e "${C_YELLOW}ℹ️ No SSH banner set.${C_RESET}"
-    fi
-
-    echo -e "\n${C_BOLD}${C_CYAN}[3] Live Test Response${C_RESET}"
-    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        echo -e "${C_DIM}Sending test payload to 127.0.0.1:${WS_SSH_BRIDGE_PORT}...${C_RESET}"
-        python3 - <<'PYTEST' 2>/dev/null
-import socket, time
-try:
-    s = socket.create_connection(("127.0.0.1", 8890), timeout=5)
-    s.settimeout(3)
-    s.sendall(b"GET wss://x HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
-    time.sleep(0.5)
-    data = b""
-    try:
-        while True:
-            chunk = s.recv(256)
-            if not chunk: break
-            data += chunk
-    except: pass
-    s.close()
-    # Only show up to the blank line (the 101 response, not the SSH banner)
-    end = data.find(b"\r\n\r\n")
-    if end > 0:
-        print(data[:end+4].decode(errors='replace'))
-    else:
-        print(data[:200].decode(errors='replace'))
-except Exception as e:
-    print(f"(test failed: {e})")
-PYTEST
-    else
-        echo -e "${C_YELLOW}ℹ️ WS bridge not running — install HAProxy Edge Stack first.${C_RESET}"
-    fi
-
-    echo
-    press_enter
-}
-
-branding_menu() {
-    while true; do
-        clear; show_banner
-        echo -e "${C_BOLD}${C_PURPLE}--- 🎨 BRANDING & CUSTOMIZATION ---${C_RESET}"
-        echo -e "\n${C_DIM}Customize the WS 101 Switching Protocols response and SSH login banner.${C_RESET}"
-        echo -e "${C_DIM}DarkTunnel / HTTP Custom / NPV clients will see your custom branding.${C_RESET}"
-
-        # Status indicators
-        local ws_status="${C_STATUS_I}(not set)${C_RESET}"
-        [[ -f "$WS_BRANDING_FILE" && -s "$WS_BRANDING_FILE" ]] && ws_status="${C_STATUS_A}(set)${C_RESET}"
-        local banner_status="${C_STATUS_I}(not set)${C_RESET}"
-        [[ -f "$SSH_BANNER_FILE" && -s "$SSH_BANNER_FILE" ]] && banner_status="${C_STATUS_A}(set)${C_RESET}"
-
-        echo -e "\n   ${C_TITLE}════════════[ ${C_BOLD}🎨 BRANDING & CUSTOMIZATION ${C_RESET}${C_TITLE}]═══════════${C_RESET}"
-        printf "     ${C_CHOICE}[1]${C_RESET} %-40s %s\n" "✏️  Set WS 101 Response Headers" "$ws_status"
-        printf "     ${C_CHOICE}[2]${C_RESET} %-40s %s\n" "🎯 SSH Login Banner Presets" "$banner_status"
-        printf "     ${C_CHOICE}[3]${C_RESET} %-40s\n" "👁️  View Current Branding"
-        printf "     ${C_CHOICE}[4]${C_RESET} %-40s\n" "🧪 Test 101 Response (Live)"
-        echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
-        echo -e "     ${C_WARN}[0]${C_RESET} ↩️ Return to Main Menu"
-        echo
-        if ! read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice; then
-            echo; return
-        fi
-        case "$choice" in
-            1) branding_set_ws_headers ;;
-            2) branding_set_ssh_banner_preset ;;
-            3) branding_view_current ;;
-            4) branding_test_response ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
 
 write_internal_nginx_config() {
     local server_name="$1"
@@ -4490,8 +4157,12 @@ refresh_dashboard_cache() {
     DASH_CACHE_OS_NAME=$(grep -oP 'PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null | cut -c1-28 || echo "Linux")
     DASH_CACHE_UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' | cut -c1-20 || echo "unknown")
 
-    # CPU load (1-min avg)
+    # CPU load (1-min avg) + core count (1 core / N cores)
     DASH_CACHE_CPU_LOAD=$(awk '{printf "%.2f", $1}' /proc/loadavg 2>/dev/null || echo "0.00")
+    local _cores
+    _cores=$(nproc 2>/dev/null || echo 1)
+    [[ -z "$_cores" || "$_cores" -lt 1 ]] && _cores=1
+    DASH_CACHE_CPU_CORES=$_cores
 
     # RAM
     local ram_pct ram_used
@@ -4549,31 +4220,31 @@ show_banner() {
     refresh_dashboard_cache
     [[ -t 1 ]] && clear
     echo
-    # Top double-border header bar (60 chars wide inside borders)
-    echo -e "  ${C_CYAN}╔══════════════════════════════════════════════════════════╗${C_RESET}"
-    # Title line — centered, exactly 60 visible chars
-    local title_content="${C_BOLD}${C_CYAN}TDZ TUNNEL MANAGER${C_RESET}  ${C_DIM}v4.5.0 Premium${C_RESET}"
-    local title_clean="TDZ TUNNEL MANAGER  v4.5.0 Premium"
-    local title_pad=$(( (60 - ${#title_clean}) / 2 ))
+    # ╔══ Top double-border banner ══╗  (inner width 64)
+    echo -e "  ${C_CYAN}╔══════════════════════════════════════════════════════════════════╗${C_RESET}"
+    # Title line — centered, 64 visible chars
+    local title_content="${C_BOLD}${C_CYAN}TDZ SSH TUNNEL${C_RESET} ${C_YELLOW}v0.0.1 BETA${C_RESET}"
+    local title_clean="TDZ SSH TUNNEL v0.0.1 BETA"
+    local title_pad=$(( (64 - ${#title_clean}) / 2 ))
     [[ $title_pad -lt 0 ]] && title_pad=0
     local title_lpad="" title_rpad=""
     [[ $title_pad -gt 0 ]] && printf -v title_lpad "%${title_pad}s" ""
-    local title_rpad_len=$(( 60 - ${#title_clean} - title_pad ))
+    local title_rpad_len=$(( 64 - ${#title_clean} - title_pad ))
     [[ $title_rpad_len -lt 0 ]] && title_rpad_len=0
     [[ $title_rpad_len -gt 0 ]] && printf -v title_rpad "%${title_rpad_len}s" ""
     printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$title_lpad" "$title_content" "$title_rpad"
-    # Subtitle line — centered, exactly 60 visible chars
-    local sub_content="${C_GRAY}Powered by Tuhin  •  @TuhinBroh${C_RESET}"
-    local sub_clean="Powered by Tuhin  •  @TuhinBroh"
-    local sub_pad=$(( (60 - ${#sub_clean}) / 2 ))
+    # Subtitle line — centered
+    local sub_content="${C_GRAY}Powered By @TuhinBroh${C_RESET}"
+    local sub_clean="Powered By @TuhinBroh"
+    local sub_pad=$(( (64 - ${#sub_clean}) / 2 ))
     [[ $sub_pad -lt 0 ]] && sub_pad=0
     local sub_lpad="" sub_rpad=""
     [[ $sub_pad -gt 0 ]] && printf -v sub_lpad "%${sub_pad}s" ""
-    local sub_rpad_len=$(( 60 - ${#sub_clean} - sub_pad ))
+    local sub_rpad_len=$(( 64 - ${#sub_clean} - sub_pad ))
     [[ $sub_rpad_len -lt 0 ]] && sub_rpad_len=0
     [[ $sub_rpad_len -gt 0 ]] && printf -v sub_rpad "%${sub_rpad_len}s" ""
     printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$sub_lpad" "$sub_content" "$sub_rpad"
-    echo -e "  ${C_CYAN}╚══════════════════════════════════════════════════════════╝${C_RESET}"
+    echo -e "  ${C_CYAN}╚══════════════════════════════════════════════════════════════════╝${C_RESET}"
 }
 
 protocol_menu() {
@@ -5359,49 +5030,61 @@ main_menu() {
         export UNINSTALL_MODE="interactive"
         show_banner
 
-        # ── Service status pills ────────────────────────────────────────
-        local haprx_state="${C_STATUS_I}○${C_RESET}"
-        systemctl is-active --quiet haproxy && haprx_state="${C_STATUS_A}●${C_RESET}"
-        local nginx_state="${C_STATUS_I}○${C_RESET}"
-        systemctl is-active --quiet nginx && nginx_state="${C_STATUS_A}●${C_RESET}"
-        local ws_state="${C_STATUS_I}○${C_RESET}"
-        systemctl is-active --quiet tdz-ws-ssh-bridge && ws_state="${C_STATUS_A}●${C_RESET}"
+        # ── Refresh caches ─────────────────────────────────────────────
+        refresh_dashboard_cache
 
-        # ── SERVER PROFILE box ─────────────────────────────────────────
+        # ── Service status pills (● = running, ○ = stopped) ───────────
+        local pill_haprx="${C_STATUS_I}○${C_RESET}"  pill_nginx="${C_STATUS_I}○${C_RESET}"
+        local pill_ws="${C_STATUS_I}○${C_RESET}"     pill_badvpn="${C_STATUS_I}○${C_RESET}"
+        local pill_udpgw="${C_STATUS_I}○${C_RESET}"  pill_dnstt="${C_STATUS_I}○${C_RESET}"
+        systemctl is-active --quiet haproxy            && pill_haprx="${C_STATUS_A}●${C_RESET}"
+        systemctl is-active --quiet nginx              && pill_nginx="${C_STATUS_A}●${C_RESET}"
+        systemctl is-active --quiet tdz-ws-ssh-bridge  && pill_ws="${C_STATUS_A}●${C_RESET}"
+        systemctl is-active --quiet badvpn              && pill_badvpn="${C_STATUS_A}●${C_RESET}"
+        systemctl is-active --quiet udpgw               && pill_udpgw="${C_STATUS_A}●${C_RESET}"
+        systemctl is-active --quiet dnstt               && pill_dnstt="${C_STATUS_A}●${C_RESET}"
+
+        # ── SECTION 1: SERVER PROFILE (matches reference screenshot) ──
+        # Layout: LOC | ISP, IP | DOMAIN, OS | UPTIME, CPU | RAM, ACCT | ONLINE
+        local _cpu_core_word="core"
+        (( DASH_CACHE_CPU_CORES > 1 )) && _cpu_core_word="cores"
+        local _cpu_val="${DASH_CACHE_CPU_LOAD} (${DASH_CACHE_CPU_CORES} ${_cpu_core_word})"
+        local _ram_val="${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED})"
         echo
         tdz_box_top
         tdz_box_header "SERVER PROFILE"
         tdz_box_divider
-        tdz_kv2 "LOC" "${DASH_CACHE_LOCATION:0:22}" "ISP" "${DASH_CACHE_ISP:0:22}"
-        tdz_kv2 "IP" "${DASH_CACHE_PUBLIC_IP:0:22}" "DOMAIN" "${DASH_CACHE_DOMAIN:0:22}"
+        tdz_kv2 "LOC"   "${DASH_CACHE_LOCATION:0:22}"  "ISP"    "${DASH_CACHE_ISP:0:24}"
+        tdz_kv2 "IP"    "${DASH_CACHE_PUBLIC_IP:0:22}" "DOMAIN" "${DASH_CACHE_DOMAIN:0:24}"
         tdz_box_divider
-        tdz_kv2 "OS" "${DASH_CACHE_OS_NAME:0:22}" "UPTIME" "${DASH_CACHE_UPTIME:0:22}"
-        tdz_kv2 "CPU" "${DASH_CACHE_CPU_LOAD}" "RAM" "${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED:0:18})"
-        tdz_kv2 "ACCT" "${DASH_CACHE_TOTAL_USERS}" "ONLINE" "${DASH_CACHE_ONLINE_USERS}"
+        tdz_kv2 "OS"    "${DASH_CACHE_OS_NAME:0:22}"  "UPTIME" "${DASH_CACHE_UPTIME:0:24}"
+        tdz_kv2 "CPU"   "${_cpu_val:0:22}"            "RAM"    "${_ram_val:0:24}"
+        tdz_box_divider
+        tdz_kv2 "ACCT"  "${DASH_CACHE_TOTAL_USERS} total" "ONLINE" "${DASH_CACHE_ONLINE_USERS} now"
         tdz_box_bot
 
-        # ── SERVICE STATUS box ─────────────────────────────────────────
+        # ── SECTION 2: SERVICE STATUS (live pills) ────────────────────
         echo
         tdz_box_top
         tdz_box_header "SERVICE STATUS"
         tdz_box_divider
-        tdz_row "${haprx_state} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}   ${nginx_state} Nginx ${NGINX_INTERNAL_TLS_PORT}   ${ws_state} WS-Bridge ${WS_SSH_BRIDGE_PORT}"
+        tdz_row "${pill_haprx} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}   ${pill_nginx} Nginx ${NGINX_INTERNAL_TLS_PORT}   ${pill_ws} WS-Bridge ${WS_SSH_BRIDGE_PORT}"
         tdz_box_bot
 
-        # ── USER MANAGEMENT box ────────────────────────────────────────
+        # ── SECTION 3: USER MANAGEMENT ────────────────────────────────
         echo
         tdz_box_top
         tdz_box_header "USER MANAGEMENT"
         tdz_box_divider
-        tdz_menu2 "[ 1]" "Create User" "[ 7]" "List Users"
-        tdz_menu2 "[ 2]" "Delete User" "[ 8]" "Client Config"
-        tdz_menu2 "[ 3]" "Renew Account" "[ 9]" "Trial Account"
-        tdz_menu2 "[ 4]" "Lock User" "[10]" "Bandwidth Usage"
-        tdz_menu2 "[ 5]" "Unlock Account" "[11]" "Bulk Create"
+        tdz_menu2 "[ 1]" "Create User"      "[ 7]" "List Users"
+        tdz_menu2 "[ 2]" "Delete User"      "[ 8]" "Client Config"
+        tdz_menu2 "[ 3]" "Renew Account"    "[ 9]" "Trial Account"
+        tdz_menu2 "[ 4]" "Lock User"        "[10]" "Bandwidth Usage"
+        tdz_menu2 "[ 5]" "Unlock Account"   "[11]" "Bulk Create"
         tdz_menu1 "[ 6]" "Edit Details"
         tdz_box_bot
 
-        # ── VPN & PROTOCOLS box ────────────────────────────────────────
+        # ── SECTION 4: VPN & PROTOCOLS ────────────────────────────────
         echo
         tdz_box_top
         tdz_box_header "VPN & PROTOCOLS"
@@ -5410,18 +5093,17 @@ main_menu() {
         tdz_menu1 "[13]" "Traffic Monitor"
         tdz_box_bot
 
-        # ── SYSTEM & BRANDING box ──────────────────────────────────────
+        # ── SECTION 5: SYSTEM & MAINTENANCE ───────────────────────────
         echo
         tdz_box_top
-        tdz_box_header "SYSTEM & BRANDING"
+        tdz_box_header "SYSTEM & MAINTENANCE"
         tdz_box_divider
-        tdz_menu2 "[15]" "Domain & SSL Cert" "[19]" "Restore Data"
-        tdz_menu2 "[16]" "SSH Banner" "[20]" "Cleanup Expired"
-        tdz_menu2 "[17]" "Auto-Reboot Task" "[21]" "Branding & Custom"
-        tdz_menu1 "[18]" "Backup Data"
+        tdz_menu2 "[15]" "Domain & SSL Cert" "[18]" "Backup Data"
+        tdz_menu2 "[16]" "SSH Banner"        "[19]" "Restore Data"
+        tdz_menu2 "[17]" "Auto-Reboot Task"  "[20]" "Cleanup Expired"
         tdz_box_bot
 
-        # ── DANGER ZONE box (red) ──────────────────────────────────────
+        # ── SECTION 6: DANGER ZONE (red) ──────────────────────────────
         echo
         tdz_box_top "$C_DANGER"
         tdz_box_header "DANGER ZONE" "$C_DANGER"
@@ -5446,18 +5128,17 @@ main_menu() {
             9) create_trial_account; press_enter ;;
             10) view_user_bandwidth; press_enter ;;
             11) bulk_create_users; press_enter ;;
-            
+
             12) protocol_menu ;;
             13) traffic_monitor_menu ;;
             14) torrent_block_menu ;;
-            
+
             15) domain_cert_menu; press_enter ;;
             16) ssh_banner_menu ;;
             17) auto_reboot_menu ;;
             18) backup_user_data; press_enter ;;
             19) restore_user_data; press_enter ;;
             20) cleanup_expired; press_enter ;;
-            21) branding_menu ;;
 
             99) uninstall_script ;;
             0) exit 0 ;;
