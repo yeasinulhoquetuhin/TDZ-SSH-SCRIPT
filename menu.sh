@@ -113,32 +113,35 @@ SSH_SESSION_CACHE_TS=0
 
 # CPU percentage computed from /proc/stat deltas (top-style).
 # Returns an integer 0..100 — never exceeds 100% regardless of load average.
-# Self-contained; only side effect is updating the prev-sample state vars.
+# Does its own internal 0.2s sampling so EVERY call returns a real value
+# (no need to wait for a second dashboard refresh for the first non-zero %).
 compute_cpu_pct() {
-    local line cpu user nice system idle iowait irq softirq steal total
-    local prev_idle prev_total diff_total diff_idle pct
+    local line1 line2 cpu user nice system idle iowait irq softirq steal
+    local total1 idle1 total2 idle2 diff_total diff_idle pct
 
-    line=$(head -n1 /proc/stat 2>/dev/null)
-    [[ -z "$line" ]] && { echo 0; return; }
-
-    read -r cpu user nice system idle iowait irq softirq steal _rest <<< "$line"
+    # Sample 1
+    line1=$(head -n1 /proc/stat 2>/dev/null)
+    [[ -z "$line1" ]] && { echo 0; return; }
+    read -r cpu user nice system idle iowait irq softirq steal _rest <<< "$line1"
     user=${user:-0}; nice=${nice:-0}; system=${system:-0}; idle=${idle:-0}
     iowait=${iowait:-0}; irq=${irq:-0}; softirq=${softirq:-0}; steal=${steal:-0}
+    idle1=$(( idle + iowait ))
+    total1=$(( idle + iowait + user + nice + system + irq + softirq + steal ))
 
-    total=$(( idle + iowait + user + nice + system + irq + softirq + steal ))
+    # Small delay so sample 2 captures actual CPU activity
+    sleep 0.2
 
-    prev_idle=$DASH_CPU_PREV_IDLE
-    prev_total=$DASH_CPU_PREV_TOTAL
-    DASH_CPU_PREV_IDLE=$idle
-    DASH_CPU_PREV_TOTAL=$total
+    # Sample 2
+    line2=$(head -n1 /proc/stat 2>/dev/null)
+    [[ -z "$line2" ]] && { echo 0; return; }
+    read -r cpu user nice system idle iowait irq softirq steal _rest <<< "$line2"
+    user=${user:-0}; nice=${nice:-0}; system=${system:-0}; idle=${idle:-0}
+    iowait=${iowait:-0}; irq=${irq:-0}; softirq=${softirq:-0}; steal=${steal:-0}
+    idle2=$(( idle + iowait ))
+    total2=$(( idle + iowait + user + nice + system + irq + softirq + steal ))
 
-    if (( prev_total == 0 )); then
-        echo 0
-        return
-    fi
-
-    diff_total=$(( total - prev_total ))
-    diff_idle=$(( idle - prev_idle ))
+    diff_total=$(( total2 - total1 ))
+    diff_idle=$(( idle2 - idle1 ))
     if (( diff_total <= 0 )); then
         echo 0
         return
@@ -3121,6 +3124,15 @@ global
     user haproxy
     group haproxy
     daemon
+    # tune.* directives MUST live in 'global', not 'defaults' — HAProxy 2.6
+    # rejects them in 'defaults' with 'unknown keyword'. Bumping buffer sizes
+    # to 4MB lets HAProxy's TCP window match the bridge's 4MB buffers,
+    # preventing backpressure stalls that cap throughput at ~20-30 Mbps.
+    tune.bufsize 1048576
+    tune.rcvbuf.client 4194304
+    tune.rcvbuf.server 4194304
+    tune.sndbuf.client 4194304
+    tune.sndbuf.server 4194304
 
 defaults
     log     global
@@ -3131,14 +3143,6 @@ defaults
     timeout connect 2s
     timeout client  24h
     timeout server  24h
-    # HAProxy default SO_RCVBUF/SO_SNDBUF are tiny (~16KB). Bumping to 4MB
-    # lets HAProxy's TCP window match the bridge's 4MB buffers, preventing
-    # backpressure stalls that cap throughput at ~20-30 Mbps on long-RTT paths.
-    tune.bufsize 1048576
-    tune.rcvbuf.client 4194304
-    tune.rcvbuf.server 4194304
-    tune.sndbuf.client 4194304
-    tune.sndbuf.server 4194304
 
 # ====================================================================
 # TIER 1: PORT ${EDGE_PUBLIC_HTTP_PORT} (Cleartext WS Payloads & Raw SSH)
