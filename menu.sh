@@ -571,7 +571,7 @@ harden_sshd_for_tunnel_stability() {
         need_reload=true
     fi
 
-    local new_conf="# TDZ Tunnel - stability hardening (do not edit, managed by menu)\n"
+    local new_conf="# TDZ SSH TUNNEL - stability hardening (do not edit, managed by menu)\n"
     new_conf+="# Aggressive ClientAlive probes — server-side keepalive for SSH sessions\n"
     new_conf+="ClientAliveInterval 30\n"
     new_conf+="ClientAliveCountMax 3\n"
@@ -696,19 +696,19 @@ delete_tdztunnel_user_accounts() {
 
 require_interactive_terminal() {
     if [[ ! -t 0 || ! -t 1 ]]; then
-        echo -e "${C_RED}❌ Error: The TDZ Tunnel menu must be run from an interactive terminal.${C_RESET}"
+        echo -e "${C_RED}❌ Error: The TDZ SSH TUNNEL menu must be run from an interactive terminal.${C_RESET}"
         exit 1
     fi
 }
 
 initial_setup() {
-    echo -e "${C_BLUE}⚙️ Initializing TDZ Tunnel Manager setup...${C_RESET}"
+    echo -e "${C_BLUE}⚙️ Initializing TDZ SSH TUNNEL setup...${C_RESET}"
     check_environment
     
     ensure_tdztunnel_dirs
     ensure_tdztunnel_system_group
     
-    echo -e "${C_BLUE}🔹 Hardening sshd for tunnel stability...${C_RESET}"
+    echo -e "${C_BLUE}🔹 Hardening sshd for TDZ SSH TUNNEL stability...${C_RESET}"
     harden_sshd_for_tunnel_stability
 
     echo -e "${C_BLUE}🔹 Configuring user limiter service...${C_RESET}"
@@ -879,7 +879,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ Tunnel limiter version 2026-06-25.1
+# TDZ SSH TUNNEL limiter version 2026-06-25.1
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1127,7 +1127,7 @@ EOF
 
     cat > "$LIMITER_SERVICE" << EOF
 [Unit]
-Description=TDZ Tunnel Active User Limiter
+Description=TDZ SSH TUNNEL Active User Limiter
 After=network.target
 
 [Service]
@@ -1158,7 +1158,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ Tunnel limiter version 2026-06-25.1"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-06-25.1"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -1204,7 +1204,7 @@ cleanup_legacy_bandwidth_runtime() {
 setup_trial_cleanup_script() {
     cat > "$TRIAL_CLEANUP_SCRIPT" << 'TREOF'
 #!/bin/bash
-# TDZ Tunnel Trial Account Auto-Cleanup
+# TDZ SSH TUNNEL Trial Account Auto-Cleanup
 # Usage: tdztunnel-trial-cleanup.sh <username>
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
@@ -1284,7 +1284,7 @@ update_ssh_banners_config() {
 
     ensure_tdztunnel_dirs
     tmp_conf="/tmp/tdz_banners_new.conf"
-    echo "# TDZ Tunnel - Dynamic per-user SSH banners" > "$tmp_conf"
+    echo "# TDZ SSH TUNNEL - Dynamic per-user SSH banners" > "$tmp_conf"
 
     if [[ -f "$DB_FILE" ]]; then
         while IFS=: read -r u _rest; do
@@ -1482,7 +1482,7 @@ _select_multi_user_interface() {
     if [[ ${#all_users[@]} -eq 0 ]]; then
         echo -e "${C_YELLOW}ℹ️ No users found in the manager database.${C_RESET}"
         if [[ "$include_orphan_users" == "true" ]]; then
-            echo -e "${C_DIM}No orphan TDZ Tunnel system users were found either.${C_RESET}"
+            echo -e "${C_DIM}No orphan TDZ SSH TUNNEL system users were found either.${C_RESET}"
         fi
         SELECTED_USERS=("NO_USERS"); return
     fi
@@ -1624,14 +1624,14 @@ create_user() {
         return
     fi
     if db_has_user "$username"; then
-        echo -e "\n${C_RED}❌ Error: User '$username' already exists in TDZ Tunnel.${C_RESET}"
+        echo -e "\n${C_RED}❌ Error: User '$username' already exists in TDZ SSH TUNNEL.${C_RESET}"
         return
     fi
     if id "$username" &>/dev/null; then
         if is_tdztunnel_orphan_user "$username"; then
             echo -e "\n${C_YELLOW}⚠️ User '$username' already exists on the system but is missing from users.db.${C_RESET}"
             echo -e "${C_DIM}This usually happens after uninstalling the script without deleting the SSH users.${C_RESET}"
-            read -p "👉 Do you want to take control of this existing user and manage it with TDZ Tunnel? (y/n): " adopt_confirm
+            read -p "👉 Do you want to take control of this existing user and manage it with TDZ SSH TUNNEL? (y/n): " adopt_confirm
             if [[ "$adopt_confirm" == "y" || "$adopt_confirm" == "Y" ]]; then
                 adopt_existing=true
             else
@@ -1639,7 +1639,7 @@ create_user() {
                 return
             fi
         else
-            echo -e "\n${C_RED}❌ Error: System user '$username' already exists and does not look like a TDZ Tunnel SSH account.${C_RESET}"
+            echo -e "\n${C_RED}❌ Error: System user '$username' already exists and does not look like a TDZ SSH TUNNEL account.${C_RESET}"
             return
         fi
     fi
@@ -1680,7 +1680,7 @@ create_user() {
     
     clear; show_banner
     if [[ "$adopt_existing" == "true" ]]; then
-        echo -e "${C_GREEN}✅ Existing system user '$username' has been imported into TDZ Tunnel!${C_RESET}\n"
+        echo -e "${C_GREEN}✅ Existing system user '$username' has been imported into TDZ SSH TUNNEL!${C_RESET}\n"
     else
         echo -e "${C_GREEN}✅ User '$username' created successfully!${C_RESET}\n"
     fi
@@ -1703,7 +1703,7 @@ create_user() {
 }
 
 delete_user() {
-    _select_multi_user_interface "--- 🗑️ Delete TDZ Tunnel Users ---" "true"
+    _select_multi_user_interface "--- 🗑️ Delete TDZ SSH TUNNEL Users ---" "true"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
     echo -e "\n${C_RED}⚠️ You selected ${#SELECTED_USERS[@]} user(s) to delete: ${C_YELLOW}${SELECTED_USERS[*]}${C_RESET}"
@@ -2096,7 +2096,7 @@ _enable_banner_in_sshd_config() {
     disable_dynamic_ssh_banner_system
     sed -i.bak -E 's/^( *Banner *).*/#\1/' /etc/ssh/sshd_config
     if ! grep -q -E "^Banner $SSH_BANNER_FILE" /etc/ssh/sshd_config; then
-        echo -e "\n# TDZ Tunnel SSH Banner\nBanner $SSH_BANNER_FILE" >> /etc/ssh/sshd_config
+        echo -e "\n# TDZ SSH TUNNEL SSH Banner\nBanner $SSH_BANNER_FILE" >> /etc/ssh/sshd_config
     fi
     echo -e "${C_GREEN}✅ sshd_config updated.${C_RESET}"
 }
@@ -2298,7 +2298,7 @@ EOF
     echo -e "\n${C_GREEN}📝 Creating udpgw systemd service file...${C_RESET}"
     cat > "$UDPGW_SERVICE_FILE" <<EOF
 [Unit]
-Description=TDZ Tunnel UDPGW Backend
+Description=TDZ SSH TUNNEL UDPGW Backend
 After=network.target
 
 [Service]
@@ -2315,7 +2315,7 @@ EOF
     echo -e "\n${C_GREEN}📝 Creating systemd service file...${C_RESET}"
     cat > "$UDP_CUSTOM_SERVICE_FILE" <<EOF
 [Unit]
-Description=UDP Custom by TDZ Tunnel
+Description=UDP Custom by TDZ SSH TUNNEL
 After=network.target
 
 [Service]
@@ -3002,7 +3002,7 @@ PYEOF
 write_ws_ssh_bridge_service() {
     cat > "$WS_SSH_BRIDGE_SERVICE" <<EOF
 [Unit]
-Description=TDZ Tunnel WebSocket-to-SSH Bridge (DarkTunnel payload support)
+Description=TDZ SSH TUNNEL WebSocket-to-SSH Bridge (DarkTunnel payload support)
 After=network-online.target ssh.service
 Wants=network-online.target
 
@@ -3317,7 +3317,7 @@ install_ssl_tunnel() {
     echo -e "   • Loopback SSL decryptor on ${C_WHITE}${HAPROXY_INTERNAL_DECRYPT_PORT}${C_RESET}"
 
     if [ -f "$HAPROXY_CONFIG" ] || [ -f "$NGINX_CONFIG_FILE" ]; then
-        echo -e "\n${C_YELLOW}⚠️ Existing HAProxy/Nginx configs will be replaced with the TDZ Tunnel edge layout.${C_RESET}"
+        echo -e "\n${C_YELLOW}⚠️ Existing HAProxy/Nginx configs will be replaced with the TDZ SSH TUNNEL edge layout.${C_RESET}"
         read -p "👉 Continue with the replacement? (y/n): " confirm_replace
         if [[ "$confirm_replace" != "y" && "$confirm_replace" != "Y" ]]; then
             echo -e "${C_RED}❌ Installation cancelled.${C_RESET}"
@@ -4004,7 +4004,7 @@ purge_nginx() {
     rm -f "${NGINX_CONFIG_FILE}.bak.tdztunnel"
     rm -f "$NGINX_PORTS_FILE"
     if [[ "$mode" != "silent" ]]; then
-        echo -e "\n${C_GREEN}✅ Internal Nginx proxy purged. Shared TDZ Tunnel certificates were kept.${C_RESET}"
+        echo -e "\n${C_GREEN}✅ Internal Nginx proxy purged. Shared TDZ SSH TUNNEL certificates were kept.${C_RESET}"
     fi
 }
 
@@ -4014,7 +4014,7 @@ install_nginx_proxy() {
     echo -e "\n${C_CYAN}This keeps HAProxy on ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} and rewrites the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
 
     if [ ! -s "$SSL_CERT_FILE" ] || [ ! -s "$SSL_CERT_CHAIN_FILE" ] || [ ! -s "$SSL_CERT_KEY_FILE" ]; then
-        echo -e "\n${C_YELLOW}⚠️ No shared TDZ Tunnel certificate was found.${C_RESET}"
+        echo -e "\n${C_YELLOW}⚠️ No shared TDZ SSH TUNNEL certificate was found.${C_RESET}"
         echo -e "${C_DIM}Running the full HAProxy edge installer so the certificate and both services stay aligned.${C_RESET}"
         install_ssl_tunnel
         return
@@ -4582,7 +4582,7 @@ uninstall_script() {
     local remove_users_on_uninstall=false
     mapfile -t removable_users < <(get_tdztunnel_known_users)
     if [[ ${#removable_users[@]} -gt 0 ]]; then
-        echo -e "\n${C_YELLOW}TDZ Tunnel SSH users detected on this VPS:${C_RESET} ${removable_users[*]}"
+        echo -e "\n${C_YELLOW}TDZ SSH TUNNEL SSH users detected on this VPS:${C_RESET} ${removable_users[*]}"
         read -p "👉 Do you also want to permanently delete these SSH users before uninstalling? (y/n): " remove_users_confirm
         if [[ "$remove_users_confirm" == "y" || "$remove_users_confirm" == "Y" ]]; then
             remove_users_on_uninstall=true
@@ -4592,7 +4592,7 @@ uninstall_script() {
     echo -e "\n${C_BLUE}--- 💥 Starting Uninstallation 💥 ---${C_RESET}"
     
     if [[ "$remove_users_on_uninstall" == "true" ]]; then
-        echo -e "\n${C_BLUE}🗑️ Removing TDZ Tunnel SSH users before uninstall...${C_RESET}"
+        echo -e "\n${C_BLUE}🗑️ Removing TDZ SSH TUNNEL SSH users before uninstall...${C_RESET}"
         delete_tdztunnel_user_accounts "${removable_users[@]}"
     fi
     
