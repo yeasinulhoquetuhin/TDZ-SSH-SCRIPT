@@ -111,42 +111,15 @@ DASH_CACHE_ONLINE_USERS=0
 SSH_SESSION_CACHE_TTL=10
 SSH_SESSION_CACHE_TS=0
 
-# CPU percentage computed from /proc/stat deltas (top-style).
-# Returns an integer 0..100 — never exceeds 100% regardless of load average.
-# Does its own internal 0.2s sampling so EVERY call returns a real value
-# (no need to wait for a second dashboard refresh for the first non-zero %).
+# CPU percentage computed via vmstat — reliable real-time measurement.
+# vmstat 1 2 samples twice with 1s delay: first sample = avg since boot
+# (ignored), second sample = real-time CPU usage. Returns integer 0..100.
 compute_cpu_pct() {
-    local line1 line2 cpu user nice system idle iowait irq softirq steal
-    local total1 idle1 total2 idle2 diff_total diff_idle pct
-
-    # Sample 1
-    line1=$(head -n1 /proc/stat 2>/dev/null)
-    [[ -z "$line1" ]] && { echo 0; return; }
-    read -r cpu user nice system idle iowait irq softirq steal _rest <<< "$line1"
-    user=${user:-0}; nice=${nice:-0}; system=${system:-0}; idle=${idle:-0}
-    iowait=${iowait:-0}; irq=${irq:-0}; softirq=${softirq:-0}; steal=${steal:-0}
-    idle1=$(( idle + iowait ))
-    total1=$(( idle + iowait + user + nice + system + irq + softirq + steal ))
-
-    # Small delay so sample 2 captures actual CPU activity
-    sleep 0.2
-
-    # Sample 2
-    line2=$(head -n1 /proc/stat 2>/dev/null)
-    [[ -z "$line2" ]] && { echo 0; return; }
-    read -r cpu user nice system idle iowait irq softirq steal _rest <<< "$line2"
-    user=${user:-0}; nice=${nice:-0}; system=${system:-0}; idle=${idle:-0}
-    iowait=${iowait:-0}; irq=${irq:-0}; softirq=${softirq:-0}; steal=${steal:-0}
-    idle2=$(( idle + iowait ))
-    total2=$(( idle + iowait + user + nice + system + irq + softirq + steal ))
-
-    diff_total=$(( total2 - total1 ))
-    diff_idle=$(( idle2 - idle1 ))
-    if (( diff_total <= 0 )); then
-        echo 0
-        return
-    fi
-    pct=$(( (diff_total - diff_idle) * 100 / diff_total ))
+    local idle pct
+    # tail -n1 grabs the second sample (real-time). Column 15 = %idle.
+    idle=$(vmstat 1 2 2>/dev/null | tail -n1 | awk '{print $15}')
+    [[ "$idle" =~ ^[0-9]+$ ]] || { echo 0; return; }
+    pct=$((100 - idle))
     (( pct < 0 )) && pct=0
     (( pct > 100 )) && pct=100
     echo "$pct"
@@ -5306,12 +5279,12 @@ main_menu() {
         #   OS  | UPTIME
         #   CPU | RAM       (both shown as % like RAM)
         #   ACCT | ONLINE
-        # CPU usage as a real percentage (0..100, top-style). Computed from
-        # /proc/stat jiffy deltas — never exceeds 100% regardless of load average.
-        # Display ONLY the percentage — no load average / core count, per user request.
+        # CPU usage shown as percentage + core count (e.g. "2% (2 cores)").
+        # Load average dropped per user request. Percentage is real-time
+        # (vmstat-sampled), capped 0..100.
         local _cpu_pct
         _cpu_pct=$(compute_cpu_pct)
-        local _cpu_val="${_cpu_pct}%"
+        local _cpu_val="${_cpu_pct}% (${DASH_CACHE_CPU_CORES} ${_cpu_core_word})"
         local _ram_val="${DASH_CACHE_RAM_PCT}% (${DASH_CACHE_RAM_USED})"
         echo
         tdz_box_top
