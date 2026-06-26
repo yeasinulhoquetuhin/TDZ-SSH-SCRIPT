@@ -14,12 +14,7 @@ b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
 MAX_HEADER_BYTES = 65536
-# RECV_CHUNK increased from 64KB -> 1MB. Each recv() syscall in Python has
-# ~10-50μs overhead. At 64KB chunks, a 50Mbps stream needs ~100 syscalls/sec
-# per direction = 200 syscalls/sec = 2-10ms of pure Python overhead per second.
-# At 1MB chunks, that drops to ~6 syscalls/sec per direction. Massive win for
-# speed tests and large downloads.
-RECV_CHUNK = 1024 * 1024  # 1 MB
+RECV_CHUNK = 256 * 1024
 # Kernel socket buffers. Default Linux SO_RCVBUF is ~200KB which is WAY too
 # small for high-BDP paths (BD <-> SG at 80ms RTT × 100Mbps = 1MB BDP).
 # Without bigger buffers, the kernel throttles the sender via TCP window
@@ -185,10 +180,14 @@ def handle(client, addr):
             except Exception as e: log(f"ssh connect fail: {e}"); return
             ssh.sendall(buf)
             bridge_socks(client, ssh); return
+        header, sep, leftover = buf.partition(b"\r\n\r\n")
         try: client.sendall(build_switching_response())
         except OSError: return
         try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
         except Exception as e: log(f"ssh connect fail: {e}"); return
+        if leftover:
+            try: ssh.sendall(leftover)
+            except OSError: return
         client.settimeout(None)
         log(f"bridged {addr[0]}:{addr[1]} -> SSH {SSH_HOST}:{SSH_PORT}")
         bridge_socks(client, ssh)
@@ -205,7 +204,7 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try: srv.bind((LISTEN_HOST, LISTEN_PORT))
     except OSError as e: log(f"FATAL bind: {e}"); sys.exit(1)
-    srv.listen(128); log("listening")
+    srv.listen(1024); log("listening")
     def stop(*_):
         try: srv.close()
         except: pass

@@ -575,8 +575,21 @@ ensure_tdztunnel_dirs() {
 harden_sshd_for_tunnel_stability() {
     local conf="/etc/ssh/sshd_config.d/tdztunnel-stability.conf"
     local need_reload=false
+    local base_backup="/etc/ssh/sshd_config.tdz-ipv4-backup"
 
     mkdir -p /etc/ssh/sshd_config.d
+
+    if [[ ! -f "$base_backup" ]]; then
+        cp /etc/ssh/sshd_config "$base_backup" 2>/dev/null || true
+    fi
+
+    if grep -Eq '^[[:space:]]*(AddressFamily[[:space:]]+any|ListenAddress[[:space:]]+::)[[:space:]]*$' /etc/ssh/sshd_config 2>/dev/null; then
+        sed -i \
+            -e 's/^[[:space:]]*AddressFamily[[:space:]]\+any[[:space:]]*$/# TDZ disabled: AddressFamily any/' \
+            -e 's/^[[:space:]]*ListenAddress[[:space:]]\+::[[:space:]]*$/# TDZ disabled: ListenAddress ::/' \
+            /etc/ssh/sshd_config
+        need_reload=true
+    fi
 
     # Ensure main sshd_config includes the drop-in directory
     if ! grep -qE "^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*\.conf" /etc/ssh/sshd_config 2>/dev/null; then
@@ -585,6 +598,15 @@ harden_sshd_for_tunnel_stability() {
     fi
 
     local new_conf="# TDZ SSH TUNNEL - stability hardening (do not edit, managed by menu)\n"
+    new_conf+="# Keep SSH reachable on IPv4-only VPS/client networks after reboot\n"
+    new_conf+="Port 22\n"
+    new_conf+="AddressFamily inet\n"
+    new_conf+="ListenAddress 0.0.0.0\n"
+    new_conf+="PermitRootLogin yes\n"
+    new_conf+="PasswordAuthentication yes\n"
+    new_conf+="KbdInteractiveAuthentication yes\n"
+    new_conf+="ChallengeResponseAuthentication yes\n"
+    new_conf+="UsePAM yes\n"
     new_conf+="# Aggressive ClientAlive probes — server-side keepalive for SSH sessions\n"
     new_conf+="ClientAliveInterval 30\n"
     new_conf+="ClientAliveCountMax 3\n"
@@ -594,6 +616,10 @@ harden_sshd_for_tunnel_stability() {
     new_conf+="LoginGraceTime 60\n"
     new_conf+="# Allow enough unauthenticated connection slots for bursty reconnects\n"
     new_conf+="MaxStartups 30:30:100\n"
+    new_conf+="TCPKeepAlive yes\n"
+    new_conf+="PermitTunnel yes\n"
+    new_conf+="AllowTcpForwarding yes\n"
+    new_conf+="GatewayPorts yes\n"
 
     local current_conf
     current_conf=$(printf '%b' "$new_conf")
@@ -892,14 +918,14 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-06-25.1
+# TDZ SSH TUNNEL limiter version 2026-06-27.1
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
 PID_DIR="$BW_DIR/pidtrack"
 BANNER_DIR="/etc/tdztunnel/banners"
-SCAN_INTERVAL=30
+SCAN_INTERVAL=5
 
 mkdir -p "$BW_DIR" "$PID_DIR"
 shopt -s nullglob
@@ -930,6 +956,7 @@ while true; do
     declare -A locked_users=()
     declare -A uid_to_user=()
     declare -A loginuid_pids=()
+    declare -A sshd_session_pids=()
     declare -A who_online=()
     declare -A managed_user_lookup=()
 
@@ -956,6 +983,17 @@ while true; do
 
         if [[ -n "$ssh_owner" && "$ssh_owner" != "root" && "$ssh_owner" != "sshd" && -n "${managed_user_lookup[$ssh_owner]+x}" ]]; then
             session_pids["$ssh_owner"]+="$ssh_pid "
+            sshd_session_pids["$ssh_owner"]+="$ssh_pid "
+        elif [[ -r "/proc/$ssh_pid/loginuid" ]]; then
+            login_uid=""
+            read -r login_uid < "/proc/$ssh_pid/loginuid" || login_uid=""
+            if [[ "$login_uid" =~ ^[0-9]+$ && "$login_uid" != "4294967295" ]]; then
+                candidate_user="${uid_to_user[$login_uid]}"
+                if [[ -n "$candidate_user" && -n "${managed_user_lookup[$candidate_user]+x}" ]]; then
+                    session_pids["$candidate_user"]+="$ssh_pid "
+                    sshd_session_pids["$candidate_user"]+="$ssh_pid "
+                fi
+            fi
         fi
     done < <(ps -C sshd -o pid=,user= 2>/dev/null)
 
@@ -992,8 +1030,16 @@ while true; do
             local_user_online=true
         fi
 
-        # Connection count: distinct sessions from `who` (1 minimum if PIDs exist)
+        declare -A unique_sshd_sessions=()
+        for pid in ${sshd_session_pids[$user]:-}; do
+            [[ "$pid" =~ ^[0-9]+$ ]] && unique_sshd_sessions["$pid"]=1
+        done
+
+        # Connection count: sshd sessions are authoritative for tunnel/no-PTY users.
         online_count=${who_online[$user]:-0}
+        if (( ${#unique_sshd_sessions[@]} > online_count )); then
+            online_count=${#unique_sshd_sessions[@]}
+        fi
         if (( online_count == 0 )) && [[ "$local_user_online" == true ]]; then
             online_count=1
         fi
@@ -1018,13 +1064,15 @@ while true; do
 
         [[ "$limit" =~ ^[0-9]+$ ]] || limit=1
         if (( online_count > limit )); then
-            if ! $user_locked; then
-                usermod -L "$user" &>/dev/null
-                killall -u "$user" -9 &>/dev/null
-                (sleep 120; usermod -U "$user" &>/dev/null) &
-                locked_users["$user"]=1
-                user_locked=true
-            else
+            excess=$((online_count - limit))
+            killed=0
+            for pid in $(printf "%s\n" "${!unique_sshd_sessions[@]}" | sort -nr); do
+                [[ "$pid" =~ ^[0-9]+$ ]] || continue
+                kill -TERM "$pid" &>/dev/null || true
+                killed=$((killed + 1))
+                (( killed >= excess )) && break
+            done
+            if (( killed == 0 )); then
                 killall -u "$user" -9 &>/dev/null
             fi
         fi
@@ -1171,7 +1219,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-06-25.1"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-06-27.1"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -2796,12 +2844,7 @@ b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
 MAX_HEADER_BYTES = 65536
-# RECV_CHUNK increased from 64KB -> 1MB. Each recv() syscall in Python has
-# ~10-50μs overhead. At 64KB chunks, a 50Mbps stream needs ~100 syscalls/sec
-# per direction = 200 syscalls/sec = 2-10ms of pure Python overhead per second.
-# At 1MB chunks, that drops to ~6 syscalls/sec per direction. Massive win for
-# speed tests and large downloads.
-RECV_CHUNK = 1024 * 1024  # 1 MB
+RECV_CHUNK = 256 * 1024
 # Kernel socket buffers. Default Linux SO_RCVBUF is ~200KB which is WAY too
 # small for high-BDP paths (BD <-> SG at 80ms RTT × 100Mbps = 1MB BDP).
 # Without bigger buffers, the kernel throttles the sender via TCP window
@@ -2967,10 +3010,14 @@ def handle(client, addr):
             except Exception as e: log(f"ssh connect fail: {e}"); return
             ssh.sendall(buf)
             bridge_socks(client, ssh); return
+        header, sep, leftover = buf.partition(b"\r\n\r\n")
         try: client.sendall(build_switching_response())
         except OSError: return
         try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
         except Exception as e: log(f"ssh connect fail: {e}"); return
+        if leftover:
+            try: ssh.sendall(leftover)
+            except OSError: return
         client.settimeout(None)
         log(f"bridged {addr[0]}:{addr[1]} -> SSH {SSH_HOST}:{SSH_PORT}")
         bridge_socks(client, ssh)
@@ -2987,7 +3034,7 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try: srv.bind((LISTEN_HOST, LISTEN_PORT))
     except OSError as e: log(f"FATAL bind: {e}"); sys.exit(1)
-    srv.listen(128); log("listening")
+    srv.listen(1024); log("listening")
     def stop(*_):
         try: srv.close()
         except: pass
@@ -4294,6 +4341,7 @@ refresh_ssh_session_cache() {
     local -A uid_user_lookup=()
     local -A session_pids=()
     local -A loginuid_pids=()
+    local -A sshd_session_pids=()
     local -A who_online=()
     local managed_user system_user system_uid ssh_pid ssh_owner candidate_user login_uid
 
@@ -4326,6 +4374,7 @@ refresh_ssh_session_cache() {
 
         if [[ -n "$ssh_owner" && "$ssh_owner" != "root" && "$ssh_owner" != "sshd" && -n "${managed_user_lookup[$ssh_owner]+x}" ]]; then
             session_pids["$ssh_owner"]+="$ssh_pid "
+            sshd_session_pids["$ssh_owner"]+="$ssh_pid "
         elif [[ -r "/proc/$ssh_pid/loginuid" ]]; then
             login_uid=""
             read -r login_uid < "/proc/$ssh_pid/loginuid" || login_uid=""
@@ -4333,6 +4382,7 @@ refresh_ssh_session_cache() {
                 candidate_user="${uid_user_lookup[$login_uid]}"
                 if [[ -n "$candidate_user" && -n "${managed_user_lookup[$candidate_user]+x}" ]]; then
                     loginuid_pids["$candidate_user"]+="$ssh_pid "
+                    sshd_session_pids["$candidate_user"]+="$ssh_pid "
                 fi
             fi
         fi
@@ -4360,10 +4410,18 @@ refresh_ssh_session_cache() {
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_pids["$pid"]=1
         done
 
+        declare -A unique_sshd_sessions=()
+        for pid in ${sshd_session_pids[$user]:-}; do
+            [[ "$pid" =~ ^[0-9]+$ ]] && unique_sshd_sessions["$pid"]=1
+        done
+
         # Mark online if `who` shows them OR they have live PIDs
         if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ]]; then
-            # CONNS count: distinct login sessions from `who` (1 minimum if PIDs exist)
+            # CONNS count: sshd sessions are authoritative for tunnel/no-PTY users.
             local _conns=${who_online[$user]:-0}
+            if (( ${#unique_sshd_sessions[@]} > _conns )); then
+                _conns=${#unique_sshd_sessions[@]}
+            fi
             (( _conns == 0 )) && _conns=1
             SSH_SESSION_COUNTS["$user"]=$_conns
             for pid in "${!unique_pids[@]}"; do

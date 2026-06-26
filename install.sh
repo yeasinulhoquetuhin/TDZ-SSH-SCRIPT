@@ -9,31 +9,84 @@ fi
 
 echo "Installing TDZ SSH TUNNEL..."
 
-# URLs (IPv4 forced to avoid GitHub IPv6 issues)
-MENU_URL="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/main/menu.sh"
-SSHD_URL="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/main/ssh"
+# Install from the current folder when the script is uploaded/copied to a VPS.
+# Remote URLs can still be overridden by environment variables if needed.
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+MENU_URL="${MENU_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/main/menu.sh}"
 
 # Install menu
-wget -4 -q -O /usr/local/bin/menu "$MENU_URL"
+if [[ -f "$SCRIPT_DIR/menu.sh" ]]; then
+    cp "$SCRIPT_DIR/menu.sh" /usr/local/bin/menu
+elif [[ -n "$MENU_URL" ]]; then
+    wget -4 -q -O /usr/local/bin/menu "$MENU_URL"
+else
+    echo "ERROR: menu.sh not found beside install.sh and MENU_URL is not set."
+    exit 1
+fi
 chmod +x /usr/local/bin/menu
+
+if [[ -f "$SCRIPT_DIR/ws_ssh_bridge.py" ]]; then
+    cp "$SCRIPT_DIR/ws_ssh_bridge.py" /usr/local/bin/tdz-ws-ssh-bridge.py
+    chmod +x /usr/local/bin/tdz-ws-ssh-bridge.py
+fi
 
 echo "Applying TDZ SSH TUNNEL SSH configuration..."
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
-BACKUP="/etc/ssh/sshd_config.backup.$(date +%F-%H%M%S)"
+SSHD_DROPIN_DIR="/etc/ssh/sshd_config.d"
+SSHD_DROPIN="$SSHD_DROPIN_DIR/tdztunnel.conf"
+BACKUP="$SSHD_CONFIG.backup.$(date +%F-%H%M%S)"
 
 # Backup current SSH config
 cp "$SSHD_CONFIG" "$BACKUP"
+mkdir -p "$SSHD_DROPIN_DIR"
 
-# Download TDZ SSH TUNNEL SSH config
-wget -4 -q -O "$SSHD_CONFIG" "$SSHD_URL"
-chmod 600 "$SSHD_CONFIG"
+# OpenSSH keeps the first global AddressFamily/ListenAddress value it sees.
+# If the provider base config says AddressFamily any + ListenAddress ::,
+# a later drop-in cannot force IPv4-only reliably, so disable only those
+# conflicting IPv6/global lines in the base file after backing it up.
+sed -i \
+    -e 's/^[[:space:]]*AddressFamily[[:space:]]\+any[[:space:]]*$/# TDZ disabled: AddressFamily any/' \
+    -e 's/^[[:space:]]*ListenAddress[[:space:]]\+::[[:space:]]*$/# TDZ disabled: ListenAddress ::/' \
+    "$SSHD_CONFIG"
+
+# Keep the provider's base SSH config intact. Replacing the whole file can
+# remove distro/provider networking hooks and lock the VPS out after reboot.
+if ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "$SSHD_CONFIG" 2>/dev/null; then
+    printf '\n# TDZ SSH TUNNEL drop-ins\nInclude /etc/ssh/sshd_config.d/*.conf\n' >> "$SSHD_CONFIG"
+fi
+
+cat > "$SSHD_DROPIN" <<'EOF'
+# TDZ SSH TUNNEL safe SSH settings
+Port 22
+AddressFamily inet
+ListenAddress 0.0.0.0
+PermitRootLogin yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+ChallengeResponseAuthentication yes
+UsePAM yes
+X11Forwarding yes
+PrintMotd no
+AcceptEnv LANG LC_*
+ClientAliveInterval 30
+ClientAliveCountMax 3
+UseDNS no
+LoginGraceTime 60
+MaxStartups 30:30:100
+TCPKeepAlive yes
+PermitTunnel yes
+AllowTcpForwarding yes
+GatewayPorts yes
+EOF
+chmod 600 "$SSHD_DROPIN"
 
 # Validate SSH config (silent)
 if ! sshd -t 2>/dev/null; then
     echo "ERROR: SSH configuration is invalid!"
     echo "Restoring previous configuration..."
     cp "$BACKUP" "$SSHD_CONFIG"
+    rm -f "$SSHD_DROPIN"
     exit 1
 fi
 
