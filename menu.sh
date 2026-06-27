@@ -71,6 +71,12 @@ LEGACY_BANDWIDTH_DIR="/usr/local/bin/tdztunnel-bandwidth"
 TRIAL_CLEANUP_SCRIPT="/usr/local/bin/tdztunnel-trial-cleanup.sh"
 LOGIN_INFO_SCRIPT="/usr/local/bin/tdztunnel-login-info.sh"
 SSHD_TDZ_CONFIG="/etc/ssh/sshd_config.d/tdztunnel.conf"
+AUTO_BACKUP_CONF="/etc/tdztunnel-auto-backup-bot.conf"
+AUTO_BACKUP_SCRIPT="/usr/local/bin/tdztunnel-auto-backup-bot.sh"
+AUTO_BACKUP_DIR="/root/tdztunnel-auto-backups"
+AUTO_BACKUP_LOG="/var/log/tdztunnel-auto-backup.log"
+AUTO_BACKUP_LAST_FILE="$AUTO_BACKUP_DIR/last-backup.tar.gz"
+AUTO_BACKUP_PM2_NAME="tdz-auto-backup-bot"
 
 # --- ZiVPN Variables ---
 ZIVPN_DIR="/etc/zivpn"
@@ -2064,22 +2070,31 @@ cleanup_expired() {
 }
 
 
+create_user_backup_archive() {
+    local backup_path="$1"
+    if [ ! -d "$DB_DIR" ] || [ ! -s "$DB_FILE" ]; then
+        return 2
+    fi
+    mkdir -p "$(dirname "$backup_path")"
+    tar -czf "$backup_path" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")"
+}
+
 backup_user_data() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- 💾 Backup User Data ---${C_RESET}"
     read -p "👉 Enter path for backup file [/root/tdztunnel_users.tar.gz]: " backup_path
     backup_path=${backup_path:-/root/tdztunnel_users.tar.gz}
-    if [ ! -d "$DB_DIR" ] || [ ! -s "$DB_FILE" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ No user data found to back up.${C_RESET}"
+    create_user_backup_archive "$backup_path"
+    local rc=$?
+    if [ "$rc" -ne 0 ]; then
+        if [ "$rc" -eq 2 ]; then
+            echo -e "\n${C_YELLOW}ℹ️ No user data found to back up.${C_RESET}"
+        else
+            echo -e "\n${C_RED}❌ ERROR: Backup failed.${C_RESET}"
+        fi
         return
     fi
-    echo -e "\n${C_BLUE}⚙️ Backing up user database and settings to ${C_YELLOW}$backup_path${C_RESET}..."
-    tar -czf "$backup_path" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")"
-    if [ $? -eq 0 ]; then
-        echo -e "\n${C_GREEN}✅ SUCCESS: User data backup created at ${C_YELLOW}$backup_path${C_RESET}"
-    else
-        echo -e "\n${C_RED}❌ ERROR: Backup failed.${C_RESET}"
-    fi
+    echo -e "\n${C_GREEN}✅ SUCCESS: User data backup created at ${C_YELLOW}$backup_path${C_RESET}"
 }
 
 restore_user_data() {
@@ -2150,6 +2165,668 @@ restore_user_data() {
     
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
+}
+
+auto_backup_load_conf() {
+    if [ ! -f "$AUTO_BACKUP_CONF" ]; then
+        return 1
+    fi
+    source "$AUTO_BACKUP_CONF" 2>/dev/null
+    [[ -n "${BOT_TOKEN:-}" && -n "${CHAT_ID:-}" && -n "${INTERVAL_SECONDS:-}" ]] || return 1
+    return 0
+}
+
+auto_backup_save_conf() {
+    local bot_token="$1" chat_id="$2" interval_seconds="$3" interval_label="$4"
+    printf 'BOT_TOKEN=%q\nCHAT_ID=%q\nINTERVAL_SECONDS=%q\nINTERVAL_LABEL=%q\n' \
+        "$bot_token" "$chat_id" "$interval_seconds" "$interval_label" > "$AUTO_BACKUP_CONF"
+    chmod 600 "$AUTO_BACKUP_CONF"
+}
+
+auto_backup_ensure_pm2() {
+    if command -v pm2 &>/dev/null; then
+        return 0
+    fi
+    echo -e "\n${C_BLUE}Installing Node.js and PM2...${C_RESET}"
+    tdz_apt_install nodejs npm >/dev/null 2>&1 || {
+        echo -e "${C_RED}Failed to install nodejs/npm.${C_RESET}"
+        return 1
+    }
+    npm install -g pm2 >/dev/null 2>&1 || {
+        echo -e "${C_RED}Failed to install PM2.${C_RESET}"
+        return 1
+    }
+    pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
+    return 0
+}
+
+auto_backup_write_worker() {
+    cat > "$AUTO_BACKUP_SCRIPT" << 'WORKER_EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+CONF="/etc/tdztunnel-auto-backup-bot.conf"
+DB_DIR="/etc/tdztunnel"
+DB_FILE="$DB_DIR/users.db"
+BACKUP_DIR="/root/tdztunnel-auto-backups"
+LAST_FILE="$BACKUP_DIR/last-backup.tar.gz"
+LOG_FILE="/var/log/tdztunnel-auto-backup.log"
+DOWNLOAD_DIR="/tmp/tdz-restore-downloads"
+USERS_GROUP="tdzusers"
+API="https://api.telegram.org/bot"
+OFFSET=0
+RESTORE_STATE="IDLE"
+RESTORE_FILE=""
+CONFIRM_MSG_ID=""
+LAST_AUTO_BACKUP=0
+
+log_msg() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+
+if [ ! -f "$CONF" ]; then
+    log_msg "ERROR: Config not found. Exiting."
+    exit 1
+fi
+source "$CONF" 2>/dev/null
+if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ] || [ -z "${INTERVAL_SECONDS:-}" ]; then
+    log_msg "ERROR: Invalid config. Exiting."
+    exit 1
+fi
+
+log_msg "Auto-backup bot started. Interval: ${INTERVAL_LABEL:-unknown}"
+
+tg_send() {
+    curl -s -o /dev/null \
+        -d "chat_id=$CHAT_ID" \
+        --data-urlencode "text=$1" \
+        "${API}${BOT_TOKEN}/sendMessage" 2>>"$LOG_FILE"
+}
+
+tg_send_keyboard() {
+    local kb='{"keyboard":[["\ud83d\udcbe Backup Now","\ud83d\udce5 Restore Backup"]],"resize_keyboard":true}'
+    curl -s -o /dev/null \
+        -d "chat_id=$CHAT_ID" \
+        --data-urlencode "text=$1" \
+        --data-urlencode "reply_markup=$kb" \
+        "${API}${BOT_TOKEN}/sendMessage" 2>>"$LOG_FILE"
+}
+
+tg_send_inline() {
+    curl -s \
+        -d "chat_id=$CHAT_ID" \
+        --data-urlencode "text=$1" \
+        --data-urlencode "reply_markup=$2" \
+        "${API}${BOT_TOKEN}/sendMessage" 2>>"$LOG_FILE" | jq -r '.result.message_id // empty'
+}
+
+tg_edit_inline() {
+    curl -s \
+        -d "chat_id=$1" \
+        -d "message_id=$2" \
+        --data-urlencode "text=$3" \
+        --data-urlencode "reply_markup=$4" \
+        "${API}${BOT_TOKEN}/editMessageText" 2>>"$LOG_FILE"
+}
+
+tg_answer_callback() {
+    curl -s -o /dev/null \
+        -d "callback_query_id=$1" \
+        --data-urlencode "text=$2" \
+        "${API}${BOT_TOKEN}/answerCallbackQuery" 2>>"$LOG_FILE"
+}
+
+tg_send_document() {
+    curl -s -o /dev/null -w '%{http_code}' \
+        -F "chat_id=$CHAT_ID" \
+        -F "document=@$1" \
+        -F "caption=$2" \
+        "${API}${BOT_TOKEN}/sendDocument" 2>>"$LOG_FILE"
+}
+
+do_backup() {
+    if [ ! -d "$DB_DIR" ] || [ ! -s "$DB_FILE" ]; then
+        tg_send "No user data found to backup."
+        return 1
+    fi
+    local ts archive
+    ts=$(date '+%Y%m%d-%H%M%S')
+    archive="$BACKUP_DIR/backup-$ts.tar.gz"
+    mkdir -p "$BACKUP_DIR"
+    if ! tar -czf "$archive" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")" 2>>"$LOG_FILE"; then
+        tg_send "Failed to create backup archive."
+        return 1
+    fi
+    cp -f "$archive" "$LAST_FILE" 2>/dev/null
+    mapfile -t oldfiles < <(find "$BACKUP_DIR" -maxdepth 1 -name 'backup-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | awk '{print $2}')
+    count=0
+    for f in "${oldfiles[@]}"; do
+        ((count++))
+        (( count > 5 )) && rm -f "$f" 2>/dev/null
+    done
+    local hc
+    hc=$(tg_send_document "$archive" "TDZ Backup - $(date '+%Y-%m-%d %H:%M:%S')")
+    if [ "$hc" = "200" ]; then
+        log_msg "Backup sent: $archive"
+        tg_send "Backup sent successfully!"
+    else
+        log_msg "ERROR: Send failed (HTTP $hc)"
+        tg_send "Failed to send backup (HTTP $hc)."
+    fi
+}
+
+do_restore() {
+    local backup_file="$1"
+    if [ ! -f "$backup_file" ]; then
+        tg_send "Backup file not found."
+        return 1
+    fi
+    if [ -d "$DB_DIR" ] && [ -s "$DB_FILE" ]; then
+        local pre="$BACKUP_DIR/pre-restore-$(date '+%Y%m%d-%H%M%S').tar.gz"
+        mkdir -p "$BACKUP_DIR"
+        tar -czf "$pre" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")" 2>/dev/null
+        log_msg "Pre-restore backup: $pre"
+    fi
+    tg_send "Restoring backup... Please wait."
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    if ! tar -xzf "$backup_file" -C "$temp_dir" 2>>"$LOG_FILE"; then
+        tg_send "Failed to extract backup file. Restore aborted."
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    local restored_db="$temp_dir/tdztunnel/users.db"
+    if [ ! -f "$restored_db" ]; then
+        tg_send "users.db not found in backup. Cannot restore."
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    mkdir -p "$DB_DIR"
+    cp "$restored_db" "$DB_FILE"
+    log_msg "users.db restored"
+    [ -d "$temp_dir/tdztunnel/ssl" ] && cp -r "$temp_dir/tdztunnel/ssl" "$DB_DIR/"
+    [ -d "$temp_dir/tdztunnel/dnstt" ] && cp -r "$temp_dir/tdztunnel/dnstt" "$DB_DIR/"
+    [ -f "$temp_dir/tdztunnel/dns_info.conf" ] && cp "$temp_dir/tdztunnel/dns_info.conf" "$DB_DIR/"
+    [ -f "$temp_dir/tdztunnel/dnstt_info.conf" ] && cp "$temp_dir/tdztunnel/dnstt_info.conf" "$DB_DIR/"
+    [ -f "$temp_dir/tdztunnel/tdzproxy_config.conf" ] && cp "$temp_dir/tdztunnel/tdzproxy_config.conf" "$DB_DIR/"
+    getent group "$USERS_GROUP" >/dev/null 2>&1 || groupadd "$USERS_GROUP"
+    local uc=0
+    while IFS=: read -r user pass expiry limit; do
+        [ -z "$user" ] && continue
+        uc=$((uc + 1))
+        if ! id "$user" &>/dev/null; then
+            useradd -m -s /usr/sbin/nologin "$user" 2>/dev/null
+            log_msg "Created user: $user"
+        fi
+        usermod -aG "$USERS_GROUP" "$user" 2>/dev/null
+        echo "$user:$pass" | chpasswd 2>/dev/null
+        chage -E "$expiry" "$user" 2>/dev/null
+        log_msg "Restored user: $user"
+    done < "$DB_FILE"
+    rm -rf "$temp_dir"
+    rm -f /etc/tdztunnel/.banner_cache 2>/dev/null
+    tg_send "Restore complete! $uc users restored.
+
+All users re-synced with passwords, expiry, and limits.
+Server services may need restart for full effect."
+    log_msg "Restore complete. $uc users processed."
+    return 0
+}
+
+check_auto_backup() {
+    local now
+    now=$(date +%s)
+    if (( now - LAST_AUTO_BACKUP >= INTERVAL_SECONDS )); then
+        LAST_AUTO_BACKUP=$now
+        if [ ! -d "$DB_DIR" ] || [ ! -s "$DB_FILE" ]; then
+            log_msg "No user data, skipping auto-backup."
+            return
+        fi
+        local ts archive
+        ts=$(date '+%Y%m%d-%H%M%S')
+        archive="$BACKUP_DIR/backup-$ts.tar.gz"
+        mkdir -p "$BACKUP_DIR"
+        if ! tar -czf "$archive" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")" 2>>"$LOG_FILE"; then
+            log_msg "ERROR: Auto-backup archive failed."
+            return
+        fi
+        cp -f "$archive" "$LAST_FILE" 2>/dev/null
+        mapfile -t oldfiles < <(find "$BACKUP_DIR" -maxdepth 1 -name 'backup-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | awk '{print $2}')
+        count=0
+        for f in "${oldfiles[@]}"; do
+            ((count++))
+            (( count > 5 )) && rm -f "$f" 2>/dev/null
+        done
+        local hc
+        hc=$(tg_send_document "$archive" "TDZ Auto Backup - $(date '+%Y-%m-%d %H:%M:%S')")
+        if [ "$hc" = "200" ]; then
+            log_msg "Auto-backup sent: $archive"
+        else
+            log_msg "ERROR: Auto-backup send failed (HTTP $hc)"
+        fi
+    fi
+}
+
+LAST_AUTO_BACKUP=$(date +%s)
+
+while true; do
+    check_auto_backup
+
+    updates=$(curl -s --max-time 5 "${API}${BOT_TOKEN}/getUpdates?offset=${OFFSET}&timeout=3" 2>>"$LOG_FILE")
+    ok=$(echo "$updates" | jq -r '.ok // empty' 2>/dev/null)
+    if [ "$ok" != "true" ]; then
+        sleep 2
+        continue
+    fi
+
+    rc=$(echo "$updates" | jq '.result | length' 2>/dev/null)
+    if [ "$rc" = "0" ] || [ -z "$rc" ]; then
+        continue
+    fi
+
+    for i in $(seq 0 $((rc - 1))); do
+        uid=$(echo "$updates" | jq -r ".result[$i].update_id")
+        OFFSET=$((uid + 1))
+
+        is_callback=$(echo "$updates" | jq -r ".result[$i].callback_query | if . then \"yes\" else \"no\" end" 2>/dev/null)
+
+        if [ "$is_callback" = "yes" ]; then
+            cbid=$(echo "$updates" | jq -r ".result[$i].callback_query.id")
+            cbdata=$(echo "$updates" | jq -r ".result[$i].callback_query.data")
+            cid=$(echo "$updates" | jq -r ".result[$i].callback_query.message.chat.id // empty")
+            log_msg "Callback: $cbdata (state: $RESTORE_STATE)"
+
+            if [ "$cid" != "$CHAT_ID" ]; then
+                log_msg "Unauthorized callback: chat_id=$cid"
+                continue
+            fi
+
+            case "$cbdata" in
+                "cb_confirm1")
+                    if [ "$RESTORE_STATE" = "CONFIRM_1" ]; then
+                        RESTORE_STATE="CONFIRM_2"
+                        tg_answer_callback "$cbid" "Step 2/3"
+                        kb='{"inline_keyboard":[[{"text":"\u2705 CONFIRM 2","callback_data":"cb_confirm2"}],[{"text":"\u274c Cancel","callback_data":"cb_cancel"}]]}'
+                        tg_edit_inline "$CHAT_ID" "$CONFIRM_MSG_ID" "Step 2/3
+
+This will OVERWRITE all current users, passwords, and settings." "$kb"
+                    else
+                        tg_answer_callback "$cbid" "Not expecting this"
+                    fi
+                    ;;
+                "cb_confirm2")
+                    if [ "$RESTORE_STATE" = "CONFIRM_2" ]; then
+                        RESTORE_STATE="CONFIRM_3"
+                        tg_answer_callback "$cbid" "Step 3/3 - Final"
+                        kb='{"inline_keyboard":[[{"text":"\u26a0\ufe0f RESTORE NOW","callback_data":"cb_restore_now"}],[{"text":"\u274c Cancel","callback_data":"cb_cancel"}]]}'
+                        tg_edit_inline "$CHAT_ID" "$CONFIRM_MSG_ID" "FINAL WARNING Step 3/3
+
+This is your LAST chance to cancel!
+
+Tap RESTORE NOW to proceed" "$kb"
+                    else
+                        tg_answer_callback "$cbid" "Not expecting this"
+                    fi
+                    ;;
+                "cb_restore_now")
+                    if [ "$RESTORE_STATE" = "CONFIRM_3" ]; then
+                        RESTORE_STATE="RESTORING"
+                        tg_answer_callback "$cbid" "Restoring..."
+                        kb_remove='{"inline_keyboard":[]}'
+                        tg_edit_inline "$CHAT_ID" "$CONFIRM_MSG_ID" "Restoring backup... Please wait." "$kb_remove"
+                        do_restore "$RESTORE_FILE"
+                        RESTORE_STATE="IDLE"
+                        RESTORE_FILE=""
+                        CONFIRM_MSG_ID=""
+                        rm -f "$DOWNLOAD_DIR"/* 2>/dev/null
+                    else
+                        tg_answer_callback "$cbid" "Not expecting this"
+                    fi
+                    ;;
+                "cb_cancel")
+                    RESTORE_STATE="IDLE"
+                    RESTORE_FILE=""
+                    CONFIRM_MSG_ID=""
+                    rm -f "$DOWNLOAD_DIR"/* 2>/dev/null
+                    tg_answer_callback "$cbid" "Cancelled"
+                    tg_send "Cancelled. Back to normal."
+                    ;;
+                *)
+                    tg_answer_callback "$cbid" "Unknown action"
+                    ;;
+            esac
+            continue
+        fi
+
+        mtype=$(echo "$updates" | jq -r ".result[$i].message | if .text then \"text\" elif .document then \"document\" else \"other\" end" 2>/dev/null)
+        cid=$(echo "$updates" | jq -r ".result[$i].message.chat.id // empty" 2>/dev/null)
+
+        if [ "$cid" != "$CHAT_ID" ]; then
+            log_msg "Unauthorized: chat_id=$cid"
+            continue
+        fi
+
+        if [ "$mtype" = "text" ]; then
+            txt=$(echo "$updates" | jq -r ".result[$i].message.text")
+            log_msg "Text: $txt (state: $RESTORE_STATE)"
+
+            case "$txt" in
+                "/start"|"/menu"|"Menu"|"menu")
+                    RESTORE_STATE="IDLE"
+                    tg_send_keyboard "TDZ Backup Bot ready.
+
+Commands:
+/backup - Create & send backup
+/restore - Restore from file
+/status - Show bot status
+/cancel - Cancel restore
+
+Auto-backup: ${INTERVAL_LABEL:-unknown}"
+                    ;;
+                "/backup"|"💾 Backup Now"|*"Backup Now"*)
+                    RESTORE_STATE="IDLE"
+                    do_backup
+                    ;;
+                "/restore"|"📥 Restore Backup"|*"Restore Backup"*)
+                    RESTORE_STATE="WAITING_FILE"
+                    tg_send "Please send the backup .tar.gz file now.
+
+Send the backup file directly to this chat as a document.
+
+Type /cancel to abort."
+                    ;;
+                "/status"|"📊 Status"|*"Status"*)
+                    RESTORE_STATE="IDLE"
+                    local_count=$(ls -1 "$BACKUP_DIR"/*.tar.gz 2>/dev/null | wc -l)
+                    tg_send "Bot Status
+Interval: ${INTERVAL_LABEL:-unknown}
+State: $RESTORE_STATE
+Archives: $local_count files
+Last backup: $(ls -lth "$LAST_FILE" 2>/dev/null | awk '{print $6,$7,$8}')"
+                    ;;
+                "/cancel"|"cancel"|"Cancel"|"❌ Cancel"|*"Cancel"*)
+                    RESTORE_STATE="IDLE"
+                    RESTORE_FILE=""
+                    rm -f "$DOWNLOAD_DIR"/* 2>/dev/null
+                    tg_send "Cancelled. Back to normal."
+                    ;;
+                *)
+                    if [ "$RESTORE_STATE" = "WAITING_FILE" ]; then
+                        tg_send "Please send the backup .tar.gz file as a document, not text.
+
+Type /cancel to abort."
+                    fi
+                    ;;
+            esac
+
+        elif [ "$mtype" = "document" ]; then
+            fid=$(echo "$updates" | jq -r ".result[$i].message.document.file_id")
+            fname=$(echo "$updates" | jq -r ".result[$i].message.document.file_name // \"backup.tar.gz\"")
+
+            if [ "$RESTORE_STATE" != "WAITING_FILE" ]; then
+                tg_send "Received file: $fname
+
+If you want to restore, use Restore Backup first."
+                continue
+            fi
+
+            if [[ "$fname" != *.tar.gz && "$fname" != *.tgz ]]; then
+                tg_send "File must be a .tar.gz backup file."
+                continue
+            fi
+
+            mkdir -p "$DOWNLOAD_DIR"
+            tg_send "Downloading: $fname ..."
+
+            finfo=$(curl -s "${API}${BOT_TOKEN}/getFile?file_id=${fid}" 2>>"$LOG_FILE")
+            fpath=$(echo "$finfo" | jq -r '.result.file_path // empty')
+
+            if [ -z "$fpath" ]; then
+                tg_send "Failed to get file path from Telegram."
+                continue
+            fi
+
+            dl="$DOWNLOAD_DIR/$fname"
+            curl -s -o "$dl" "https://api.telegram.org/file/bot${BOT_TOKEN}/${fpath}" 2>>"$LOG_FILE"
+
+            if [ ! -f "$dl" ] || [ ! -s "$dl" ]; then
+                tg_send "Failed to download backup file."
+                continue
+            fi
+
+            if ! tar -tzf "$dl" >/dev/null 2>&1; then
+                tg_send "File is not a valid tar.gz archive."
+                rm -f "$dl"
+                continue
+            fi
+
+            RESTORE_FILE="$dl"
+            RESTORE_STATE="CONFIRM_1"
+            fsize=$(du -h "$dl" | cut -f1)
+            kb='{"inline_keyboard":[[{"text":"\u2705 CONFIRM 1","callback_data":"cb_confirm1"}],[{"text":"\u274c Cancel","callback_data":"cb_cancel"}]]}'
+            CONFIRM_MSG_ID=$(tg_send_inline "Backup received: $fname ($fsize)
+
+WARNING Step 1/3
+
+This will OVERWRITE all current users and settings!
+
+Tap CONFIRM 1 to continue" "$kb")
+        else
+            log_msg "Unsupported message type"
+        fi
+    done
+done
+WORKER_EOF
+    chmod +x "$AUTO_BACKUP_SCRIPT"
+}
+
+auto_backup_connect_bot() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- Connect Telegram Bot ---${C_RESET}\n"
+    read -r -p "Enter Bot Token: " bot_token
+    [[ -z "$bot_token" ]] && { echo -e "\n${C_RED}Token cannot be empty.${C_RESET}"; press_enter; return; }
+    read -r -p "Enter Chat ID: " chat_id
+    [[ -z "$chat_id" ]] && { echo -e "\n${C_RED}Chat ID cannot be empty.${C_RESET}"; press_enter; return; }
+
+    echo -e "\n${C_BLUE}Testing bot token...${C_RESET}"
+    local test_resp
+    test_resp=$(curl -s --max-time 10 "https://api.telegram.org/bot$bot_token/getMe" 2>/dev/null)
+    if echo "$test_resp" | grep -q '"ok":true'; then
+        local bot_user
+        bot_user=$(echo "$test_resp" | grep -o '"username":"[^"]*"' | cut -d'"' -f4)
+        echo -e "${C_GREEN}Connected to @${bot_user}${C_RESET}"
+    else
+        echo -e "${C_RED}Invalid bot token.${C_RESET}"
+        press_enter
+        return
+    fi
+
+    echo -e "\n${C_BOLD}Auto Backup Interval:${C_RESET}"
+    echo -e "  ${C_CHOICE}[1]${C_RESET} Every 30 minutes"
+    echo -e "  ${C_CHOICE}[2]${C_RESET} Every 1 hour"
+    echo -e "  ${C_CHOICE}[3]${C_RESET} Every 6 hours"
+    echo -e "  ${C_CHOICE}[4]${C_RESET} Every 12 hours"
+    echo -e "  ${C_CHOICE}[5]${C_RESET} Every 24 hours"
+    echo -e "  ${C_CHOICE}[6]${C_RESET} Custom (minutes)\n"
+    read -r -p "Select interval [1-6]: " int_choice
+    local interval_seconds interval_label
+    case "$int_choice" in
+        1) interval_seconds=1800; interval_label="30 minutes" ;;
+        2) interval_seconds=3600; interval_label="1 hour" ;;
+        3) interval_seconds=21600; interval_label="6 hours" ;;
+        4) interval_seconds=43200; interval_label="12 hours" ;;
+        5) interval_seconds=86400; interval_label="24 hours" ;;
+        6)
+            read -r -p "Enter interval in minutes: " cust_min
+            if ! [[ "$cust_min" =~ ^[1-9][0-9]*$ ]]; then
+                echo -e "\n${C_RED}Invalid number.${C_RESET}"
+                press_enter
+                return
+            fi
+            interval_seconds=$((cust_min * 60))
+            interval_label="$cust_min minutes"
+            ;;
+        *) echo -e "\n${C_RED}Invalid choice.${C_RESET}"; press_enter; return ;;
+    esac
+
+    auto_backup_save_conf "$bot_token" "$chat_id" "$interval_seconds" "$interval_label"
+    auto_backup_write_worker
+
+    echo -e "\n${C_GREEN}Bot connected. Interval: $interval_label${C_RESET}"
+    echo -e "${C_YELLOW}Use 'Start Bot' to begin auto-backups.${C_RESET}"
+    press_enter
+}
+
+auto_backup_start() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- Start Auto Backup Bot ---${C_RESET}\n"
+    if ! auto_backup_load_conf; then
+        echo -e "${C_RED}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
+        press_enter; return
+    fi
+    auto_backup_ensure_pm2 || { press_enter; return; }
+    auto_backup_write_worker
+    pm2 delete "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1 || true
+    pm2 start "$AUTO_BACKUP_SCRIPT" --name "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1
+    pm2 save >/dev/null 2>&1
+    echo -e "${C_GREEN}Auto-backup bot started. Interval: ${INTERVAL_LABEL:-unknown}${C_RESET}"
+    press_enter
+}
+
+auto_backup_stop() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- Stop Auto Backup Bot ---${C_RESET}\n"
+    pm2 delete "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1
+    pm2 save >/dev/null 2>&1
+    echo -e "${C_YELLOW}Auto-backup bot stopped.${C_RESET}"
+    press_enter
+}
+
+auto_backup_restart() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- Restart Auto Backup Bot ---${C_RESET}\n"
+    if pm2 list 2>/dev/null | grep -q "$AUTO_BACKUP_PM2_NAME"; then
+        pm2 restart "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1
+        echo -e "${C_GREEN}Bot restarted.${C_RESET}"
+    else
+        auto_backup_start
+        return
+    fi
+    press_enter
+}
+
+auto_backup_reset() {
+    clear; show_banner
+    echo -e "${C_RED}${C_BOLD}--- Reset Auto Backup Bot ---${C_RESET}\n"
+    echo -e "${C_RED}This will remove bot config and stop auto-backups.${C_RESET}"
+    echo -e "${C_GREEN}Backup archives will be kept.${C_RESET}\n"
+    read -r -p "Are you sure? (y/n): " confirm
+    [[ "$confirm" != "y" ]] && { echo -e "\n${C_YELLOW}Cancelled.${C_RESET}"; press_enter; return; }
+    pm2 delete "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1
+    pm2 save >/dev/null 2>&1
+    rm -f "$AUTO_BACKUP_CONF"
+    rm -f "$AUTO_BACKUP_SCRIPT"
+    rm -f "$AUTO_BACKUP_LOG"
+    echo -e "\n${C_GREEN}Bot reset complete. Archives preserved.${C_RESET}"
+    press_enter
+}
+
+auto_backup_send_now() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- Send Backup Now ---${C_RESET}\n"
+    if ! auto_backup_load_conf; then
+        echo -e "${C_RED}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
+        press_enter; return
+    fi
+    if [ ! -d "$DB_DIR" ] || [ ! -s "$DB_FILE" ]; then
+        echo -e "${C_YELLOW}No user data found to back up.${C_RESET}"
+        press_enter; return
+    fi
+    echo -e "${C_BLUE}Creating backup archive...${C_RESET}"
+    local ts tmp_archive
+    ts=$(date '+%Y%m%d-%H%M%S')
+    tmp_archive="$AUTO_BACKUP_DIR/backup-$ts.tar.gz"
+    mkdir -p "$AUTO_BACKUP_DIR"
+    if ! tar -czf "$tmp_archive" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")" 2>/dev/null; then
+        echo -e "${C_RED}Failed to create backup archive.${C_RESET}"
+        press_enter; return
+    fi
+    cp -f "$tmp_archive" "$AUTO_BACKUP_LAST_FILE" 2>/dev/null
+    echo -e "${C_BLUE}Sending to Telegram...${C_RESET}"
+    local http_code
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' \
+        -F "chat_id=$CHAT_ID" \
+        -F "document=@$tmp_archive" \
+        -F "caption=TDZ Manual Backup - $(date '+%Y-%m-%d %H:%M:%S')" \
+        "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" 2>/dev/null)
+    if [ "$http_code" = "200" ]; then
+        echo -e "${C_GREEN}Backup sent successfully!${C_RESET}"
+    else
+        echo -e "${C_RED}Failed to send backup (HTTP $http_code).${C_RESET}"
+    fi
+    press_enter
+}
+
+auto_backup_status() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- Auto Backup Bot Status ---${C_RESET}\n"
+    if auto_backup_load_conf; then
+        echo -e "${C_WHITE}Interval:${C_RESET} ${C_GREEN}${INTERVAL_LABEL:-unknown}${C_RESET}"
+        echo -e "${C_WHITE}Chat ID:${C_RESET}  ${C_GREEN}$CHAT_ID${C_RESET}"
+        echo -e "${C_WHITE}Token:${C_RESET}   ${C_GREEN}$(echo "$BOT_TOKEN" | cut -c1-8)...${C_RESET}"
+    else
+        echo -e "${C_YELLOW}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
+    fi
+    echo
+    if pm2 list 2>/dev/null | grep -q "$AUTO_BACKUP_PM2_NAME"; then
+        echo -e "${C_WHITE}Status:${C_RESET}   ${C_STATUS_A}Running${C_RESET}"
+        pm2 show "$AUTO_BACKUP_PM2_NAME" 2>/dev/null | grep -E 'status|uptime|cpu|memory' | sed 's/^/  /'
+    else
+        echo -e "${C_WHITE}Status:${C_RESET}   ${C_STATUS_I}Stopped${C_RESET}"
+    fi
+    echo
+    echo -e "${C_WHITE}Archives:${C_RESET} ${C_GREEN}$AUTO_BACKUP_DIR${C_RESET}"
+    if [ -d "$AUTO_BACKUP_DIR" ]; then
+        ls -lth "$AUTO_BACKUP_DIR"/*.tar.gz 2>/dev/null | head -5 || echo "  (no archives yet)"
+    fi
+    press_enter
+}
+
+backup_data_menu() {
+    while true; do
+        clear; show_banner
+        echo -e "${C_BOLD}${C_PURPLE}--- Backup Data ---${C_RESET}\n"
+
+        local pill_bot="${C_STATUS_I}Stopped${C_RESET}"
+        if pm2 list 2>/dev/null | grep -q "$AUTO_BACKUP_PM2_NAME"; then
+            pill_bot="${C_STATUS_A}Active${C_RESET}"
+        fi
+        echo -e "${C_WHITE}Auto Backup Bot:${C_RESET} $pill_bot\n"
+
+        echo -e "${C_BOLD}Manual Backup:${C_RESET}"
+        printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "Backup User Data"
+        echo
+        echo -e "${C_BOLD}Auto Backup Bot:${C_RESET}"
+        printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "Connect Bot"
+        printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "Start Bot"
+        printf "  ${C_CHOICE}[ 4]${C_RESET} %-40s\n" "Stop Bot"
+        printf "  ${C_CHOICE}[ 5]${C_RESET} %-40s\n" "Restart Bot"
+        printf "  ${C_CHOICE}[ 6]${C_RESET} %-40s\n" "Send Backup Now"
+        printf "  ${C_CHOICE}[ 7]${C_RESET} %-40s\n" "Bot Status"
+        printf "  ${C_CHOICE}[ 8]${C_RESET} %-40s\n" "Reset Bot"
+        echo -e "\n  ${C_WARN}[ 0]${C_RESET} Return to Main Menu"
+        echo
+        read -r -p "$(echo -e ${C_PROMPT}"  Select an option: "${C_RESET})" b_choice
+        case $b_choice in
+            1) backup_user_data ;;
+            2) auto_backup_connect_bot ;;
+            3) auto_backup_start ;;
+            4) auto_backup_stop ;;
+            5) auto_backup_restart ;;
+            6) auto_backup_send_now ;;
+            7) auto_backup_status ;;
+            8) auto_backup_reset ;;
+            0) return ;;
+            *) invalid_option ;;
+        esac
+    done
 }
 
 _enable_banner_in_sshd_config() {
@@ -5468,7 +6145,7 @@ main_menu() {
             15) domain_cert_menu; press_enter ;;
             16) ssh_banner_menu ;;
             17) auto_reboot_menu ;;
-            18) backup_user_data; press_enter ;;
+            18) backup_data_menu ;;
             19) restore_user_data; press_enter ;;
             20) cleanup_expired; press_enter ;;
 
