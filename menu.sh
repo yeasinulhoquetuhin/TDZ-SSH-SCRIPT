@@ -924,14 +924,14 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-06-27.1
+# TDZ SSH TUNNEL limiter version 2026-06-28.2
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
 PID_DIR="$BW_DIR/pidtrack"
 BANNER_DIR="/etc/tdztunnel/banners"
-SCAN_INTERVAL=5
+SCAN_INTERVAL=1
 
 mkdir -p "$BW_DIR" "$PID_DIR"
 shopt -s nullglob
@@ -1003,14 +1003,16 @@ while true; do
         fi
     done < <(ps -C sshd -o pid=,user= 2>/dev/null)
 
-    # METHOD C: per-user process scan — catches ALL PIDs owned by managed users
+    # METHOD C: UID-based process scan catches ALL PIDs owned by managed users.
     # (bash, sftp-server, scp, etc.). Critical for bandwidth tracking because
     # the WS-bridge tunnel's sshd child exec's the shell early — `ps -C sshd`
-    # misses it. /proc/$pid/io works on any process owned by the user.
-    while read -r _u _pid; do
-        [[ -n "$_u" && -n "${managed_user_lookup[$_u]+x}" && "$_pid" =~ ^[0-9]+$ ]] || continue
+    # misses it. Do not use ps user= here: long usernames are truncated.
+    while read -r _uid _pid; do
+        [[ "$_uid" =~ ^[0-9]+$ && "$_pid" =~ ^[0-9]+$ ]] || continue
+        _u="${uid_to_user[$_uid]:-}"
+        [[ -n "$_u" && -n "${managed_user_lookup[$_u]+x}" ]] || continue
         session_pids[$_u]="${session_pids[$_u]}$_pid "
-    done < <(ps -eo user=,pid= --no-headers 2>/dev/null)
+    done < <(ps -eo uid=,pid= --no-headers 2>/dev/null)
 
     while read -r passwd_user _ passwd_status _rest; do
         [[ "$passwd_status" == "L" ]] && locked_users["$passwd_user"]=1
@@ -1225,7 +1227,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-06-27.1"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-06-28.2"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -2147,7 +2149,7 @@ restore_user_data() {
     echo -e "${C_BLUE}⚙️ Re-synchronizing system accounts with the restored database...${C_RESET}"
     ensure_tdztunnel_system_group
     
-    while IFS=: read -r user pass expiry limit; do
+    while IFS=: read -r user pass expiry limit bandwidth_gb _extra; do
         echo "Processing user: ${C_YELLOW}$user${C_RESET}"
         if ! id "$user" &>/dev/null; then
             echo " - User does not exist in system. Creating..."
@@ -2348,7 +2350,7 @@ do_restore() {
     [ -f "$temp_dir/tdztunnel/tdzproxy_config.conf" ] && cp "$temp_dir/tdztunnel/tdzproxy_config.conf" "$DB_DIR/"
     getent group "$USERS_GROUP" >/dev/null 2>&1 || groupadd "$USERS_GROUP"
     local uc=0
-    while IFS=: read -r user pass expiry limit; do
+    while IFS=: read -r user pass expiry limit bandwidth_gb _extra; do
         [ -z "$user" ] && continue
         uc=$((uc + 1))
         if ! id "$user" &>/dev/null; then
@@ -5065,14 +5067,17 @@ refresh_ssh_session_cache() {
         fi
     done < <(ps -C sshd -o pid=,user= 2>/dev/null)
 
-    # ── METHOD C: per-user process scan — catches ALL PIDs owned by managed users
+    # ── METHOD C: UID-based process scan catches ALL PIDs owned by managed users
     # (bash, sftp-server, scp, etc.). Needed for bandwidth tracking via /proc/$pid/io
     # because Method A (`who`) gives us no PIDs, and Method B misses post-exec shells.
-    local _u _pid
-    while read -r _u _pid; do
-        [[ -n "$_u" && -n "${managed_user_lookup[$_u]+x}" && "$_pid" =~ ^[0-9]+$ ]] || continue
+    # Do not use ps user= here: long usernames are truncated by procps.
+    local _uid _u _pid
+    while read -r _uid _pid; do
+        [[ "$_uid" =~ ^[0-9]+$ && "$_pid" =~ ^[0-9]+$ ]] || continue
+        _u="${uid_user_lookup[$_uid]:-}"
+        [[ -n "$_u" && -n "${managed_user_lookup[$_u]+x}" ]] || continue
         session_pids[$_u]="${session_pids[$_u]}$_pid "
-    done < <(ps -eo user=,pid= --no-headers 2>/dev/null)
+    done < <(ps -eo uid=,pid= --no-headers 2>/dev/null)
 
     local user pid pid_candidates
     for user in "${!managed_user_lookup[@]}"; do
