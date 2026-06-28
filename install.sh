@@ -59,6 +59,8 @@ fi
 cat > "$SSHD_DROPIN" <<'EOF'
 # TDZ SSH TUNNEL safe SSH settings
 Port 22
+DebianBanner no
+VersionAddendum By: @TuhinBroh
 AddressFamily inet
 ListenAddress 0.0.0.0
 PermitRootLogin yes
