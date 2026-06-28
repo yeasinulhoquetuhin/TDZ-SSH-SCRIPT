@@ -2077,8 +2077,39 @@ create_user_backup_archive() {
     if [ ! -d "$DB_DIR" ] || [ ! -s "$DB_FILE" ]; then
         return 2
     fi
-    mkdir -p "$(dirname "$backup_path")"
-    tar -czf "$backup_path" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")"
+    local temp_dir backup_root locks_file
+    temp_dir=$(mktemp -d)
+    backup_root="$temp_dir/tdz-user-data"
+    locks_file="$backup_root/locks.db"
+
+    mkdir -p "$(dirname "$backup_path")" "$backup_root/bandwidth"
+    cp "$DB_FILE" "$backup_root/users.db"
+
+    if [ -d "$BANDWIDTH_DIR" ]; then
+        cp "$BANDWIDTH_DIR"/*.usage "$backup_root/bandwidth/" 2>/dev/null || true
+    fi
+
+    : > "$locks_file"
+    while IFS=: read -r user _pass _expiry _limit _bandwidth_gb _extra; do
+        [[ -z "$user" || "$user" == \#* ]] && continue
+        local passwd_status="missing"
+        if id "$user" &>/dev/null; then
+            passwd_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+            [[ "$passwd_status" == "L" ]] && passwd_status="locked" || passwd_status="unlocked"
+        fi
+        printf '%s:%s\n' "$user" "$passwd_status" >> "$locks_file"
+    done < "$DB_FILE"
+
+    cat > "$backup_root/meta.txt" <<EOF
+format=tdz-user-data
+version=1
+created_at=$(date '+%Y-%m-%d %H:%M:%S %z')
+EOF
+
+    tar -czf "$backup_path" -C "$temp_dir" "tdz-user-data"
+    local rc=$?
+    rm -rf "$temp_dir"
+    return "$rc"
 }
 
 backup_user_data() {
@@ -2121,29 +2152,25 @@ restore_user_data() {
         rm -rf "$temp_dir"
         return
     fi
-    local restored_db_file="$temp_dir/tdztunnel/users.db"
+    local restore_root="$temp_dir/tdz-user-data"
+    if [ ! -f "$restore_root/users.db" ]; then
+        # Backward compatibility: old full-folder backups are accepted, but only
+        # user-related data is restored from them.
+        restore_root="$temp_dir/tdztunnel"
+    fi
+    local restored_db_file="$restore_root/users.db"
     if [ ! -f "$restored_db_file" ]; then
         echo -e "\n${C_RED}❌ ERROR: users.db not found in the backup. Cannot restore user accounts.${C_RESET}"
         rm -rf "$temp_dir"
         return
     fi
-    echo -e "${C_BLUE}⚙️ Overwriting current user database...${C_RESET}"
+    echo -e "${C_BLUE}⚙️ Overwriting current user database and usage data...${C_RESET}"
     mkdir -p "$DB_DIR"
     cp "$restored_db_file" "$DB_FILE"
-    if [ -d "$temp_dir/tdztunnel/ssl" ]; then
-        cp -r "$temp_dir/tdztunnel/ssl" "$DB_DIR/"
-    fi
-    if [ -d "$temp_dir/tdztunnel/dnstt" ]; then
-        cp -r "$temp_dir/tdztunnel/dnstt" "$DB_DIR/"
-    fi
-    if [ -f "$temp_dir/tdztunnel/dns_info.conf" ]; then
-        cp "$temp_dir/tdztunnel/dns_info.conf" "$DB_DIR/"
-    fi
-    if [ -f "$temp_dir/tdztunnel/dnstt_info.conf" ]; then
-        cp "$temp_dir/tdztunnel/dnstt_info.conf" "$DB_DIR/"
-    fi
-    if [ -f "$temp_dir/tdztunnel/tdzproxy_config.conf" ]; then
-        cp "$temp_dir/tdztunnel/tdzproxy_config.conf" "$DB_DIR/"
+    mkdir -p "$BANDWIDTH_DIR"
+    rm -f "$BANDWIDTH_DIR"/*.usage 2>/dev/null || true
+    if [ -d "$restore_root/bandwidth" ]; then
+        cp "$restore_root/bandwidth"/*.usage "$BANDWIDTH_DIR/" 2>/dev/null || true
     fi
     
     echo -e "${C_BLUE}⚙️ Re-synchronizing system accounts with the restored database...${C_RESET}"
@@ -2162,6 +2189,18 @@ restore_user_data() {
         chage -E "$expiry" "$user"
         echo " - Connection limit is $limit (enforced by PAM)"
     done < "$DB_FILE"
+
+    if [ -f "$restore_root/locks.db" ]; then
+        echo -e "${C_BLUE}⚙️ Restoring account lock states...${C_RESET}"
+        while IFS=: read -r lock_user lock_state _extra; do
+            [[ -z "$lock_user" || "$lock_user" == \#* ]] && continue
+            id "$lock_user" &>/dev/null || continue
+            case "$lock_state" in
+                locked) usermod -L "$lock_user" 2>/dev/null ;;
+                unlocked) usermod -U "$lock_user" 2>/dev/null ;;
+            esac
+        done < "$restore_root/locks.db"
+    fi
     rm -rf "$temp_dir"
     echo -e "\n${C_GREEN}✅ SUCCESS: User data restore completed.${C_RESET}"
     
@@ -2209,6 +2248,7 @@ set -uo pipefail
 CONF="/etc/tdztunnel-auto-backup-bot.conf"
 DB_DIR="/etc/tdztunnel"
 DB_FILE="$DB_DIR/users.db"
+BW_DIR="$DB_DIR/bandwidth"
 BACKUP_DIR="/root/tdztunnel-auto-backups"
 LAST_FILE="$BACKUP_DIR/last-backup.tar.gz"
 LOG_FILE="/var/log/tdztunnel-auto-backup.log"
@@ -2283,6 +2323,40 @@ tg_send_document() {
         "${API}${BOT_TOKEN}/sendDocument" 2>>"$LOG_FILE"
 }
 
+create_user_data_archive() {
+    local archive="$1"
+    local temp_dir root locks_file
+    temp_dir=$(mktemp -d)
+    root="$temp_dir/tdz-user-data"
+    locks_file="$root/locks.db"
+
+    mkdir -p "$(dirname "$archive")" "$root/bandwidth"
+    cp "$DB_FILE" "$root/users.db"
+    cp "$BW_DIR"/*.usage "$root/bandwidth/" 2>/dev/null || true
+
+    : > "$locks_file"
+    while IFS=: read -r user _pass _expiry _limit _bandwidth_gb _extra; do
+        [ -z "$user" ] && continue
+        state="missing"
+        if id "$user" &>/dev/null; then
+            state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+            [ "$state" = "L" ] && state="locked" || state="unlocked"
+        fi
+        printf '%s:%s\n' "$user" "$state" >> "$locks_file"
+    done < "$DB_FILE"
+
+    cat > "$root/meta.txt" <<META_EOF
+format=tdz-user-data
+version=1
+created_at=$(date '+%Y-%m-%d %H:%M:%S %z')
+META_EOF
+
+    tar -czf "$archive" -C "$temp_dir" "tdz-user-data" 2>>"$LOG_FILE"
+    rc=$?
+    rm -rf "$temp_dir"
+    return "$rc"
+}
+
 do_backup() {
     if [ ! -d "$DB_DIR" ] || [ ! -s "$DB_FILE" ]; then
         tg_send "No user data found to backup."
@@ -2292,7 +2366,7 @@ do_backup() {
     ts=$(date '+%Y%m%d-%H%M%S')
     archive="$BACKUP_DIR/backup-$ts.tar.gz"
     mkdir -p "$BACKUP_DIR"
-    if ! tar -czf "$archive" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")" 2>>"$LOG_FILE"; then
+    if ! create_user_data_archive "$archive"; then
         tg_send "Failed to create backup archive."
         return 1
     fi
@@ -2323,7 +2397,7 @@ do_restore() {
     if [ -d "$DB_DIR" ] && [ -s "$DB_FILE" ]; then
         local pre="$BACKUP_DIR/pre-restore-$(date '+%Y%m%d-%H%M%S').tar.gz"
         mkdir -p "$BACKUP_DIR"
-        tar -czf "$pre" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")" 2>/dev/null
+        create_user_data_archive "$pre" >/dev/null 2>&1
         log_msg "Pre-restore backup: $pre"
     fi
     tg_send "Restoring backup... Please wait."
@@ -2334,7 +2408,11 @@ do_restore() {
         rm -rf "$temp_dir"
         return 1
     fi
-    local restored_db="$temp_dir/tdztunnel/users.db"
+    local restore_root="$temp_dir/tdz-user-data"
+    if [ ! -f "$restore_root/users.db" ]; then
+        restore_root="$temp_dir/tdztunnel"
+    fi
+    local restored_db="$restore_root/users.db"
     if [ ! -f "$restored_db" ]; then
         tg_send "users.db not found in backup. Cannot restore."
         rm -rf "$temp_dir"
@@ -2343,11 +2421,9 @@ do_restore() {
     mkdir -p "$DB_DIR"
     cp "$restored_db" "$DB_FILE"
     log_msg "users.db restored"
-    [ -d "$temp_dir/tdztunnel/ssl" ] && cp -r "$temp_dir/tdztunnel/ssl" "$DB_DIR/"
-    [ -d "$temp_dir/tdztunnel/dnstt" ] && cp -r "$temp_dir/tdztunnel/dnstt" "$DB_DIR/"
-    [ -f "$temp_dir/tdztunnel/dns_info.conf" ] && cp "$temp_dir/tdztunnel/dns_info.conf" "$DB_DIR/"
-    [ -f "$temp_dir/tdztunnel/dnstt_info.conf" ] && cp "$temp_dir/tdztunnel/dnstt_info.conf" "$DB_DIR/"
-    [ -f "$temp_dir/tdztunnel/tdzproxy_config.conf" ] && cp "$temp_dir/tdztunnel/tdzproxy_config.conf" "$DB_DIR/"
+    mkdir -p "$BW_DIR"
+    rm -f "$BW_DIR"/*.usage 2>/dev/null || true
+    [ -d "$restore_root/bandwidth" ] && cp "$restore_root/bandwidth"/*.usage "$BW_DIR/" 2>/dev/null || true
     getent group "$USERS_GROUP" >/dev/null 2>&1 || groupadd "$USERS_GROUP"
     local uc=0
     while IFS=: read -r user pass expiry limit bandwidth_gb _extra; do
@@ -2362,6 +2438,16 @@ do_restore() {
         chage -E "$expiry" "$user" 2>/dev/null
         log_msg "Restored user: $user"
     done < "$DB_FILE"
+    if [ -f "$restore_root/locks.db" ]; then
+        while IFS=: read -r lock_user lock_state _extra; do
+            [ -z "$lock_user" ] && continue
+            id "$lock_user" &>/dev/null || continue
+            case "$lock_state" in
+                locked) usermod -L "$lock_user" 2>/dev/null ;;
+                unlocked) usermod -U "$lock_user" 2>/dev/null ;;
+            esac
+        done < "$restore_root/locks.db"
+    fi
     rm -rf "$temp_dir"
     rm -f /etc/tdztunnel/.banner_cache 2>/dev/null
     tg_send "Restore complete! $uc users restored.
@@ -2385,7 +2471,7 @@ check_auto_backup() {
         ts=$(date '+%Y%m%d-%H%M%S')
         archive="$BACKUP_DIR/backup-$ts.tar.gz"
         mkdir -p "$BACKUP_DIR"
-        if ! tar -czf "$archive" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")" 2>>"$LOG_FILE"; then
+        if ! create_user_data_archive "$archive"; then
             log_msg "ERROR: Auto-backup archive failed."
             return
         fi
@@ -2746,7 +2832,7 @@ auto_backup_send_now() {
     ts=$(date '+%Y%m%d-%H%M%S')
     tmp_archive="$AUTO_BACKUP_DIR/backup-$ts.tar.gz"
     mkdir -p "$AUTO_BACKUP_DIR"
-    if ! tar -czf "$tmp_archive" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")" 2>/dev/null; then
+    if ! create_user_backup_archive "$tmp_archive"; then
         echo -e "${C_RED}Failed to create backup archive.${C_RESET}"
         press_enter; return
     fi
