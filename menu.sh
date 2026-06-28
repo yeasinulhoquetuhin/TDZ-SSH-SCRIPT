@@ -1742,7 +1742,7 @@ create_user() {
     fi
     usermod -aG "$TDZ_USERS_GROUP" "$username" 2>/dev/null
     echo "$username:$password" | chpasswd; chage -E "$expire_date" "$username"
-    echo "$username:$password:$expire_date:$limit:$bandwidth_gb:main" >> "$DB_FILE"
+    echo "$username:$password:$expire_date:$limit:$bandwidth_gb" >> "$DB_FILE"
     
     local bw_display="Unlimited"
     if [[ "$bandwidth_gb" != "0" ]]; then bw_display="${bandwidth_gb} GB"; fi
@@ -1797,7 +1797,7 @@ edit_user() {
         local cur_limit; cur_limit=$(echo "$current_line" | cut -d: -f4)
         local cur_bw; cur_bw=$(echo "$current_line" | cut -d: -f5)
         local cur_type; cur_type=$(echo "$current_line" | cut -d: -f6)
-        [[ -z "$cur_type" ]] && cur_type="main"
+        local cur_type_suffix=""; [[ -n "$cur_type" ]] && cur_type_suffix=":$cur_type"
         [[ -z "$cur_bw" ]] && cur_bw="0"
         local cur_bw_display="Unlimited"; [[ "$cur_bw" != "0" ]] && cur_bw_display="${cur_bw} GB"
         
@@ -1834,23 +1834,23 @@ edit_user() {
                    echo -e "${C_GREEN}🔑 Auto-generated: ${C_YELLOW}$new_pass${C_RESET}"
                fi
                echo "$username:$new_pass" | chpasswd
-                sed -i "s/^$username:.*/$username:$new_pass:$cur_expiry:$cur_limit:$cur_bw:$cur_type/" "$DB_FILE"
+                sed -i "s/^$username:.*/$username:$new_pass:$cur_expiry:$cur_limit:$cur_bw$cur_type_suffix/" "$DB_FILE"
                echo -e "\n${C_GREEN}✅ Password for '$username' changed to: ${C_YELLOW}$new_pass${C_RESET}"
                ;;
             2) read -p "Enter new duration (in days from today): " days
                if [[ "$days" =~ ^[0-9]+$ ]]; then
                    local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d); chage -E "$new_expire_date" "$username"
-                    sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw:$cur_type/" "$DB_FILE"
+                    sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$cur_type_suffix/" "$DB_FILE"
                    echo -e "\n${C_GREEN}✅ Expiration for '$username' set to ${C_YELLOW}$new_expire_date${C_RESET}."
                else echo -e "\n${C_RED}❌ Invalid number of days.${C_RESET}"; fi ;;
             3) read -p "Enter new simultaneous connection limit: " new_limit
                if [[ "$new_limit" =~ ^[0-9]+$ ]]; then
-                    sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$new_limit:$cur_bw:$cur_type/" "$DB_FILE"
+                    sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$new_limit:$cur_bw$cur_type_suffix/" "$DB_FILE"
                    echo -e "\n${C_GREEN}✅ Connection limit for '$username' set to ${C_YELLOW}$new_limit${C_RESET}."
                else echo -e "\n${C_RED}❌ Invalid limit.${C_RESET}"; fi ;;
             4) read -p "Enter new bandwidth limit in GB (0 = unlimited): " new_bw
                if [[ "$new_bw" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                    sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$cur_limit:$new_bw:$cur_type/" "$DB_FILE"
+                    sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$cur_limit:$new_bw$cur_type_suffix/" "$DB_FILE"
                    local bw_msg="Unlimited"; [[ "$new_bw" != "0" ]] && bw_msg="${new_bw} GB"
                    echo -e "\n${C_GREEN}✅ Bandwidth limit for '$username' set to ${C_YELLOW}$bw_msg${C_RESET}."
                    # Unlock user if they were locked due to bandwidth
@@ -2020,8 +2020,8 @@ renew_user() {
         chage -E "$new_expire_date" "$u"
         local line; line=$(grep "^$u:" "$DB_FILE"); local pass; pass=$(echo "$line"|cut -d: -f2); local limit; limit=$(echo "$line"|cut -d: -f4); local bw; bw=$(echo "$line"|cut -d: -f5); local type; type=$(echo "$line"|cut -d: -f6)
         [[ -z "$bw" ]] && bw="0"
-        [[ -z "$type" ]] && type="main"
-        sed -i "s/^$u:.*/$u:$pass:$new_expire_date:$limit:$bw:$type/" "$DB_FILE"
+        local type_suffix=""; [[ -n "$type" ]] && type_suffix=":$type"
+        sed -i "s/^$u:.*/$u:$pass:$new_expire_date:$limit:$bw$type_suffix/" "$DB_FILE"
         echo -e " ✅ ${C_YELLOW}$u${C_RESET} renewed until ${C_GREEN}${new_expire_date}${C_RESET}."
     done
 }
