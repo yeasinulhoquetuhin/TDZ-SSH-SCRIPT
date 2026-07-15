@@ -167,5 +167,5 @@ bash /usr/local/bin/menu --uninstall
 
 <p align="center">
   <b>TDZ SSH TUNNEL</b> — Developed with dedication by <a href="https://t.me/TuhinBroh"><b>Yeasinul Hoque Tuhin</b></a><br>
-  <i>For support, contact <a href="https://t.me/TUSTDZ">🇹‌🇺‌🇸‌</a> on Telegram</i>
+  <i>For support, contact <a href="https://t.me/Yeasinul_Hoque_Tuhin">ᴛᴜʜɪɴ • ʙʀᴏ</a> on Telegram</i>
 </p>
