@@ -1125,7 +1125,7 @@ while true; do
 
             banner_content+="${SEP}<br>"
             banner_content+="<b>👨‍💻 Admin:</b> <a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><br>"
-            banner_content+="<b>🔆 Channel:</b> <a href=\"https://t.me/TuhinBroh\">@TuhinBroh</a><br>${SEP}"
+            banner_content+="<b>🔅 Channel:</b> <a href=\"https://t.me/TuhinBroh\">@TuhinBroh</a><br>${SEP}"
 
             write_banner_if_changed "$user" "$banner_content"
         fi
