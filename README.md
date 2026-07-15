@@ -46,7 +46,7 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 - **Live traffic monitor** — real-time dashboard showing per-user data consumption
 - **Torrent blocking** — automatically block BitTorrent traffic per user
 
-### Dynamic HTML Banners (DarkTunnel Compatible)
+### Dynamic HTML Banners
 - **Status-aware banners** — automatically shows different messages based on account state:
   - **Active** — account details with usage info
   - **Expired** — renewal prompt with contact link
