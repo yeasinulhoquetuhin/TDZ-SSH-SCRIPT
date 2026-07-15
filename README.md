@@ -107,17 +107,6 @@ After installation, type **`menu`** to launch the management interface.
 
 ---
 
-## Repository Structure
-
-```
-TDZ-SSH-SCRIPT/
-├── install.sh           # One-shot installer
-├── menu.sh              # Main management script (all features)
-├── ssh                  # Hardened sshd configuration
-├── ws_ssh_bridge.py     # DarkTunnel WS-to-SSH bridge
-├── .github/             # GitHub workflows
-└── README.md            # Documentation
-```
 
 
 ## Default Ports
