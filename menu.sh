@@ -1017,7 +1017,7 @@ while true; do
         session_pids[$_u]="${session_pids[$_u]}$_pid "
     done < <(ps -eo uid=,pid= --no-headers 2>/dev/null)
 
-    while read -r passwd_user _ passwd_status _rest; do
+    while read -r passwd_user passwd_status _rest; do
         [[ "$passwd_status" == "L" ]] && locked_users["$passwd_user"]=1
     done < <(passwd -Sa 2>/dev/null)
 
@@ -1061,16 +1061,83 @@ while true; do
         fi
 
         expiry_ts=0
+        is_expired=false
         if [[ "$expiry" != "Never" && -n "$expiry" ]]; then
             expiry_ts=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
             if [[ "$expiry_ts" =~ ^[0-9]+$ ]] && (( expiry_ts > 0 && expiry_ts < current_ts )); then
-                if ! $user_locked; then
-                    usermod -L "$user" &>/dev/null
-                    killall -u "$user" -9 &>/dev/null
-                    locked_users["$user"]=1
-                fi
-                continue
+                is_expired=true
             fi
+        fi
+
+        # --- Compute bandwidth info ---
+        bw_display="Unlimited"
+        traffic_exceeded=false
+        if [[ "$bandwidth_gb" != "0" && -n "$bandwidth_gb" ]]; then
+            usagefile="$BW_DIR/${user}.usage"
+            accum_disp=0
+            if [[ -f "$usagefile" ]]; then
+                read -r accum_disp < "$usagefile"
+                [[ "$accum_disp" =~ ^[0-9]+$ ]] || accum_disp=0
+            fi
+            bw_gb_used=$(awk "BEGIN {printf \"%.2f\", $accum_disp / 1073741824}")
+            bw_display="${bw_gb_used}/${bandwidth_gb} GB"
+            quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
+            if [[ "$accum_disp" =~ ^[0-9]+$ ]] && (( accum_disp >= quota_bytes )); then
+                traffic_exceeded=true
+            fi
+        fi
+
+        # --- Format expiration date (DD-MM-YYYY) ---
+        if [[ "$expiry" == "Never" || -z "$expiry" ]]; then
+            expiry_display="Never"
+        else
+            expiry_display=$(date -d "$expiry" +%d-%m-%Y 2>/dev/null || echo "$expiry")
+        fi
+
+        # --- Generate dynamic banner based on status ---
+        if $dynamic_banners_enabled; then
+            SEP="---------------------------------"
+
+            if $is_expired; then
+                STATUS_TEXT="Expired"
+                MSG_BLOCK="<font color=\"red\">Oops! Your account has expired.<br>Please buy a new account<br>Or contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> to renew<br>your access.</font>"
+            elif $traffic_exceeded; then
+                STATUS_TEXT="Traffic Ended"
+                MSG_BLOCK="<font color=\"red\">Oops! Your data limit has been reached.<br>Please recharge your account<br>Or contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> to top-up<br>your data.</font>"
+            elif $user_locked; then
+                STATUS_TEXT="Locked"
+                MSG_BLOCK="<font color=\"red\">Oops! Your account has been locked.<br>This is not a billing issue —<br>please contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> directly<br>to unlock your access.</font>"
+            else
+                STATUS_TEXT="Active"
+                MSG_BLOCK=""
+            fi
+
+            banner_content="<br><br>${SEP}<br><b>💠 ACCOUNT DETAILS:</b><br>${SEP}<br>"
+            banner_content+="<b>👤 Username:</b> $user<br>"
+            banner_content+="<b>🔘 Status:</b> ${STATUS_TEXT}<br>"
+            banner_content+="<b>🕒 Expiration:</b> $expiry_display<br>${SEP}<br>"
+            banner_content+="<b>📊 Bandwidth Usage:</b> $bw_display<br>"
+            banner_content+="<b>🔳 Active Session:</b> $online_count/$limit<br>"
+
+            if [[ -n "$MSG_BLOCK" ]]; then
+                banner_content+="${SEP}<br>${MSG_BLOCK}<br>"
+            fi
+
+            banner_content+="${SEP}<br>"
+            banner_content+="<b>Admin:</b> <a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><br>"
+            banner_content+="<b>Channel:</b> <a href=\"https://t.me/TuhinBroh\">@TuhinBroh</a><br>${SEP}"
+
+            write_banner_if_changed "$user" "$banner_content"
+        fi
+
+        # --- Lock expired users and skip ---
+        if $is_expired; then
+            if ! $user_locked; then
+                usermod -L "$user" &>/dev/null
+                killall -u "$user" -9 &>/dev/null
+                locked_users["$user"]=1
+            fi
+            continue
         fi
 
         [[ "$limit" =~ ^[0-9]+$ ]] || limit=1
@@ -1086,44 +1153,6 @@ while true; do
             if (( killed == 0 )); then
                 killall -u "$user" -9 &>/dev/null
             fi
-        fi
-
-        if $dynamic_banners_enabled; then
-            days_left="N/A"
-            if [[ "$expiry" != "Never" && -n "$expiry" && "$expiry_ts" =~ ^[0-9]+$ && $expiry_ts -gt 0 ]]; then
-                diff_secs=$((expiry_ts - current_ts))
-                if (( diff_secs <= 0 )); then
-                    days_left="EXPIRED"
-                else
-                    d_l=$(( diff_secs / 86400 ))
-                    h_l=$(( (diff_secs % 86400) / 3600 ))
-                    if (( d_l == 0 )); then
-                        days_left="${h_l}h left"
-                    else
-                        days_left="${d_l}d ${h_l}h"
-                    fi
-                fi
-            fi
-
-            bw_info="Unlimited"
-            if [[ "$bandwidth_gb" != "0" && -n "$bandwidth_gb" ]]; then
-                usagefile="$BW_DIR/${user}.usage"
-                accum_disp=0
-                if [[ -f "$usagefile" ]]; then
-                    read -r accum_disp < "$usagefile"
-                    [[ "$accum_disp" =~ ^[0-9]+$ ]] || accum_disp=0
-                fi
-                used_gb=$(awk "BEGIN {printf \"%.2f\", $accum_disp / 1073741824}")
-                remain_gb=$(awk "BEGIN {r=$bandwidth_gb - $used_gb; if(r<0) r=0; printf \"%.2f\", r}")
-                bw_info="${used_gb}/${bandwidth_gb} GB used | ${remain_gb} GB left"
-            fi
-
-            banner_content="<br><font color=\"yellow\"><b>      ✨ ACCOUNT STATUS ✨      </b></font><br><br>"
-            banner_content+="<font color=\"white\">👤 <b>Username   :</b> $user</font><br>"
-            banner_content+="<font color=\"white\">📅 <b>Expiration :</b> $expiry ($days_left)</font><br>"
-            banner_content+="<font color=\"white\">📊 <b>Bandwidth  :</b> $bw_info</font><br>"
-            banner_content+="<font color=\"white\">🔌 <b>Sessions   :</b> $online_count/$limit</font><br><br>"
-            write_banner_if_changed "$user" "$banner_content"
         fi
 
         [[ -z "$bandwidth_gb" || "$bandwidth_gb" == "0" ]] && continue

@@ -1,170 +1,171 @@
-# TDZ TUNNEL Manager
+<p align="center">
+  <img src="https://img.shields.io/badge/TDZ-SSH--SCRIPT-00d4ff?style=for-the-badge&logo=linux&logoColor=black" alt="TDZ SSH SCRIPT">
+  <img src="https://img.shields.io/badge/Version-2.0-green?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Platform-Linux-blue?style=for-the-badge&logo=linux" alt="Platform">
+  <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white" alt="Bash">
+</p>
 
-> Premium SSH tunnel management suite — branded & maintained by **TDZ TUNNEL**.
-> Original project: FirewallFalcon Manager (now offline — forked from a preserved local copy).
+<h1 align="center">TDZ SSH TUNNEL Manager</h1>
 
-TDZ TUNNEL Manager is a self-hosted bash-based control panel for managing
-SSH-based tunnel users on a Linux VPS. It supports per-user bandwidth tracking,
-multiple tunnel protocols (TLS, WebSocket, UDP, DNS), and a CLI menu that runs
-directly on the server.
+<p align="center">
+  <b>Advanced SSH Tunnel Management System for Linux VPS</b><br>
+  Developed & maintained by <a href="https://t.me/TuhinBroh"><b>Yeasin Ul Hoque (Tuhin)</b></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/stargazers"><img src="https://img.shields.io/github/stars/yeasinulhoquetuhin/TDZ-SSH-SCRIPT?style=social" alt="Stars"></a>
+  <a href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/releases"><img src="https://img.shields.io/badge/Release-Stable-brightgreen" alt="Release"></a>
+  <a href="https://t.me/TuhinBroh"><img src="https://img.shields.io/badge/Telegram-@TuhinBroh-2CA5E0?style=flat-square&logo=telegram" alt="Telegram"></a>
+  <a href="https://t.me/TUSTDZ"><img src="https://img.shields.io/badge/Support-@TUSTDZ-2CA5E0?style=flat-square&logo=telegram" alt="Support"></a>
+</p>
+
+---
+
+## Overview
+
+TDZ SSH TUNNEL Manager is a comprehensive, bash-based SSH tunnel management system designed for Linux VPS servers. It provides a full-featured CLI dashboard for managing SSH tunnel users, monitoring bandwidth, controlling access, and deploying multiple tunnel protocols — all from a single interactive menu.
+
+Built from scratch by **Yeasin Ul Hoque**, this project represents a complete, ground-up implementation of a modern SSH tunnel management solution, independently developed with advanced features including dynamic HTML banners, per-user traffic accounting, multi-protocol support, and automated user lifecycle management.
 
 ---
 
 ## Features
 
-- **SSH user management** — create / delete / reset users, set expiry & data limits
-- **Per-user bandwidth tracking** — daily / monthly quotas with auto-disable
-- **Trial accounts** — auto-expiring demo users with cleanup service
-- **stunnel4 TLS** — port `2288` for TLS-wrapped SSH (firewall bypass)
-- **WebSocket NTLS payload** — port `2289` for non-TLS WS payloads
-- **BadVPN / UDPGW** — UDP game tunneling support
-- **DNSTT** — DNS-based tunneling (manual NS + tunnel domain input)
-- **HAProxy + Nginx SSL termination** — reverse-proxy edge with shared certs
-- **Let's Encrypt (certbot)** — automatic TLS certificate via Domain & SSL menu
-- **DarkTunnel WS-to-SSH bridge** — accepts non-standard `GET wss://[cf]` payloads on port `2080`, replies `101 Switching Protocols`, bridges to SSH
-- **🌈 101 Customizer** — set a custom name (e.g. `VPS BY: @TuhinBroh`) shown in the WS 101 response, with rainbow-color preview
-- **🎨 Branding & SSH banners** — rainbow per-character ANSI colors for SSH login banner
-- **Premium UI** — Navy `#1e3a5f` + Cyan `#00d4ff` color theme, rainbow title, live status pills
+### User Management
+- **Create / Delete / Edit users** — full CRUD operations with password, expiry, session limit, and bandwidth controls
+- **Bulk user creation** — generate multiple accounts at once with shared or individual settings
+- **Trial accounts** — auto-expiring demo users with configurable duration (1h to 72h) and automatic cleanup
+- **Account locking / unlocking** — manually lock or unlock any user account instantly
+- **Account renewal** — extend expiry, adjust limits, or reset passwords for existing users
+- **Expired user cleanup** — one-click removal of all expired accounts
+- **User list with live status** — view all users with real-time online status, bandwidth usage, and remaining quota
+
+### Bandwidth & Traffic
+- **Per-user bandwidth tracking** — real-time I/O monitoring via `/proc/<pid>/io` with per-PID delta calculation
+- **Data quotas** — set per-user bandwidth limits in GB; users exceeding quota are automatically locked
+- **Live traffic monitor** — real-time dashboard showing per-user data consumption
+- **Torrent blocking** — automatically block BitTorrent traffic per user
+
+### Dynamic HTML Banners (DarkTunnel Compatible)
+- **Status-aware banners** — automatically shows different messages based on account state:
+  - **Active** — account details with usage info
+  - **Expired** — renewal prompt with contact link
+  - **Traffic Ended** — data top-up prompt with contact link
+  - **Locked** — unlock request message with contact link
+- **DarkTunnel optimized** — HTML banners render perfectly in DarkTunnel and similar SSH client apps
+- **Auto-updating** — banners refresh every second to reflect current session counts and bandwidth
+
+### Tunnel Protocols
+- **SSH (Direct)** — standard SSH tunnel on port 22
+- **stunnel4 TLS** — TLS-wrapped SSH on port 2288 for firewall bypass
+- **WebSocket NTLS** — non-TLS WebSocket payload on port 2289
+- **BadVPN / UDPGW** — UDP game tunneling on port 7300
+- **DNSTT** — DNS-based tunneling on port 5300
+- **ZiVPN** — additional tunnel protocol support
+
+### Network & Proxy
+- **HAProxy** — reverse-proxy edge server on ports 2080 (HTTP) and 442 (HTTPS)
+- **Nginx SSL termination** — internal proxy with shared TLS certificates
+- **WS-to-SSH bridge** — DarkTunnel-compatible WebSocket bridge that accepts non-standard payloads and bridges to SSH
+- **SSL/TLS certificates** — Let's Encrypt (certbot) and self-signed certificate management
+
+### Branding & Customization
+- **101 Customizer** — customize the WebSocket `101 Switching Protocols` response with custom headers and branding
+- **Rainbow ANSI banners** — colorful SSH login banners with per-character coloring
+- **Premium CLI theme** — professional color-coded terminal interface with Navy + Cyan theme
+
+### Backup & Recovery
+- **Full user data backup** — archive all user configurations and data
+- **Auto backup to Telegram** — scheduled automatic backups sent directly to your Telegram bot
+- **Data restore** — restore user data from backup archives
+- **Edge config backup** — backup HAProxy, Nginx, and SSL configurations
+
+### System & Monitoring
+- **Auto-reboot scheduler** — configure automatic VPS reboots at set intervals
+- **Connection limit enforcement** — automatically kill excess SSH sessions beyond per-user limits
+- **Service management** — start/stop/restart all TDZ services from the menu
+- **X-UI panel integration** — optional X-UI panel installation for advanced proxy management
 
 ---
 
 ## Installation
 
-One-line install (as root):
+**One-line install (as root):**
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/install.sh)
 ```
 
-Or download and run manually:
+**Manual install:**
 
 ```bash
-curl -LO https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/main/install.sh
+curl -LO https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/install.sh
 chmod +x install.sh
 ./install.sh
 ```
 
-After install, type `menu` to launch the management interface.
+After installation, type **`menu`** to launch the management interface.
 
 ---
 
-## Repository layout
+## Repository Structure
 
 ```
 TDZ-SSH-SCRIPT/
-├── install.sh      # One-shot installer (downloads menu.sh + ssh config)
-├── menu.sh         # Main management menu (~4700 lines, all features)
-├── ssh             # Hardened sshd_config (Banner /etc/tdztunnel/bannerssh)
-├── README.md       # This file
-├── PUSH_GUIDE.md   # Step-by-step guide to push this repo to your GitHub
-└── .gitignore
+├── install.sh           # One-shot installer
+├── menu.sh              # Main management script (all features)
+├── ssh                  # Hardened sshd configuration
+├── ws_ssh_bridge.py     # DarkTunnel WS-to-SSH bridge
+├── .github/             # GitHub workflows
+└── README.md            # Documentation
 ```
 
----
-
-## Filesystem layout (after install)
+## Filesystem Layout (After Install)
 
 | Path | Purpose |
 |---|---|
-| `/etc/tdztunnel/` | Main DB dir (users.db, banners, ssl, configs) |
-| `/etc/tdztunnel/bannerssh` | Global SSH banner |
+| `/etc/tdztunnel/` | Configuration directory |
+| `/etc/tdztunnel/users.db` | User database |
+| `/etc/tdztunnel/banners/` | Dynamic HTML banners (per-user) |
+| `/etc/tdztunnel/banners_enabled` | Banner system toggle |
 | `/etc/tdztunnel/bandwidth/` | Per-user bandwidth counters |
-| `/etc/tdztunnel/ssl/` | Shared TLS certs (tdztunnel.pem / .crt / .key) |
+| `/etc/tdztunnel/ssl/` | Shared TLS certificates |
 | `/usr/local/bin/menu` | Menu entrypoint |
-| `/usr/local/bin/tdzproxy` | TDZProxy binary |
-| `/usr/local/bin/tdztunnel-limiter.sh` | Active-user limiter script |
-| `/usr/local/bin/tdztunnel-bandwidth.sh` | Bandwidth counter script |
-| `/usr/local/bin/tdztunnel-trial-cleanup.sh` | Trial expiry daemon |
-| `/usr/local/bin/tdztunnel-login-info.sh` | Per-user login info hook |
-| `/etc/systemd/system/tdztunnel-*.service` | Systemd units |
-| `/etc/systemd/system/tdzproxy.service` | TDZProxy systemd unit |
-| `/etc/ssh/sshd_config.d/tdztunnel.conf` | Drop-in sshd config |
-| `/etc/bannerssh` → `/etc/tdztunnel/bannerssh` | Banner path |
+| `/usr/local/bin/tdztunnel-limiter.sh` | Active-user limiter + bandwidth tracker |
+| `/usr/local/bin/tdztunnel-login-info.sh` | Login info hook |
+| `/usr/local/bin/tdztunnel-trial-cleanup.sh` | Trial account cleanup daemon |
+| `/etc/systemd/system/tdztunnel-*.service` | Systemd service units |
+| `/etc/ssh/sshd_config.d/tdztunnel.conf` | SSHD drop-in configuration |
 
----
-
-## Configuration
-
-DNS / Domain management is **fully manual**. From the menu:
-
-```
-Main Menu → 15) 🌐 Domain & SSL Certificate
-```
-
-You will be prompted for:
-1. Your own domain (e.g. `vpn.example.com`)
-2. Your email (for Let's Encrypt)
-
-The script then runs `certbot certonly --standalone -d <domain>` and copies the
-issued cert into `/etc/tdztunnel/ssl/` for HAProxy / Nginx to use.
-
-**Pre-requisites for certbot:**
-- The domain's A record must already point to this server's public IP
-- Port 80 must be reachable from the internet
-- The script will temporarily stop HAProxy/Nginx to free port 80
-
-You can also generate a self-signed certificate (no domain needed) from the
-same menu — useful for internal testing.
-
----
-
-## Default ports
+## Default Ports
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| 22 | SSH | Primary SSH (after install) |
+| 22 | SSH | Primary SSH access |
 | 2288 | TLS | stunnel4-wrapped SSH |
 | 2289 | WS | WebSocket NTLS payload |
-| 7300 | UDP | UDPGW (BadVPN) |
-| 5300 | DNS | DNSTT server |
-| 2080 | HTTP | HAProxy edge (HTTP payloads / raw SSH / WebSocket) |
-| 442 | HTTPS | HAProxy edge (TLS / SNI / SSL payloads) |
-| 8880 | HTTP | Internal Nginx proxy (loopback only) |
-| 8442 | HTTPS | Internal Nginx TLS proxy (loopback only) |
-| 8890 | TCP | WS-to-SSH bridge (loopback only, bridges DarkTunnel payloads to SSH) |
+| 7300 | UDP | BadVPN / UDPGW |
+| 5300 | DNS | DNSTT tunnel |
+| 2080 | HTTP | HAProxy edge (HTTP) |
+| 442 | HTTPS | HAProxy edge (TLS) |
+| 8880 | HTTP | Nginx internal proxy |
+| 8442 | HTTPS | Nginx internal TLS proxy |
+| 8890 | TCP | WS-to-SSH bridge |
 
----
+## Supported Platforms
 
-## 🌈 101 Switching Protocols Customizer
+| Platform | Architecture |
+|---|---|
+| Ubuntu 20.04 / 22.04 / 24.04 | amd64, arm64 |
+| Debian 11 / 12 | amd64, arm64 |
+| Other Debian-based distros | amd64 |
 
-When DarkTunnel / HTTP Custom / NPV clients send a WS upgrade request to port
-`2080`, the WS-to-SSH bridge replies with `HTTP/1.1 101 Switching Protocols`.
-You can customize this response by adding your own HTTP headers (e.g.
-`X-Powered-By: VPS BY @TuhinBroh`) — your name will be visible to anyone
-connecting to your VPS through these clients.
-
-From the menu:
-
-```
-Main Menu → 22) 🌈 101 Customizer
-```
-
-Options:
-1. **Quick Set Custom Name** — enter any name, see a rainbow-color preview
-2. **Preset names** — VPS BY @TuhinBroh / Premium SSH by Tuhin / TDZ TUNNEL Manager
-3. **Edit raw headers** — open `/etc/tdztunnel/ws_branding.conf` in nano/vi
-4. **Test Live Response** — send a real DarkTunnel payload and view the response
-5. **Clear Branding** — restore the default 101 response
-
-The bridge reloads the branding file every 30s automatically, and the
-dashboard also restarts the service immediately after any change.
-
----
-
-## Compatibility
-
-- **OS:** Ubuntu 20.04 / 22.04 / 24.04 (also tested on Debian 11/12)
-- **Arch:** amd64, arm64
-- **Access:** root required
-
----
+> **Note:** Root access is required for installation and operation.
 
 ## Uninstall
 
-From the menu:
-
 ```
-menu → 0 (or "Uninstall")
+menu → 0) Uninstall
 ```
 
 Or directly:
@@ -173,21 +174,15 @@ Or directly:
 bash /usr/local/bin/menu --uninstall
 ```
 
-The uninstaller removes all users, services, configs and the DB dir.
+## Credits & License
+
+- **Developer:** [Yeasin Ul Hoque (Tuhin)](https://t.me/TuhinBroh)
+- **Project:** TDZ SSH TUNNEL Manager — independently developed from scratch
+- **Third-party components:** BadVPN, DNSTT, stunnel4, HAProxy, Nginx, certbot (each retains its own license)
 
 ---
 
-## Credits
-
-- **Branding & maintenance:** TDZ TUNNEL
-- **Original codebase:** FirewallFalcon Manager (repo now offline; forked from a
-  preserved local snapshot)
-- **Third-party components:** BadVPN, DNSTT, UDPGW, ZiVPN, stunnel4, HAProxy, Nginx
-
----
-
-## License
-
-This project is distributed for personal & commercial use. The original
-FirewallFalcon Manager did not include an explicit license file; all third-party
-components retain their original licenses. Use at your own risk.
+<p align="center">
+  <b>TDZ SSH TUNNEL Manager</b> — Developed with dedication by <a href="https://t.me/TuhinBroh"><b>Yeasin Ul Hoque</b></a><br>
+  <i>For support, contact <a href="https://t.me/TUSTDZ">@TUSTDZ</a> on Telegram</i>
+</p>
