@@ -1113,8 +1113,8 @@ while true; do
             fi
 
             banner_content="<br><br>${SEP}<br><b>[!] ACCOUNT • DETAILS [!]</b><br>${SEP}<br>"
-            banner_content+="<b>[•] Username      :</b> $user<br>"
-            banner_content+="<b>[•] Status            :</b> ${STATUS_TEXT}<br>"
+            banner_content+="<b>[•] Usernameㅤ:</b> $user<br>"
+            banner_content+="<b>[•] Statusㅤㅤㅤ:</b> ${STATUS_TEXT}<br>"
             banner_content+="<b>[•] Expiration:</b> $expiry_display<br>${SEP}<br>"
             banner_content+="<b>[•] Traffic Usage :</b> $bw_display<br>"
             banner_content+="<b>[•] Active Session:</b> $online_count/$limit<br>"
@@ -1124,7 +1124,7 @@ while true; do
             fi
 
             banner_content+="${SEP}<br>"
-            banner_content+="<b>[•] Admin     :</b> <a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><br>"
+            banner_content+="<b>[•] Adminㅤㅤ:</b> <a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><br>"
             banner_content+="<b>[•] Channel:</b> <a href=\"https://t.me/TuhinBroh\">@TuhinBroh</a><br>${SEP}"
 
             write_banner_if_changed "$user" "$banner_content"
