@@ -12,7 +12,7 @@ echo "Installing TDZ SSH TUNNEL..."
 # Install from the current folder when the script is uploaded/copied to a VPS.
 # Remote URLs can still be overridden by environment variables if needed.
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-MENU_URL="${MENU_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/main/menu.sh}"
+MENU_URL="${MENU_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/menu.sh}"
 
 # Install menu
 if [[ -f "$SCRIPT_DIR/menu.sh" ]]; then
