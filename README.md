@@ -5,11 +5,11 @@
   <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white" alt="Bash">
 </p>
 
-<h1 align="center">TDZ SSH TUNNEL Manager</h1>
+<h1 align="center">TDZ SSH TUNNEL</h1>
 
 <p align="center">
   <b>Advanced SSH Tunnel Management System for Linux VPS</b><br>
-  Developed & maintained by <a href="https://t.me/TuhinBroh"><b>Yeasin Ul Hoque (Tuhin)</b></a>
+  Developed & maintained by <a href="https://tuhinbro.com"><b>Yeasinul Hoque Tuhin</b></a>
 </p>
 
 <p align="center">
@@ -23,9 +23,9 @@
 
 ## Overview
 
-TDZ SSH TUNNEL Manager is a comprehensive, bash-based SSH tunnel management system designed for Linux VPS servers. It provides a full-featured CLI dashboard for managing SSH tunnel users, monitoring bandwidth, controlling access, and deploying multiple tunnel protocols — all from a single interactive menu.
+TDZ SSH TUNNEL is a comprehensive, bash-based SSH tunnel management system designed for Linux VPS servers. It provides a full-featured CLI dashboard for managing SSH tunnel users, monitoring bandwidth, controlling access, and deploying multiple tunnel protocols — all from a single interactive menu.
 
-Built from scratch by **Yeasin Ul Hoque**, this project represents a complete, ground-up implementation of a modern SSH tunnel management solution, independently developed with advanced features including dynamic HTML banners, per-user traffic accounting, multi-protocol support, and automated user lifecycle management.
+Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a complete, ground-up implementation of a modern SSH tunnel management solution, independently developed with advanced features including dynamic HTML banners, per-user traffic accounting, multi-protocol support, and automated user lifecycle management.
 
 ---
 
@@ -70,7 +70,6 @@ Built from scratch by **Yeasin Ul Hoque**, this project represents a complete, g
 - **SSL/TLS certificates** — Let's Encrypt (certbot) and self-signed certificate management
 
 ### Branding & Customization
-- **101 Customizer** — customize the WebSocket `101 Switching Protocols` response with custom headers and branding
 - **Rainbow ANSI banners** — colorful SSH login banners with per-character coloring
 - **Premium CLI theme** — professional color-coded terminal interface with Navy + Cyan theme
 
@@ -120,22 +119,6 @@ TDZ-SSH-SCRIPT/
 └── README.md            # Documentation
 ```
 
-## Filesystem Layout (After Install)
-
-| Path | Purpose |
-|---|---|
-| `/etc/tdztunnel/` | Configuration directory |
-| `/etc/tdztunnel/users.db` | User database |
-| `/etc/tdztunnel/banners/` | Dynamic HTML banners (per-user) |
-| `/etc/tdztunnel/banners_enabled` | Banner system toggle |
-| `/etc/tdztunnel/bandwidth/` | Per-user bandwidth counters |
-| `/etc/tdztunnel/ssl/` | Shared TLS certificates |
-| `/usr/local/bin/menu` | Menu entrypoint |
-| `/usr/local/bin/tdztunnel-limiter.sh` | Active-user limiter + bandwidth tracker |
-| `/usr/local/bin/tdztunnel-login-info.sh` | Login info hook |
-| `/usr/local/bin/tdztunnel-trial-cleanup.sh` | Trial account cleanup daemon |
-| `/etc/systemd/system/tdztunnel-*.service` | Systemd service units |
-| `/etc/ssh/sshd_config.d/tdztunnel.conf` | SSHD drop-in configuration |
 
 ## Default Ports
 
@@ -176,13 +159,13 @@ bash /usr/local/bin/menu --uninstall
 
 ## Credits & License
 
-- **Developer:** [Yeasin Ul Hoque (Tuhin)](https://t.me/TuhinBroh)
-- **Project:** TDZ SSH TUNNEL Manager — independently developed from scratch
+- **Developer:** [Yeasinul Hoque Tuhin](https://tuhinbro.com)
+- **Project:** TDZ SSH TUNNEL — independently developed from scratch
 - **Third-party components:** BadVPN, DNSTT, stunnel4, HAProxy, Nginx, certbot (each retains its own license)
 
 ---
 
 <p align="center">
-  <b>TDZ SSH TUNNEL Manager</b> — Developed with dedication by <a href="https://t.me/TuhinBroh"><b>Yeasin Ul Hoque</b></a><br>
-  <i>For support, contact <a href="https://t.me/TUSTDZ">@TUSTDZ</a> on Telegram</i>
+  <b>TDZ SSH TUNNEL</b> — Developed with dedication by <a href="https://t.me/TuhinBroh"><b>Yeasinul Hoque Tuhin</b></a><br>
+  <i>For support, contact <a href="https://t.me/TUSTDZ">🇹‌🇺‌🇸‌</a> on Telegram</i>
 </p>
