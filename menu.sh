@@ -1112,7 +1112,7 @@ while true; do
                 MSG_BLOCK=""
             fi
 
-            banner_content="<br><br>${SEP}<br><b>            [!] ACCOUNT • DETAILS [!]</b><br>${SEP}<br>"
+            banner_content="<br><br>${SEP}<br><b>[!] ACCOUNT • DETAILS [!]</b><br>${SEP}<br>"
             banner_content+="<b>[•] Username      :</b> $user<br>"
             banner_content+="<b>[•] Status            :</b> ${STATUS_TEXT}<br>"
             banner_content+="<b>[•] Expiration:</b> $expiry_display<br>${SEP}<br>"
