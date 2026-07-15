@@ -1106,26 +1106,26 @@ while true; do
                 MSG_BLOCK="<font color=\"red\">Oops! Your data limit has been reached.<br>Please recharge your account<br>Or contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> to top-up<br>your data.</font>"
             elif $user_locked; then
                 STATUS_TEXT="Locked"
-                MSG_BLOCK="<font color=\"red\">Oops! Your account has been locked.<br>This is not a billing issue —<br>please contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> directly<br>to unlock your access.</font>"
+                MSG_BLOCK="<font color=\"red\">Oops! Your account has been locked.<br>This is maybe billing or abuse issue —<br>please contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> directly<br>to unlock your access.</font>"
             else
                 STATUS_TEXT="Active"
                 MSG_BLOCK=""
             fi
 
-            banner_content="<br><br>${SEP}<br><b>[-] ACCOUNT • DETAILS [-]</b><br>${SEP}<br>"
-            banner_content+="<b>[!] Username:</b> $user<br>"
-            banner_content+="<b>[!] Status:</b> ${STATUS_TEXT}<br>"
-            banner_content+="<b>[!] Expiration:</b> $expiry_display<br>${SEP}<br>"
-            banner_content+="<b>[!] Traffic Usage:</b> $bw_display<br>"
-            banner_content+="<b>[!] Active Session:</b> $online_count/$limit<br>"
+            banner_content="<br><br>${SEP}<br><b>[<!>] ACCOUNT • DETAILS [<!>]</b><br>${SEP}<br>"
+            banner_content+="<b>[•] Username:</b> $user<br>"
+            banner_content+="<b>[•] Status:</b> ${STATUS_TEXT}<br>"
+            banner_content+="<b>[•] Expiration:</b> $expiry_display<br>${SEP}<br>"
+            banner_content+="<b>[•] Traffic Usage:</b> $bw_display<br>"
+            banner_content+="<b>[•] Active Session:</b> $online_count/$limit<br>"
 
             if [[ -n "$MSG_BLOCK" ]]; then
                 banner_content+="${SEP}<br>${MSG_BLOCK}<br>"
             fi
 
             banner_content+="${SEP}<br>"
-            banner_content+="<b>[!] Admin:</b> <a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><br>"
-            banner_content+="<b>[!] Channel:</b> <a href=\"https://t.me/TuhinBroh\">@TuhinBroh</a><br>${SEP}"
+            banner_content+="<b>[•] Admin:</b> <a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><br>"
+            banner_content+="<b>[•] Channel:</b> <a href=\"https://t.me/TuhinBroh\">@TuhinBroh</a><br>${SEP}"
 
             write_banner_if_changed "$user" "$banner_content"
         fi
