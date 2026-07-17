@@ -848,6 +848,30 @@ db_has_user() {
     awk -F: -v target="$1" '$1 == target { found=1; exit } END { exit(found ? 0 : 1) }' "$DB_FILE"
 }
 
+db_set_pending_validity() {
+    local username="$1" validity_days="$2" tmp_file
+
+    [[ -f "$DB_FILE" && "$validity_days" =~ ^[1-9][0-9]*$ ]] || return 1
+    tmp_file=$(mktemp "${DB_FILE}.pending-validity.XXXXXX") || return 1
+
+    if ! awk -F: -v OFS=: -v target="$username" -v days="$validity_days" '
+        $1 == target && $6 == "pending" {
+            $3 = "Never"
+            $7 = days
+            updated = 1
+        }
+        { print }
+        END { if (!updated) exit 2 }
+    ' "$DB_FILE" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    chmod --reference="$DB_FILE" "$tmp_file" 2>/dev/null || chmod 600 "$tmp_file"
+    chown --reference="$DB_FILE" "$tmp_file" 2>/dev/null || true
+    mv -f "$tmp_file" "$DB_FILE"
+}
+
 is_tdztunnel_orphan_user() {
     local username="$1"
     local passwd_line system_user _ uid _ home shell
@@ -2393,20 +2417,24 @@ create_user() {
             break
         fi
     done
-    read -r -p "$(echo -e "${C_PROMPT}  Duration in days [30]: ${C_RESET}")" days
+    local first_use_activation=false
+    local first_use_choice validity_prompt
+    read -r -p "$(echo -e "${C_PROMPT}  Start After First Use? [y/N]: ${C_RESET}")" first_use_choice
+    [[ "$first_use_choice" == "y" || "$first_use_choice" == "Y" ]] && first_use_activation=true
+    if $first_use_activation; then
+        validity_prompt="Validity after first use (days) [30]"
+    else
+        validity_prompt="Validity from today (days) [30]"
+    fi
+    read -r -p "$(echo -e "${C_PROMPT}  ${validity_prompt}: ${C_RESET}")" days
     days=${days:-30}
-    if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then tdz_message ERROR "Duration must be at least 1 day."; return; fi
+    if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then tdz_message ERROR "Validity must be at least 1 day."; return; fi
     read -r -p "$(echo -e "${C_PROMPT}  Connection limit [1]: ${C_RESET}")" limit
     limit=${limit:-1}
     if ! [[ "$limit" =~ ^[0-9]+$ ]]; then tdz_message ERROR "Connection limit must be a whole number."; return; fi
     read -r -p "$(echo -e "${C_PROMPT}  Bandwidth in GB (0 = unlimited) [0]: ${C_RESET}")" bandwidth_gb
     bandwidth_gb=${bandwidth_gb:-0}
     if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then tdz_message ERROR "Bandwidth must be a valid number."; return; fi
-    local first_use_activation=false
-    local first_use_choice
-    read -r -p "$(echo -e "${C_PROMPT}  Start After First Use? [y/N]: ${C_RESET}")" first_use_choice
-    [[ "$first_use_choice" == "y" || "$first_use_choice" == "Y" ]] && first_use_activation=true
-
     local expire_date stored_expiry metadata_suffix="" expiry_display activation_display="Immediately"
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
     stored_expiry="$expire_date"
@@ -2494,10 +2522,11 @@ edit_user() {
         local cur_bw_display
         cur_bw_display=$(tdz_format_quota_gb "$cur_bw")
         local cur_expiry_display="$cur_expiry"
-        local pending_first_use=false
+        local pending_first_use=false pending_validity_days=""
         if [[ "$cur_metadata" =~ ^pending:([1-9][0-9]*) ]]; then
             pending_first_use=true
-            cur_expiry_display="First use +${BASH_REMATCH[1]}d"
+            pending_validity_days="${BASH_REMATCH[1]}"
+            cur_expiry_display="First use +${pending_validity_days}d"
         fi
 
         SSH_SESSION_CACHE_TS=0
@@ -2524,7 +2553,11 @@ edit_user() {
         tdz_box_divider
         tdz_menu1 "[ 1]" "Change Username"
         tdz_menu1 "[ 2]" "Change Password"
-        tdz_menu1 "[ 3]" "Change Expiration Date"
+        if $pending_first_use; then
+            tdz_menu1 "[ 3]" "Change Validity After First Use"
+        else
+            tdz_menu1 "[ 3]" "Change Validity from Today"
+        fi
         tdz_menu1 "[ 4]" "Change Connection Limit"
         tdz_menu1 "[ 5]" "Change Bandwidth Limit"
         tdz_menu1 "[ 6]" "Reset Bandwidth Counter"
@@ -2555,14 +2588,32 @@ edit_user() {
                 sed -i "s/^$username:.*/$username:$new_pass:$cur_expiry:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
                echo -e "\n${C_GREEN}[OK] Password for '$username' changed to: ${C_YELLOW}$new_pass${C_RESET}"
                ;;
-            3) read -p "  Enter new duration (in days from today): " days
-               if [[ "$days" =~ ^[1-9][0-9]*$ ]]; then
-                   local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d); chage -E "$new_expire_date" "$username"
-                    local expiry_metadata_suffix="$cur_metadata_suffix"
-                    $pending_first_use && expiry_metadata_suffix=""
-                    sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$expiry_metadata_suffix/" "$DB_FILE"
-                   echo -e "\n${C_GREEN}[OK] Expiration for '$username' set to ${C_YELLOW}$new_expire_date${C_RESET}."
-               else echo -e "\n${C_RED}[ERROR] Invalid number of days.${C_RESET}"; fi ;;
+            3)
+               if $pending_first_use; then
+                   read -r -p "  Validity after first use (days) [${pending_validity_days}]: " days
+                   days=${days:-$pending_validity_days}
+                   if [[ "$days" =~ ^[1-9][0-9]*$ ]]; then
+                       if db_set_pending_validity "$username" "$days"; then
+                           echo -e "\n${C_GREEN}[OK] '$username' will remain pending and expire ${C_YELLOW}${days} days after first use${C_RESET}."
+                       else
+                           echo -e "\n${C_RED}[ERROR] Pending validity could not be updated. The account may have activated already.${C_RESET}"
+                       fi
+                   else
+                       echo -e "\n${C_RED}[ERROR] Validity must be at least 1 day.${C_RESET}"
+                   fi
+               else
+                   read -r -p "  Validity from today (days) [30]: " days
+                   days=${days:-30}
+                   if [[ "$days" =~ ^[1-9][0-9]*$ ]]; then
+                       local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d)
+                       chage -E "$new_expire_date" "$username"
+                       sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
+                       echo -e "\n${C_GREEN}[OK] Validity for '$username' set to ${C_YELLOW}${days} days from today${C_RESET} (${new_expire_date})."
+                   else
+                       echo -e "\n${C_RED}[ERROR] Validity must be at least 1 day.${C_RESET}"
+                   fi
+               fi
+               ;;
             4) read -p "  Enter new simultaneous connection limit: " new_limit
                if [[ "$new_limit" =~ ^[0-9]+$ ]]; then
                     sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$new_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
@@ -7001,9 +7052,17 @@ bulk_create_users() {
         echo -e "\n${C_RED}[ERROR] Invalid count (1-100).${C_RESET}"; return
     fi
     
-    read -p "  Account duration (in days) [30]: " days
+    local first_use_activation=false first_use_choice validity_prompt
+    read -r -p "  Start After First Use? [y/N]: " first_use_choice
+    [[ "$first_use_choice" == "y" || "$first_use_choice" == "Y" ]] && first_use_activation=true
+    if $first_use_activation; then
+        validity_prompt="Validity after first use (days) [30]"
+    else
+        validity_prompt="Validity from today (days) [30]"
+    fi
+    read -r -p "  ${validity_prompt}: " days
     days=${days:-30}
-    if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then echo -e "\n${C_RED}[ERROR] Duration must be at least 1 day.${C_RESET}"; return; fi
+    if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then echo -e "\n${C_RED}[ERROR] Validity must be at least 1 day.${C_RESET}"; return; fi
     
     read -p "  Connection limit per user [1]: " limit
     limit=${limit:-1}
@@ -7012,10 +7071,6 @@ bulk_create_users() {
     read -p "  Bandwidth limit in GB per user (0 = unlimited) [0]: " bandwidth_gb
     bandwidth_gb=${bandwidth_gb:-0}
     if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then echo -e "\n${C_RED}[ERROR] Invalid number.${C_RESET}"; return; fi
-
-    local first_use_activation=false first_use_choice
-    read -p "  Start After First Use? [y/N]: " first_use_choice
-    [[ "$first_use_choice" == "y" || "$first_use_choice" == "Y" ]] && first_use_activation=true
 
     local expire_date stored_expiry metadata_suffix="" table_expiry activation_display="Immediately"
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
