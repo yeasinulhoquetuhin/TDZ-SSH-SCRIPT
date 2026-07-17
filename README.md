@@ -29,6 +29,67 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 
 ---
 
+## Screenshots
+
+### Main Dashboard
+
+<p align="center">
+  <img src="screenshot/main-dashboard.png" alt="TDZ SSH TUNNEL main dashboard" width="430">
+</p>
+
+The live dashboard brings server information, service health, user management, protocols, maintenance tools, and the danger zone into one organized terminal interface.
+
+### Managed Accounts
+
+<p align="center">
+  <img src="screenshot/managed-users.png" alt="TDZ SSH TUNNEL managed user list" width="760">
+</p>
+
+Account status, expiration, remaining validity, active connections, and compact GB/TB traffic usage are displayed together for quick monitoring.
+
+### Management Screens
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="screenshot/public-port-management.png" alt="Public port management"><br>
+      <b>Public Port Management</b><br>
+      Configure, restore, apply, or repair the public HTTP/WS and TLS/SSL layout.
+    </td>
+    <td align="center" width="50%">
+      <img src="screenshot/edit-user.png" alt="Edit SSH user"><br>
+      <b>Edit User</b><br>
+      Update credentials, validity, connections, bandwidth limits, and usage counters.
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="screenshot/domain-ssl.png" alt="Domain and SSL certificate management"><br>
+      <b>Domain &amp; SSL</b><br>
+      Issue, renew, reuse, import, or remove shared TLS certificates.
+    </td>
+    <td align="center" width="50%">
+      <img src="screenshot/backup-restore.png" alt="Telegram backup and restore"><br>
+      <b>Backup &amp; Restore</b><br>
+      Manage local backups and automated Telegram backup controls.
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="screenshot/protocol-panel-management.png" alt="Protocol and panel management"><br>
+      <b>Protocol &amp; Panel Management</b><br>
+      Install and manage tunnel protocols, HAProxy, Nginx, ZiVPN, DNSTT, and X-UI.
+    </td>
+    <td align="center" width="50%">
+      <img src="screenshot/ssh-banner-management.png" alt="SSH banner management"><br>
+      <b>SSH Banner Management</b><br>
+      Enable, preview, customize, replace, or disable account banners.
+    </td>
+  </tr>
+</table>
+
+---
+
 ## Features
 
 ### User Management
