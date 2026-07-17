@@ -32,9 +32,9 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 ## Features
 
 ### User Management
-- **Create / Delete / Edit users** — full CRUD operations with password, expiry, session limit, and bandwidth controls
+- **Create / Delete / Edit users** — full CRUD operations with safe username changes, password, expiry, session limit, and bandwidth controls
 - **Bulk user creation** — generate multiple accounts at once with shared or individual settings
-- **Trial accounts** — auto-expiring demo users with configurable duration (1h to 72h) and automatic cleanup
+- **Trial accounts** — create 1h-to-72h auto-expiring demo users with automatic cleanup and a dedicated list for remaining time, usage, connections, and status
 - **Account locking / unlocking** — manually lock or unlock any user account instantly
 - **Account renewal** — extend expiry, adjust limits, or reset passwords for existing users
 - **Expired user cleanup** — one-click removal of all expired accounts

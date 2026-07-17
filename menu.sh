@@ -1382,18 +1382,34 @@ setup_trial_cleanup_script() {
     cat > "$TRIAL_CLEANUP_SCRIPT" << 'TREOF'
 #!/bin/bash
 # TDZ SSH TUNNEL Trial Account Auto-Cleanup
-# Usage: tdztunnel-trial-cleanup.sh <username>
+# Usage (legacy): tdztunnel-trial-cleanup.sh <username>
+# Usage (rename-safe): tdztunnel-trial-cleanup.sh --uid <uid> <expiry_epoch>
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
 
-username="$1"
-if [[ -z "$username" ]]; then exit 1; fi
+expected_expiry_epoch=""
+if [[ "$1" == "--uid" ]]; then
+    user_uid="$2"
+    expected_expiry_epoch="$3"
+    if ! [[ "$user_uid" =~ ^[0-9]+$ && "$expected_expiry_epoch" =~ ^[0-9]+$ ]]; then
+        exit 1
+    fi
+    username=$(getent passwd "$user_uid" 2>/dev/null | cut -d: -f1)
+else
+    username="$1"
+fi
+if [[ -z "$username" ]]; then exit 0; fi
 
 db_line=$(grep "^${username}:" "$DB_FILE" 2>/dev/null | head -n 1)
 if [[ -z "$db_line" ]]; then exit 0; fi
 
-IFS=: read -r _ _ _ _ _ trial_marker _rest <<< "$db_line"
+IFS=: read -r _ _ _ _ _ trial_marker trial_expiry_epoch _rest <<< "$db_line"
 if [[ "$trial_marker" != "trial" ]]; then
+    exit 0
+fi
+if [[ -n "$expected_expiry_epoch" && "$trial_expiry_epoch" != "$expected_expiry_epoch" ]]; then
+    # UID may have been reused after the original trial was deleted. Never
+    # delete a different account unless its immutable trial token also matches.
     exit 0
 fi
 
@@ -1787,6 +1803,291 @@ get_user_status() {
     echo -e "${C_GREEN}🟢 Active${C_RESET}"
 }
 
+is_valid_tdztunnel_username() {
+    local username="$1"
+    [[ ${#username} -le 32 && "$username" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+rollback_tdztunnel_user_rename() {
+    local old_username="$1" new_username="$2"
+    local old_home="$3" new_home="$4" move_home="$5"
+    local group_renamed="$6" usage_moved="$7" banner_created="$8"
+    local rollback_ok=true
+
+    if [[ "$banner_created" == true ]]; then
+        rm -f "$DB_DIR/banners/${new_username}.txt" 2>/dev/null || rollback_ok=false
+    fi
+    if [[ "$usage_moved" == true ]]; then
+        mv -f "$BANDWIDTH_DIR/${new_username}.usage" \
+            "$BANDWIDTH_DIR/${old_username}.usage" 2>/dev/null || rollback_ok=false
+    fi
+    if [[ "$group_renamed" == true ]] && getent group "$new_username" >/dev/null 2>&1; then
+        groupmod -n "$old_username" "$new_username" >/dev/null 2>&1 || rollback_ok=false
+    fi
+    if id "$new_username" >/dev/null 2>&1; then
+        if [[ "$move_home" == true ]]; then
+            if [[ -d "$new_home" && ! -e "$old_home" ]]; then
+                usermod -l "$old_username" -d "$old_home" -m "$new_username" >/dev/null 2>&1 || rollback_ok=false
+            else
+                usermod -l "$old_username" -d "$old_home" "$new_username" >/dev/null 2>&1 || rollback_ok=false
+            fi
+        else
+            usermod -l "$old_username" "$new_username" >/dev/null 2>&1 || rollback_ok=false
+        fi
+    fi
+
+    $rollback_ok
+}
+
+rename_tdztunnel_user() {
+    local old_username="$1" new_username="$2"
+    local passwd_entry account_type trial_expiry_epoch old_login old_password old_uid old_gid old_gecos old_home old_shell
+    local primary_group new_home move_home=false
+    local db_tmp="" db_backup="" banner_tmp=""
+    local limiter_was_active=false group_renamed=false usage_moved=false banner_created=false
+    local confirm active_process_count
+
+    if ! db_has_user "$old_username" || ! id "$old_username" >/dev/null 2>&1; then
+        echo -e "\n${C_RED}❌ The current account is missing from the database or system.${C_RESET}"
+        return 1
+    fi
+    if [[ "$new_username" == "$old_username" ]]; then
+        echo -e "\n${C_YELLOW}ℹ️ The username is already '${old_username}'. Nothing was changed.${C_RESET}"
+        return 1
+    fi
+    if ! is_valid_tdztunnel_username "$new_username"; then
+        echo -e "\n${C_RED}❌ Invalid username.${C_RESET}"
+        echo -e "${C_DIM}Use 1-32 lowercase letters, numbers, '_' or '-'; start with a letter or '_'.${C_RESET}"
+        return 1
+    fi
+    if db_has_user "$new_username" || getent passwd "$new_username" >/dev/null 2>&1; then
+        echo -e "\n${C_RED}❌ Username '${new_username}' already exists.${C_RESET}"
+        return 1
+    fi
+
+    # New trial cleanup jobs use UID + an immutable expiry token and remain
+    # valid after a rename. Only pre-upgrade legacy trials lack that token.
+    account_type=$(awk -F: -v target="$old_username" '$1 == target {print $6; exit}' "$DB_FILE")
+    trial_expiry_epoch=$(awk -F: -v target="$old_username" '$1 == target {print $7; exit}' "$DB_FILE")
+    if [[ "$account_type" == "trial" && ! "$trial_expiry_epoch" =~ ^[0-9]+$ ]]; then
+        echo -e "\n${C_YELLOW}⚠️ This legacy trial was scheduled by username before rename-safe cleanup existed.${C_RESET}"
+        echo -e "${C_DIM}Create a new trial instead; current trial accounts can be renamed safely.${C_RESET}"
+        return 1
+    fi
+
+    passwd_entry=$(getent passwd "$old_username" 2>/dev/null) || {
+        echo -e "\n${C_RED}❌ Could not read the system account.${C_RESET}"
+        return 1
+    }
+    IFS=: read -r old_login old_password old_uid old_gid old_gecos old_home old_shell <<< "$passwd_entry"
+    primary_group=$(getent group "$old_gid" 2>/dev/null | cut -d: -f1)
+    if [[ -z "$primary_group" ]]; then
+        echo -e "\n${C_RED}❌ Could not resolve the account's primary group.${C_RESET}"
+        return 1
+    fi
+    if [[ "$primary_group" == "$old_username" ]] && getent group "$new_username" >/dev/null 2>&1; then
+        echo -e "\n${C_RED}❌ Group '${new_username}' already exists; rename cancelled to avoid a group conflict.${C_RESET}"
+        return 1
+    fi
+
+    new_home="$old_home"
+    if [[ "$old_home" == "/home/${old_username}" ]]; then
+        new_home="/home/${new_username}"
+        move_home=true
+        if [[ -e "$new_home" ]]; then
+            echo -e "\n${C_RED}❌ Home path '${new_home}' already exists.${C_RESET}"
+            return 1
+        fi
+    fi
+    if [[ -e "$BANDWIDTH_DIR/${new_username}.usage" ||
+          -e "$DB_DIR/banners/${new_username}.txt" ]]; then
+        echo -e "\n${C_RED}❌ Stored data for '${new_username}' already exists; rename cancelled to prevent overwriting it.${C_RESET}"
+        return 1
+    fi
+
+    db_backup=$(mktemp "${DB_FILE}.rename-backup.XXXXXX") || return 1
+    db_tmp=$(mktemp "${DB_FILE}.rename-new.XXXXXX") || {
+        rm -f "$db_backup"
+        return 1
+    }
+    if ! cp -p "$DB_FILE" "$db_backup" ||
+       ! awk -F: -v OFS=: -v old="$old_username" -v new="$new_username" '
+            $1 == old { $1 = new; found = 1 }
+            { print }
+            END { if (!found) exit 3 }
+        ' "$DB_FILE" > "$db_tmp"; then
+        rm -f "$db_tmp" "$db_backup"
+        echo -e "\n${C_RED}❌ Could not prepare the database migration.${C_RESET}"
+        return 1
+    fi
+    chmod --reference="$DB_FILE" "$db_tmp" 2>/dev/null || true
+    chown --reference="$DB_FILE" "$db_tmp" 2>/dev/null || true
+
+    if [[ -f "$DB_DIR/banners/${old_username}.txt" ]]; then
+        banner_tmp=$(mktemp "$DB_DIR/banners/.rename.XXXXXX") || {
+            rm -f "$db_tmp" "$db_backup"
+            return 1
+        }
+        if ! awk -v old="$old_username" -v new="$new_username" '
+                {
+                    position = index($0, old)
+                    if (position) {
+                        $0 = substr($0, 1, position - 1) new substr($0, position + length(old))
+                    }
+                    print
+                }
+            ' "$DB_DIR/banners/${old_username}.txt" > "$banner_tmp"; then
+            rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+            echo -e "\n${C_RED}❌ Could not prepare the dynamic banner migration.${C_RESET}"
+            return 1
+        fi
+        chmod --reference="$DB_DIR/banners/${old_username}.txt" "$banner_tmp" 2>/dev/null || true
+        chown --reference="$DB_DIR/banners/${old_username}.txt" "$banner_tmp" 2>/dev/null || true
+    fi
+
+    echo -e "\n${C_YELLOW}The account will be renamed:${C_RESET}"
+    echo -e "  • Username: ${C_WHITE}${old_username}${C_RESET} → ${C_GREEN}${new_username}${C_RESET}"
+    if [[ "$move_home" == true ]]; then
+        echo -e "  • Home:     ${C_WHITE}${old_home}${C_RESET} → ${C_GREEN}${new_home}${C_RESET}"
+    fi
+    echo -e "${C_DIM}Password, expiry, limits, lock state and bandwidth usage will be preserved.${C_RESET}"
+    read -r -p "Type RENAME to confirm: " confirm
+    if [[ "$confirm" != "RENAME" ]]; then
+        rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+        echo -e "\n${C_YELLOW}❌ Username change cancelled.${C_RESET}"
+        return 1
+    fi
+
+    if systemctl is-active --quiet tdztunnel-limiter 2>/dev/null; then
+        limiter_was_active=true
+        if ! systemctl stop tdztunnel-limiter >/dev/null 2>&1; then
+            rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+            echo -e "\n${C_RED}❌ Could not pause the account worker safely; rename cancelled.${C_RESET}"
+            return 1
+        fi
+    fi
+
+    active_process_count=$(pgrep -u "$old_username" 2>/dev/null | wc -l)
+    if (( active_process_count > 0 )); then
+        echo -e "\n${C_YELLOW}⚠️ ${active_process_count} active process(es) must be disconnected before renaming.${C_RESET}"
+        read -r -p "Disconnect them and continue? (y/n): " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+            rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+            echo -e "\n${C_YELLOW}❌ Username change cancelled.${C_RESET}"
+            return 1
+        fi
+        pkill -TERM -u "$old_username" >/dev/null 2>&1 || true
+        sleep 1
+        pgrep -u "$old_username" >/dev/null 2>&1 && pkill -KILL -u "$old_username" >/dev/null 2>&1 || true
+        sleep 1
+        if pgrep -u "$old_username" >/dev/null 2>&1; then
+            $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+            rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+            echo -e "\n${C_RED}❌ Some account processes could not be stopped; rename cancelled.${C_RESET}"
+            return 1
+        fi
+    fi
+
+    if [[ "$move_home" == true ]]; then
+        if [[ -d "$old_home" ]]; then
+            usermod -l "$new_username" -d "$new_home" -m "$old_username" >/dev/null 2>&1
+        else
+            usermod -l "$new_username" -d "$new_home" "$old_username" >/dev/null 2>&1
+        fi
+    else
+        usermod -l "$new_username" "$old_username" >/dev/null 2>&1
+    fi
+    if [[ $? -ne 0 ]]; then
+        local partial_rollback_ok=true
+        if id "$new_username" >/dev/null 2>&1 && ! id "$old_username" >/dev/null 2>&1; then
+            rollback_tdztunnel_user_rename "$old_username" "$new_username" \
+                "$old_home" "$new_home" "$move_home" false false false || partial_rollback_ok=false
+        fi
+        $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+        rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+        if $partial_rollback_ok; then
+            echo -e "\n${C_RED}❌ Linux account rename failed; the original account was preserved.${C_RESET}"
+        else
+            echo -e "\n${C_RED}❌ Linux account rename failed and automatic rollback was incomplete.${C_RESET}"
+            echo -e "${C_YELLOW}⚠️ Do not close this SSH session; inspect the system account manually.${C_RESET}"
+        fi
+        return 1
+    fi
+
+    if [[ "$primary_group" == "$old_username" ]]; then
+        if ! groupmod -n "$new_username" "$old_username" >/dev/null 2>&1; then
+            rollback_tdztunnel_user_rename "$old_username" "$new_username" \
+                "$old_home" "$new_home" "$move_home" false false false
+            $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+            rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+            echo -e "\n${C_RED}❌ Private group rename failed; the original username was restored.${C_RESET}"
+            return 1
+        fi
+        group_renamed=true
+    fi
+
+    if [[ -f "$BANDWIDTH_DIR/${old_username}.usage" ]]; then
+        if ! mv "$BANDWIDTH_DIR/${old_username}.usage" "$BANDWIDTH_DIR/${new_username}.usage"; then
+            rollback_tdztunnel_user_rename "$old_username" "$new_username" \
+                "$old_home" "$new_home" "$move_home" "$group_renamed" false false
+            $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+            rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+            echo -e "\n${C_RED}❌ Bandwidth data migration failed; the original username was restored.${C_RESET}"
+            return 1
+        fi
+        usage_moved=true
+    fi
+
+    if [[ -n "$banner_tmp" ]]; then
+        if ! mv "$banner_tmp" "$DB_DIR/banners/${new_username}.txt"; then
+            rollback_tdztunnel_user_rename "$old_username" "$new_username" \
+                "$old_home" "$new_home" "$move_home" "$group_renamed" "$usage_moved" false
+            $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+            rm -f "$banner_tmp" "$db_tmp" "$db_backup"
+            echo -e "\n${C_RED}❌ Banner migration failed; the original username was restored.${C_RESET}"
+            return 1
+        fi
+        banner_created=true
+        banner_tmp=""
+    fi
+
+    if ! mv -f "$db_tmp" "$DB_FILE"; then
+        rollback_tdztunnel_user_rename "$old_username" "$new_username" \
+            "$old_home" "$new_home" "$move_home" "$group_renamed" "$usage_moved" "$banner_created"
+        $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+        rm -f "$db_tmp" "$db_backup"
+        echo -e "\n${C_RED}❌ Database migration failed; the original username was restored.${C_RESET}"
+        return 1
+    fi
+
+    if ! id "$new_username" >/dev/null 2>&1 || id "$old_username" >/dev/null 2>&1 ||
+       ! db_has_user "$new_username" || db_has_user "$old_username"; then
+        mv -f "$db_backup" "$DB_FILE" 2>/dev/null
+        rollback_tdztunnel_user_rename "$old_username" "$new_username" \
+            "$old_home" "$new_home" "$move_home" "$group_renamed" "$usage_moved" "$banner_created"
+        $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+        echo -e "\n${C_RED}❌ Post-rename verification failed; the original username was restored.${C_RESET}"
+        return 1
+    fi
+
+    rm -f "$db_backup" "$DB_DIR/banners/${old_username}.txt"
+    rm -rf "$BANDWIDTH_DIR/pidtrack/${old_username}" 2>/dev/null
+    rm -f "$BANDWIDTH_DIR/pidtrack/${old_username}__"*.last 2>/dev/null
+    if ! id -nG "$new_username" 2>/dev/null | tr ' ' '\n' | grep -Fxq "$TDZ_USERS_GROUP"; then
+        usermod -aG "$TDZ_USERS_GROUP" "$new_username" >/dev/null 2>&1 || true
+    fi
+
+    invalidate_banner_cache
+    refresh_dynamic_banner_routing_if_enabled
+    if $limiter_was_active && ! systemctl start tdztunnel-limiter >/dev/null 2>&1; then
+        echo -e "${C_YELLOW}⚠️ Username changed, but the account worker must be restarted manually.${C_RESET}"
+    fi
+
+    echo -e "\n${C_GREEN}✅ Username changed successfully: ${old_username} → ${new_username}${C_RESET}"
+    return 0
+}
+
 create_user() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- ✨ Create New SSH User ---${C_RESET}"
@@ -1904,8 +2205,8 @@ edit_user() {
         local cur_expiry; cur_expiry=$(echo "$current_line" | cut -d: -f3)
         local cur_limit; cur_limit=$(echo "$current_line" | cut -d: -f4)
         local cur_bw; cur_bw=$(echo "$current_line" | cut -d: -f5)
-        local cur_type; cur_type=$(echo "$current_line" | cut -d: -f6)
-        local cur_type_suffix=""; [[ -n "$cur_type" ]] && cur_type_suffix=":$cur_type"
+        local cur_metadata; cur_metadata=$(echo "$current_line" | cut -d: -f6-)
+        local cur_metadata_suffix=""; [[ -n "$cur_metadata" ]] && cur_metadata_suffix=":$cur_metadata"
         [[ -z "$cur_bw" ]] && cur_bw="0"
         local cur_bw_display="Unlimited"; [[ "$cur_bw" != "0" ]] && cur_bw_display="${cur_bw} GB"
         
@@ -1927,6 +2228,7 @@ edit_user() {
         printf "  ${C_GREEN}[ 3]${C_RESET} %-35s\n" "📶 Change Connection Limit"
         printf "  ${C_GREEN}[ 4]${C_RESET} %-35s\n" "📦 Change Bandwidth Limit"
         printf "  ${C_GREEN}[ 5]${C_RESET} %-35s\n" "🔄 Reset Bandwidth Counter"
+        printf "  ${C_GREEN}[ 6]${C_RESET} %-35s\n" "👤 Change Username"
         echo -e "\n  ${C_RED}[ 0]${C_RESET} ✅ Finish Editing"
         echo
         if ! read -r -p "👉 Enter your choice: " edit_choice; then
@@ -1942,23 +2244,23 @@ edit_user() {
                    echo -e "${C_GREEN}🔑 Auto-generated: ${C_YELLOW}$new_pass${C_RESET}"
                fi
                echo "$username:$new_pass" | chpasswd
-                sed -i "s/^$username:.*/$username:$new_pass:$cur_expiry:$cur_limit:$cur_bw$cur_type_suffix/" "$DB_FILE"
+                sed -i "s/^$username:.*/$username:$new_pass:$cur_expiry:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
                echo -e "\n${C_GREEN}✅ Password for '$username' changed to: ${C_YELLOW}$new_pass${C_RESET}"
                ;;
             2) read -p "Enter new duration (in days from today): " days
                if [[ "$days" =~ ^[0-9]+$ ]]; then
                    local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d); chage -E "$new_expire_date" "$username"
-                    sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$cur_type_suffix/" "$DB_FILE"
+                    sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
                    echo -e "\n${C_GREEN}✅ Expiration for '$username' set to ${C_YELLOW}$new_expire_date${C_RESET}."
                else echo -e "\n${C_RED}❌ Invalid number of days.${C_RESET}"; fi ;;
             3) read -p "Enter new simultaneous connection limit: " new_limit
                if [[ "$new_limit" =~ ^[0-9]+$ ]]; then
-                    sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$new_limit:$cur_bw$cur_type_suffix/" "$DB_FILE"
+                    sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$new_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
                    echo -e "\n${C_GREEN}✅ Connection limit for '$username' set to ${C_YELLOW}$new_limit${C_RESET}."
                else echo -e "\n${C_RED}❌ Invalid limit.${C_RESET}"; fi ;;
             4) read -p "Enter new bandwidth limit in GB (0 = unlimited): " new_bw
                if [[ "$new_bw" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                    sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$cur_limit:$new_bw$cur_type_suffix/" "$DB_FILE"
+                    sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$cur_limit:$new_bw$cur_metadata_suffix/" "$DB_FILE"
                    local bw_msg="Unlimited"; [[ "$new_bw" != "0" ]] && bw_msg="${new_bw} GB"
                    echo -e "\n${C_GREEN}✅ Bandwidth limit for '$username' set to ${C_YELLOW}$bw_msg${C_RESET}."
                    # Unlock user if they were locked due to bandwidth
@@ -1975,6 +2277,13 @@ edit_user() {
                # Unlock user if they were locked due to bandwidth
                usermod -U "$username" &>/dev/null
                echo -e "\n${C_GREEN}✅ Bandwidth counter for '$username' has been reset to 0.${C_RESET}"
+               ;;
+            6)
+               local new_username
+               read -r -p "Enter new username: " new_username
+               if rename_tdztunnel_user "$username" "$new_username"; then
+                   username="$new_username"
+               fi
                ;;
             0) return ;;
             *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" ;;
@@ -2126,10 +2435,10 @@ renew_user() {
     echo -e "\n${C_BLUE}🔄 Renewing selected users for $days days...${C_RESET}"
     for u in "${SELECTED_USERS[@]}"; do
         chage -E "$new_expire_date" "$u"
-        local line; line=$(grep "^$u:" "$DB_FILE"); local pass; pass=$(echo "$line"|cut -d: -f2); local limit; limit=$(echo "$line"|cut -d: -f4); local bw; bw=$(echo "$line"|cut -d: -f5); local type; type=$(echo "$line"|cut -d: -f6)
+        local line; line=$(grep "^$u:" "$DB_FILE"); local pass; pass=$(echo "$line"|cut -d: -f2); local limit; limit=$(echo "$line"|cut -d: -f4); local bw; bw=$(echo "$line"|cut -d: -f5); local metadata; metadata=$(echo "$line"|cut -d: -f6-)
         [[ -z "$bw" ]] && bw="0"
-        local type_suffix=""; [[ -n "$type" ]] && type_suffix=":$type"
-        sed -i "s/^$u:.*/$u:$pass:$new_expire_date:$limit:$bw$type_suffix/" "$DB_FILE"
+        local metadata_suffix=""; [[ -n "$metadata" ]] && metadata_suffix=":$metadata"
+        sed -i "s/^$u:.*/$u:$pass:$new_expire_date:$limit:$bw$metadata_suffix/" "$DB_FILE"
         echo -e " ✅ ${C_YELLOW}$u${C_RESET} renewed until ${C_GREEN}${new_expire_date}${C_RESET}."
     done
 }
@@ -5983,7 +6292,7 @@ uninstall_script() {
 
 create_trial_account() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⏱️ Create Trial/Test Account ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⏱️ Create Trial Account ---${C_RESET}"
     
     # Ensure 'at' daemon is available
     if ! command -v at &>/dev/null; then
@@ -6069,8 +6378,9 @@ create_trial_account() {
         # For sub-day durations, set expiry to tomorrow to be safe (at job does the real cleanup)
         expire_date=$(date -d "+1 day" +%Y-%m-%d)
     fi
-    local expiry_timestamp
-    expiry_timestamp=$(date -d "+${duration_hours} hours" '+%Y-%m-%d %H:%M:%S')
+    local expiry_epoch expiry_timestamp
+    expiry_epoch=$(date -d "+${duration_hours} hours" +%s)
+    expiry_timestamp=$(date -d "@${expiry_epoch}" '+%Y-%m-%d %H:%M:%S')
     
     # Create the system user
     ensure_tdztunnel_system_group
@@ -6078,10 +6388,14 @@ create_trial_account() {
     usermod -aG "$TDZ_USERS_GROUP" "$username" 2>/dev/null
     echo "$username:$password" | chpasswd
     chage -E "$expire_date" "$username"
-    echo "$username:$password:$expire_date:$limit:$bandwidth_gb:trial" >> "$DB_FILE"
+    echo "$username:$password:$expire_date:$limit:$bandwidth_gb:trial:$expiry_epoch" >> "$DB_FILE"
     
-    # Schedule auto-cleanup via 'at'
-    echo "$TRIAL_CLEANUP_SCRIPT $username" | at now + ${duration_hours} hours 2>/dev/null
+    # Schedule by UID + immutable expiry token so changing the username later
+    # does not detach the automatic cleanup job. The token prevents UID-reuse
+    # from ever deleting a different account.
+    local trial_uid
+    trial_uid=$(id -u "$username")
+    echo "$TRIAL_CLEANUP_SCRIPT --uid $trial_uid $expiry_epoch" | at now + ${duration_hours} hours 2>/dev/null
     
     local bw_display="Unlimited"
     if [[ "$bandwidth_gb" != "0" ]]; then bw_display="${bandwidth_gb} GB"; fi
@@ -6109,6 +6423,106 @@ create_trial_account() {
     
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
+}
+
+format_trial_time_left() {
+    local expiry_epoch="$1" now remaining days hours minutes
+    if ! [[ "$expiry_epoch" =~ ^[0-9]+$ ]] || (( expiry_epoch <= 0 )); then
+        printf "Unknown"
+        return
+    fi
+
+    now=$(date +%s)
+    remaining=$((expiry_epoch - now))
+    if (( remaining <= 0 )); then
+        printf "Expired"
+    elif (( remaining >= 86400 )); then
+        days=$((remaining / 86400))
+        hours=$(((remaining % 86400) / 3600))
+        printf "%dd %dh" "$days" "$hours"
+    elif (( remaining >= 3600 )); then
+        hours=$((remaining / 3600))
+        minutes=$(((remaining % 3600) / 60))
+        printf "%dh %dm" "$hours" "$minutes"
+    else
+        minutes=$((remaining / 60))
+        (( minutes < 1 )) && minutes=1
+        printf "%dm" "$minutes"
+    fi
+}
+
+list_trial_accounts() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- ⏱️ Trial Accounts ---${C_RESET}\n"
+
+    if [[ ! -s "$DB_FILE" ]] ||
+       ! awk -F: '$6 == "trial" { found=1; exit } END { exit(found ? 0 : 1) }' "$DB_FILE"; then
+        echo -e "${C_YELLOW}ℹ️ No trial accounts found.${C_RESET}"
+        return
+    fi
+
+    refresh_ssh_session_cache
+    local now trial_count=0
+    now=$(date +%s)
+
+    echo -e "${C_CYAN}====================================================================================================${C_RESET}"
+    printf "${C_BOLD}${C_WHITE}%-18s | %-16s | %-11s | %-9s | %-17s | %-12s${C_RESET}\n" \
+        "USERNAME" "AUTO EXPIRES" "TIME LEFT" "CONNS" "BANDWIDTH" "STATUS"
+    echo -e "${C_CYAN}----------------------------------------------------------------------------------------------------${C_RESET}"
+
+    while IFS=: read -r user _password expiry limit bandwidth_gb account_type trial_expiry_epoch _rest; do
+        [[ "$account_type" == "trial" ]] || continue
+        trial_count=$((trial_count + 1))
+
+        local expiry_display time_left online_count connection_string
+        local used_bytes=0 used_gb bandwidth_display status status_color
+        local expiry_check=0 passwd_state
+
+        online_count="${SSH_SESSION_COUNTS[$user]:-0}"
+        connection_string="${online_count}/${limit:-1}"
+
+        if [[ "$trial_expiry_epoch" =~ ^[0-9]+$ ]] && (( trial_expiry_epoch > 0 )); then
+            expiry_display=$(date -d "@${trial_expiry_epoch}" '+%d-%m %H:%M' 2>/dev/null || echo "$expiry")
+            time_left=$(format_trial_time_left "$trial_expiry_epoch")
+            expiry_check=$trial_expiry_epoch
+        else
+            expiry_display=$(date -d "$expiry" '+%d-%m-%Y' 2>/dev/null || echo "$expiry")
+            time_left="Unknown"
+            expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+        fi
+
+        if [[ -f "$BANDWIDTH_DIR/${user}.usage" ]]; then
+            read -r used_bytes < "$BANDWIDTH_DIR/${user}.usage" || used_bytes=0
+            [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
+        fi
+        used_gb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1073741824}")
+        if [[ -z "$bandwidth_gb" || "$bandwidth_gb" == "0" ]]; then
+            bandwidth_display="${used_gb}/∞ GB"
+        else
+            bandwidth_display="${used_gb}/${bandwidth_gb} GB"
+        fi
+
+        passwd_state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+        if ! id "$user" >/dev/null 2>&1; then
+            status="Missing"
+            status_color="$C_RED"
+        elif (( expiry_check > 0 && expiry_check <= now )); then
+            status="Expired"
+            status_color="$C_RED"
+        elif [[ "$passwd_state" == "L" ]]; then
+            status="Locked"
+            status_color="$C_YELLOW"
+        else
+            status="Active"
+            status_color="$C_GREEN"
+        fi
+
+        printf "${C_WHITE}%-18s${C_RESET} | ${C_YELLOW}%-16s${C_RESET} | ${C_CYAN}%-11s${C_RESET} | %-9s | %-17s | ${status_color}%-12s${C_RESET}\n" \
+            "$user" "$expiry_display" "$time_left" "$connection_string" "$bandwidth_display" "$status"
+    done < <(sort "$DB_FILE")
+
+    echo -e "${C_CYAN}====================================================================================================${C_RESET}"
+    echo -e "${C_GREEN}Total trial accounts: ${trial_count}${C_RESET}"
 }
 
 view_user_bandwidth() {
@@ -6676,10 +7090,10 @@ main_menu() {
         tdz_box_divider
         tdz_menu2 "[ 1]" "Create User"      "[ 7]" "List Users"
         tdz_menu2 "[ 2]" "Delete User"      "[ 8]" "Client Config"
-        tdz_menu2 "[ 3]" "Renew Account"    "[ 9]" "Trial Account"
-        tdz_menu2 "[ 4]" "Lock User"        "[10]" "Bandwidth Usage"
-        tdz_menu2 "[ 5]" "Unlock Account"   "[11]" "Bulk Create"
-        tdz_menu1 "[ 6]" "Edit Details"
+        tdz_menu2 "[ 3]" "Renew Account"    "[ 9]" "Create Trial"
+        tdz_menu2 "[ 4]" "Lock User"        "[10]" "Trial Accounts"
+        tdz_menu2 "[ 5]" "Unlock Account"   "[11]" "Bandwidth Usage"
+        tdz_menu2 "[ 6]" "Edit Details"     "[12]" "Bulk Create"
         tdz_box_bot
 
         # ── SECTION 4: VPN & PROTOCOLS ────────────────────────────────
@@ -6687,8 +7101,8 @@ main_menu() {
         tdz_box_top
         tdz_box_header "VPN & PROTOCOLS"
         tdz_box_divider
-        tdz_menu2 "[12]" "Protocol Manager" "[14]" "Block Torrent"
-        tdz_menu2 "[13]" "Port Management"  "[15]" "Traffic Monitor"
+        tdz_menu2 "[13]" "Protocol Manager" "[15]" "Block Torrent"
+        tdz_menu2 "[14]" "Port Management"  "[16]" "Traffic Monitor"
         tdz_box_bot
 
         # ── SECTION 5: SYSTEM & MAINTENANCE ───────────────────────────
@@ -6696,9 +7110,9 @@ main_menu() {
         tdz_box_top
         tdz_box_header "SYSTEM & MAINTENANCE"
         tdz_box_divider
-        tdz_menu2 "[16]" "Domain & SSL Cert" "[19]" "Backup Data"
-        tdz_menu2 "[17]" "SSH Banner"        "[20]" "Restore Data"
-        tdz_menu2 "[18]" "Auto-Reboot Task"  "[21]" "Cleanup Expired"
+        tdz_menu2 "[17]" "Domain & SSL Cert" "[20]" "Backup Data"
+        tdz_menu2 "[18]" "SSH Banner"        "[21]" "Restore Data"
+        tdz_menu2 "[19]" "Auto-Reboot Task"  "[22]" "Cleanup Expired"
         tdz_box_bot
 
         # ── SECTION 6: DANGER ZONE (red) ──────────────────────────────
@@ -6724,20 +7138,21 @@ main_menu() {
             7) list_users; press_enter ;;
             8) client_config_menu; press_enter ;;
             9) create_trial_account; press_enter ;;
-            10) view_user_bandwidth; press_enter ;;
-            11) bulk_create_users; press_enter ;;
+            10) list_trial_accounts; press_enter ;;
+            11) view_user_bandwidth; press_enter ;;
+            12) bulk_create_users; press_enter ;;
 
-            12) protocol_menu ;;
-            13) edge_public_port_menu ;;
-            14) torrent_block_menu ;;
-            15) traffic_monitor_menu ;;
+            13) protocol_menu ;;
+            14) edge_public_port_menu ;;
+            15) torrent_block_menu ;;
+            16) traffic_monitor_menu ;;
 
-            16) domain_cert_menu; press_enter ;;
-            17) ssh_banner_menu ;;
-            18) auto_reboot_menu ;;
-            19) backup_data_menu ;;
-            20) restore_user_data; press_enter ;;
-            21) cleanup_expired; press_enter ;;
+            17) domain_cert_menu; press_enter ;;
+            18) ssh_banner_menu ;;
+            19) auto_reboot_menu ;;
+            20) backup_data_menu ;;
+            21) restore_user_data; press_enter ;;
+            22) cleanup_expired; press_enter ;;
 
             99) uninstall_script ;;
             0) exit 0 ;;
