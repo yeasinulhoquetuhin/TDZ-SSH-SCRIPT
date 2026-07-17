@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/TDZ-SSH--SCRIPT-00d4ff?style=for-the-badge&logo=linux&logoColor=black" alt="TDZ SSH SCRIPT">
-  <img src="https://img.shields.io/badge/Version-2.0-green?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-0.0.1-green?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Linux-blue?style=for-the-badge&logo=linux" alt="Platform">
   <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white" alt="Bash">
 </p>
