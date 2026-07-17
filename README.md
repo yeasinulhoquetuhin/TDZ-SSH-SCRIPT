@@ -152,11 +152,26 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 
 ## Supported Platforms
 
-| Platform | Architecture |
-|---|---|
-| Ubuntu 20.04 / 22.04 / 24.04 | amd64, arm64 |
-| Debian 11 / 12 | amd64, arm64 |
-| Other Debian-based distros | amd64 |
+TDZ SSH TUNNEL is designed for Debian-family VPS systems that use **APT** and **systemd**. It is not limited to only the versions shown in the old compatibility table.
+
+| Distribution / family | Versions | Support level |
+|---|---|---|
+| **Ubuntu Server** | 18.04, 20.04, 22.04, 24.04 and newer releases | Compatible; current LTS releases are recommended |
+| **Debian** | 10, 11, 12, 13 and newer releases | Compatible; current stable releases are recommended |
+| **Kali Linux** | Current rolling releases | Compatible when running with systemd |
+| **Linux Mint / LMDE** | Current Debian- or Ubuntu-based releases | Compatible when the required server packages are available |
+| **Armbian** | Current Debian- or Ubuntu-based releases | Compatible; optional protocol availability depends on CPU architecture |
+| **Other Debian/Ubuntu-based systems** | Current APT-based releases | Expected to work when Bash, OpenSSH, APT and systemd are available |
+
+### CPU Architectures
+
+| Architecture name | Common aliases | Support |
+|---|---|---|
+| **64-bit Intel/AMD** | `amd64`, `x86_64` | Full core support and the widest optional protocol support |
+| **64-bit ARM** | `arm64`, `aarch64` | Full core support; most optional protocol components are available |
+| **32-bit ARM** | `armv7l`, `armhf`, `arm` | Core management features can run; some prebuilt optional protocol components may be unavailable |
+
+The installer automatically detects an existing installation, operating environment and CPU architecture. If a particular optional protocol has no binary for the detected CPU, only that component is skipped—the main TDZ menu, SSH user management, limits, banners, backup and restore features remain available.
 
 > **Note:** Root access is required for installation and operation.
 
