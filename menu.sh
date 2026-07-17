@@ -658,9 +658,9 @@ harden_sshd_for_tunnel_stability() {
     local new_conf="# TDZ SSH TUNNEL - stability hardening (do not edit, managed by menu)\n"
     new_conf+="# Keep SSH reachable on IPv4-only VPS/client networks after reboot\n"
     new_conf+="Port 22\n"
-    new_conf+="# Custom SSH protocol version suffix\n"
+    new_conf+="# Keep the native SSH protocol identifier clean\n"
     new_conf+="DebianBanner no\n"
-    new_conf+="VersionAddendum By: @TuhinBroh\n"
+    new_conf+="VersionAddendum none\n"
     new_conf+="AddressFamily inet\n"
     new_conf+="ListenAddress 0.0.0.0\n"
     new_conf+="PermitRootLogin yes\n"
@@ -1336,6 +1336,7 @@ EOF
 
 sync_runtime_components_if_needed() {
     local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.1"
+    local ws_bridge_marker='"""TDZ SSH TUNNEL WebSocket-to-SSH Bridge v3 (dynamic channel branding)."""'
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -1345,6 +1346,21 @@ sync_runtime_components_if_needed() {
     fi
     if [[ -f "$BADVPN_SERVICE_FILE" ]]; then
         ensure_badvpn_service_is_quiet
+    fi
+    # Refresh an already-installed bridge when its generated runtime changes.
+    # Preserve an intentionally stopped service instead of starting it here.
+    if [[ -f "$WS_SSH_BRIDGE_SERVICE" ]] &&
+       { [[ ! -f "$WS_SSH_BRIDGE_SCRIPT" ]] ||
+         ! grep -Fqx "$ws_bridge_marker" "$WS_SSH_BRIDGE_SCRIPT" 2>/dev/null; }; then
+        local ws_bridge_was_active=false
+        systemctl is-active --quiet tdz-ws-ssh-bridge && ws_bridge_was_active=true
+        if write_ws_ssh_bridge_script >/dev/null 2>&1 &&
+           write_ws_ssh_bridge_service >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            if $ws_bridge_was_active; then
+                systemctl restart tdz-ws-ssh-bridge >/dev/null 2>&1 || true
+            fi
+        fi
     fi
     if [[ -f "/etc/tdztunnel/banners_enabled" ]]; then
         update_ssh_banners_config
@@ -3192,14 +3208,20 @@ edit_dynamic_banner_contacts() {
         return
     fi
 
-    local limiter_reloaded=true
+    local limiter_reloaded=true bridge_reloaded=true
     setup_limiter_service >/dev/null 2>&1 || limiter_reloaded=false
+    if systemctl is-active --quiet tdz-ws-ssh-bridge; then
+        systemctl restart tdz-ws-ssh-bridge >/dev/null 2>&1 || bridge_reloaded=false
+    fi
     refresh_dynamic_banner_routing_if_enabled
     echo -e "\n${C_GREEN}✅ Dynamic banner contacts updated.${C_RESET}"
     echo -e "   • Admin: ${C_YELLOW}@${new_admin}${C_RESET}"
     echo -e "   • Channel: ${C_YELLOW}@${new_channel}${C_RESET}"
     if [[ "$limiter_reloaded" != true ]]; then
         echo -e "${C_YELLOW}⚠️ Contacts were saved, but the banner worker could not be restarted.${C_RESET}"
+    fi
+    if [[ "$bridge_reloaded" != true ]]; then
+        echo -e "${C_YELLOW}⚠️ Contacts were saved, but the WebSocket bridge could not be restarted.${C_RESET}"
     fi
     press_enter
 }
@@ -3850,17 +3872,18 @@ write_ws_ssh_bridge_script() {
     mkdir -p "$(dirname "$WS_SSH_BRIDGE_SCRIPT")"
     cat > "$WS_SSH_BRIDGE_SCRIPT" <<'PYEOF'
 #!/usr/bin/env python3
-"""TDZ SSH TUNNEL WebSocket-to-SSH Bridge v2 (with branding support)."""
-import socket, select, threading, sys, os, signal, time
+"""TDZ SSH TUNNEL WebSocket-to-SSH Bridge v3 (dynamic channel branding)."""
+import socket, select, threading, sys, os, signal, time, re
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("TDZ_WS_BRIDGE_PORT", "8890"))
 SSH_HOST    = os.environ.get("TDZ_WS_BRIDGE_SSH_HOST", "127.0.0.1")
 SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
 BRANDING_FILE = os.environ.get("TDZ_WS_BRIDGE_BRANDING", "/etc/tdztunnel/ws_branding.conf")
+IDENTITY_FILE = os.environ.get("TDZ_BANNER_IDENTITY", "/etc/tdztunnel/banner_identity.conf")
+DEFAULT_CHANNEL_USERNAME = "TuhinBroh"
 
-SWITCHING_RESPONSE_BASE = (
-b'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> <font color="#0057B7" size="7">tuhinbro.com</font></b>\r\n'
+SWITCHING_RESPONSE_HEADERS = (
 b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
@@ -3873,6 +3896,7 @@ RECV_CHUNK = 256 * 1024
 # 4MB lets the kernel buffer ~40MB of in-flight data per direction.
 SOCKET_BUF_SIZE = 4 * 1024 * 1024  # 4 MB
 BRANDING_CACHE_TTL = 30
+IDENTITY_CACHE_TTL = 30
 # Tuned for stability over mobile / carrier-grade NAT (BD, SG, etc.)
 #   - HANDSHAKE_TIMEOUT: increased from 10s to 30s for slow mobile handshakes
 #   - SSH_CONNECT_TIMEOUT: increased from 5s to 10s
@@ -3889,6 +3913,7 @@ KEEPALIVE_INTERVAL = 10 # then probe every 10s
 KEEPALIVE_COUNT = 3     # after 3 failed probes (~90s), declare dead
 
 _branding_cache = {"bytes": b"", "mtime": 0, "ts": 0}
+_identity_cache = {"username": DEFAULT_CHANNEL_USERNAME, "mtime": 0, "ts": 0}
 
 def log(m):
     sys.stderr.write(f"[tdz-ws-bridge] {m}\n"); sys.stderr.flush()
@@ -3959,8 +3984,46 @@ def load_branding_headers():
     _branding_cache["ts"] = now
     return raw
 
+def load_channel_username():
+    """Read the same validated Channel username used by dynamic SSH banners."""
+    now = time.time()
+    try:
+        st = os.stat(IDENTITY_FILE)
+    except (OSError, FileNotFoundError):
+        _identity_cache["username"] = DEFAULT_CHANNEL_USERNAME
+        _identity_cache["mtime"] = 0
+        _identity_cache["ts"] = now
+        return DEFAULT_CHANNEL_USERNAME
+    if (now - _identity_cache["ts"] < IDENTITY_CACHE_TTL
+            and st.st_mtime == _identity_cache["mtime"]):
+        return _identity_cache["username"]
+
+    username = DEFAULT_CHANNEL_USERNAME
+    try:
+        with open(IDENTITY_FILE, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, separator, value = line.rstrip("\r\n").partition("=")
+                if (separator and key == "CHANNEL_USERNAME"
+                        and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", value)):
+                    username = value
+                    break
+    except OSError:
+        username = DEFAULT_CHANNEL_USERNAME
+
+    _identity_cache["username"] = username
+    _identity_cache["mtime"] = st.st_mtime
+    _identity_cache["ts"] = now
+    return username
+
 def build_switching_response():
-    return SWITCHING_RESPONSE_BASE + load_branding_headers() + b"\r\n"
+    channel_username = load_channel_username()
+    # DarkTunnel renders the HTTP 101 reason text in its connection log.
+    # Keep this as display branding; the real SSH negotiation stays untouched.
+    status_line = (
+        'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> '
+        f'<font color="#0057B7" size="7">@{channel_username}</font></b>\r\n'
+    ).encode("ascii")
+    return status_line + SWITCHING_RESPONSE_HEADERS + load_branding_headers() + b"\r\n"
 
 def bridge_socks(c, s):
     """High-throughput bidirectional TCP bridge.
@@ -4051,6 +4114,7 @@ def handle(client, addr):
 def main():
     log(f"starting on {LISTEN_HOST}:{LISTEN_PORT} -> SSH {SSH_HOST}:{SSH_PORT}")
     log(f"branding file: {BRANDING_FILE}")
+    log(f"identity file: {IDENTITY_FILE}")
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try: srv.bind((LISTEN_HOST, LISTEN_PORT))

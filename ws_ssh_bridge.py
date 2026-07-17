@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""TDZ SSH TUNNEL WebSocket-to-SSH Bridge v2 (with branding support)."""
-import socket, select, threading, sys, os, signal, time
+"""TDZ SSH TUNNEL WebSocket-to-SSH Bridge v3 (dynamic channel branding)."""
+import socket, select, threading, sys, os, signal, time, re
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("TDZ_WS_BRIDGE_PORT", "8890"))
 SSH_HOST    = os.environ.get("TDZ_WS_BRIDGE_SSH_HOST", "127.0.0.1")
 SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
 BRANDING_FILE = os.environ.get("TDZ_WS_BRIDGE_BRANDING", "/etc/tdztunnel/ws_branding.conf")
+IDENTITY_FILE = os.environ.get("TDZ_BANNER_IDENTITY", "/etc/tdztunnel/banner_identity.conf")
+DEFAULT_CHANNEL_USERNAME = "TuhinBroh"
 
-SWITCHING_RESPONSE_BASE = (
-b'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> <font color="#0057B7" size="7">tuhinbro.com</font></b>\r\n'
+SWITCHING_RESPONSE_HEADERS = (
 b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
@@ -22,6 +23,7 @@ RECV_CHUNK = 256 * 1024
 # 4MB lets the kernel buffer ~40MB of in-flight data per direction.
 SOCKET_BUF_SIZE = 4 * 1024 * 1024  # 4 MB
 BRANDING_CACHE_TTL = 30
+IDENTITY_CACHE_TTL = 30
 # Tuned for stability over mobile / carrier-grade NAT (BD, SG, etc.)
 #   - HANDSHAKE_TIMEOUT: increased from 10s to 30s for slow mobile handshakes
 #   - SSH_CONNECT_TIMEOUT: increased from 5s to 10s
@@ -38,6 +40,7 @@ KEEPALIVE_INTERVAL = 10 # then probe every 10s
 KEEPALIVE_COUNT = 3     # after 3 failed probes (~90s), declare dead
 
 _branding_cache = {"bytes": b"", "mtime": 0, "ts": 0}
+_identity_cache = {"username": DEFAULT_CHANNEL_USERNAME, "mtime": 0, "ts": 0}
 
 def log(m):
     sys.stderr.write(f"[tdz-ws-bridge] {m}\n"); sys.stderr.flush()
@@ -108,8 +111,46 @@ def load_branding_headers():
     _branding_cache["ts"] = now
     return raw
 
+def load_channel_username():
+    """Read the same validated Channel username used by dynamic SSH banners."""
+    now = time.time()
+    try:
+        st = os.stat(IDENTITY_FILE)
+    except (OSError, FileNotFoundError):
+        _identity_cache["username"] = DEFAULT_CHANNEL_USERNAME
+        _identity_cache["mtime"] = 0
+        _identity_cache["ts"] = now
+        return DEFAULT_CHANNEL_USERNAME
+    if (now - _identity_cache["ts"] < IDENTITY_CACHE_TTL
+            and st.st_mtime == _identity_cache["mtime"]):
+        return _identity_cache["username"]
+
+    username = DEFAULT_CHANNEL_USERNAME
+    try:
+        with open(IDENTITY_FILE, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, separator, value = line.rstrip("\r\n").partition("=")
+                if (separator and key == "CHANNEL_USERNAME"
+                        and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", value)):
+                    username = value
+                    break
+    except OSError:
+        username = DEFAULT_CHANNEL_USERNAME
+
+    _identity_cache["username"] = username
+    _identity_cache["mtime"] = st.st_mtime
+    _identity_cache["ts"] = now
+    return username
+
 def build_switching_response():
-    return SWITCHING_RESPONSE_BASE + load_branding_headers() + b"\r\n"
+    channel_username = load_channel_username()
+    # DarkTunnel renders the HTTP 101 reason text in its connection log.
+    # Keep this as display branding; the real SSH negotiation stays untouched.
+    status_line = (
+        'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> '
+        f'<font color="#0057B7" size="7">@{channel_username}</font></b>\r\n'
+    ).encode("ascii")
+    return status_line + SWITCHING_RESPONSE_HEADERS + load_branding_headers() + b"\r\n"
 
 def bridge_socks(c, s):
     """High-throughput bidirectional TCP bridge.
@@ -200,6 +241,7 @@ def handle(client, addr):
 def main():
     log(f"starting on {LISTEN_HOST}:{LISTEN_PORT} -> SSH {SSH_HOST}:{SSH_PORT}")
     log(f"branding file: {BRANDING_FILE}")
+    log(f"identity file: {IDENTITY_FILE}")
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try: srv.bind((LISTEN_HOST, LISTEN_PORT))
