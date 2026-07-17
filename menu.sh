@@ -1805,7 +1805,7 @@ get_user_status() {
 
 is_valid_tdztunnel_username() {
     local username="$1"
-    [[ ${#username} -le 32 && "$username" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+    [[ ${#username} -le 32 && "$username" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ]]
 }
 
 rollback_tdztunnel_user_rename() {
@@ -1857,7 +1857,7 @@ rename_tdztunnel_user() {
     fi
     if ! is_valid_tdztunnel_username "$new_username"; then
         echo -e "\n${C_RED}❌ Invalid username.${C_RESET}"
-        echo -e "${C_DIM}Use 1-32 lowercase letters, numbers, '_' or '-'; start with a letter or '_'.${C_RESET}"
+        echo -e "${C_DIM}Use 1-32 letters, numbers, '_' or '-'; start with a letter or '_'.${C_RESET}"
         return 1
     fi
     if db_has_user "$new_username" || getent passwd "$new_username" >/dev/null 2>&1; then
@@ -2223,12 +2223,12 @@ edit_user() {
         
         echo -e "\n  ${C_DIM}Current: Pass=${C_YELLOW}$cur_pass${C_RESET}${C_DIM} Exp=${C_YELLOW}$cur_expiry${C_RESET}${C_DIM} Conn=${C_YELLOW}$cur_limit${C_RESET}${C_DIM} BW=${C_YELLOW}$cur_bw_display${C_RESET}${C_DIM} Used=${C_CYAN}$bw_used_display${C_RESET}"
         echo -e "\nSelect a detail to edit:\n"
-        printf "  ${C_GREEN}[ 1]${C_RESET} %-35s\n" "🔑 Change Password"
-        printf "  ${C_GREEN}[ 2]${C_RESET} %-35s\n" "🗓️ Change Expiration Date"
-        printf "  ${C_GREEN}[ 3]${C_RESET} %-35s\n" "📶 Change Connection Limit"
-        printf "  ${C_GREEN}[ 4]${C_RESET} %-35s\n" "📦 Change Bandwidth Limit"
-        printf "  ${C_GREEN}[ 5]${C_RESET} %-35s\n" "🔄 Reset Bandwidth Counter"
-        printf "  ${C_GREEN}[ 6]${C_RESET} %-35s\n" "👤 Change Username"
+        printf "  ${C_GREEN}[ 1]${C_RESET} %-35s\n" "👤 Change Username"
+        printf "  ${C_GREEN}[ 2]${C_RESET} %-35s\n" "🔑 Change Password"
+        printf "  ${C_GREEN}[ 3]${C_RESET} %-35s\n" "🗓️ Change Expiration Date"
+        printf "  ${C_GREEN}[ 4]${C_RESET} %-35s\n" "📶 Change Connection Limit"
+        printf "  ${C_GREEN}[ 5]${C_RESET} %-35s\n" "📦 Change Bandwidth Limit"
+        printf "  ${C_GREEN}[ 6]${C_RESET} %-35s\n" "🔄 Reset Bandwidth Counter"
         echo -e "\n  ${C_RED}[ 0]${C_RESET} ✅ Finish Editing"
         echo
         if ! read -r -p "👉 Enter your choice: " edit_choice; then
@@ -2237,6 +2237,13 @@ edit_user() {
         fi
         case $edit_choice in
             1)
+               local new_username
+               read -r -p "Enter new username: " new_username
+               if rename_tdztunnel_user "$username" "$new_username"; then
+                   username="$new_username"
+               fi
+               ;;
+            2)
                local new_pass=""
                read -p "Enter new password (or press Enter for auto-generated): " new_pass
                if [[ -z "$new_pass" ]]; then
@@ -2247,18 +2254,18 @@ edit_user() {
                 sed -i "s/^$username:.*/$username:$new_pass:$cur_expiry:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
                echo -e "\n${C_GREEN}✅ Password for '$username' changed to: ${C_YELLOW}$new_pass${C_RESET}"
                ;;
-            2) read -p "Enter new duration (in days from today): " days
+            3) read -p "Enter new duration (in days from today): " days
                if [[ "$days" =~ ^[0-9]+$ ]]; then
                    local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d); chage -E "$new_expire_date" "$username"
                     sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
                    echo -e "\n${C_GREEN}✅ Expiration for '$username' set to ${C_YELLOW}$new_expire_date${C_RESET}."
                else echo -e "\n${C_RED}❌ Invalid number of days.${C_RESET}"; fi ;;
-            3) read -p "Enter new simultaneous connection limit: " new_limit
+            4) read -p "Enter new simultaneous connection limit: " new_limit
                if [[ "$new_limit" =~ ^[0-9]+$ ]]; then
                     sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$new_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
                    echo -e "\n${C_GREEN}✅ Connection limit for '$username' set to ${C_YELLOW}$new_limit${C_RESET}."
                else echo -e "\n${C_RED}❌ Invalid limit.${C_RESET}"; fi ;;
-            4) read -p "Enter new bandwidth limit in GB (0 = unlimited): " new_bw
+            5) read -p "Enter new bandwidth limit in GB (0 = unlimited): " new_bw
                if [[ "$new_bw" =~ ^[0-9]+\.?[0-9]*$ ]]; then
                     sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$cur_limit:$new_bw$cur_metadata_suffix/" "$DB_FILE"
                    local bw_msg="Unlimited"; [[ "$new_bw" != "0" ]] && bw_msg="${new_bw} GB"
@@ -2272,18 +2279,11 @@ edit_user() {
                        fi
                    fi
                else echo -e "\n${C_RED}❌ Invalid bandwidth value.${C_RESET}"; fi ;;
-            5)
+            6)
                echo "0" > "$BANDWIDTH_DIR/${username}.usage"
                # Unlock user if they were locked due to bandwidth
                usermod -U "$username" &>/dev/null
                echo -e "\n${C_GREEN}✅ Bandwidth counter for '$username' has been reset to 0.${C_RESET}"
-               ;;
-            6)
-               local new_username
-               read -r -p "Enter new username: " new_username
-               if rename_tdztunnel_user "$username" "$new_username"; then
-                   username="$new_username"
-               fi
                ;;
             0) return ;;
             *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" ;;
@@ -6453,22 +6453,25 @@ format_trial_time_left() {
 
 list_trial_accounts() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⏱️ Trial Accounts ---${C_RESET}\n"
+    local trial_total=0
+    if [[ -s "$DB_FILE" ]]; then
+        trial_total=$(awk -F: '$6 == "trial" { count++ } END { print count + 0 }' "$DB_FILE")
+    fi
 
-    if [[ ! -s "$DB_FILE" ]] ||
-       ! awk -F: '$6 == "trial" { found=1; exit } END { exit(found ? 0 : 1) }' "$DB_FILE"; then
-        echo -e "${C_YELLOW}ℹ️ No trial accounts found.${C_RESET}"
+    echo
+    tdz_box_top
+    tdz_box_header "TRIAL ACCOUNTS"
+    tdz_box_divider
+
+    if (( trial_total == 0 )); then
+        tdz_row "${C_YELLOW}ℹ No trial accounts found.${C_RESET}"
+        tdz_box_bot
         return
     fi
 
     refresh_ssh_session_cache
-    local now trial_count=0
+    local now trial_count=0 first_account=true
     now=$(date +%s)
-
-    echo -e "${C_CYAN}====================================================================================================${C_RESET}"
-    printf "${C_BOLD}${C_WHITE}%-18s | %-16s | %-11s | %-9s | %-17s | %-12s${C_RESET}\n" \
-        "USERNAME" "AUTO EXPIRES" "TIME LEFT" "CONNS" "BANDWIDTH" "STATUS"
-    echo -e "${C_CYAN}----------------------------------------------------------------------------------------------------${C_RESET}"
 
     while IFS=: read -r user _password expiry limit bandwidth_gb account_type trial_expiry_epoch _rest; do
         [[ "$account_type" == "trial" ]] || continue
@@ -6476,17 +6479,17 @@ list_trial_accounts() {
 
         local expiry_display time_left online_count connection_string
         local used_bytes=0 used_gb bandwidth_display status status_color
-        local expiry_check=0 passwd_state
+        local expiry_check=0 passwd_state account_number display_user
 
         online_count="${SSH_SESSION_COUNTS[$user]:-0}"
-        connection_string="${online_count}/${limit:-1}"
+        connection_string="${online_count} / ${limit:-1}"
 
         if [[ "$trial_expiry_epoch" =~ ^[0-9]+$ ]] && (( trial_expiry_epoch > 0 )); then
-            expiry_display=$(date -d "@${trial_expiry_epoch}" '+%d-%m %H:%M' 2>/dev/null || echo "$expiry")
+            expiry_display=$(LC_TIME=C date -d "@${trial_expiry_epoch}" '+%d %b %Y • %H:%M' 2>/dev/null || echo "$expiry")
             time_left=$(format_trial_time_left "$trial_expiry_epoch")
             expiry_check=$trial_expiry_epoch
         else
-            expiry_display=$(date -d "$expiry" '+%d-%m-%Y' 2>/dev/null || echo "$expiry")
+            expiry_display=$(LC_TIME=C date -d "$expiry" '+%d %b %Y' 2>/dev/null || echo "$expiry")
             time_left="Unknown"
             expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
         fi
@@ -6497,32 +6500,46 @@ list_trial_accounts() {
         fi
         used_gb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1073741824}")
         if [[ -z "$bandwidth_gb" || "$bandwidth_gb" == "0" ]]; then
-            bandwidth_display="${used_gb}/∞ GB"
+            bandwidth_display="${used_gb} GB / Unlimited"
         else
-            bandwidth_display="${used_gb}/${bandwidth_gb} GB"
+            bandwidth_display="${used_gb} / ${bandwidth_gb} GB"
         fi
 
         passwd_state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
         if ! id "$user" >/dev/null 2>&1; then
-            status="Missing"
+            status="MISSING"
             status_color="$C_RED"
         elif (( expiry_check > 0 && expiry_check <= now )); then
-            status="Expired"
+            status="EXPIRED"
             status_color="$C_RED"
         elif [[ "$passwd_state" == "L" ]]; then
-            status="Locked"
+            status="LOCKED"
             status_color="$C_YELLOW"
         else
-            status="Active"
+            status="ACTIVE"
             status_color="$C_GREEN"
         fi
 
-        printf "${C_WHITE}%-18s${C_RESET} | ${C_YELLOW}%-16s${C_RESET} | ${C_CYAN}%-11s${C_RESET} | %-9s | %-17s | ${status_color}%-12s${C_RESET}\n" \
-            "$user" "$expiry_display" "$time_left" "$connection_string" "$bandwidth_display" "$status"
+        if [[ "$first_account" != true ]]; then
+            tdz_box_divider
+        fi
+        first_account=false
+
+        printf -v account_number "%02d" "$trial_count"
+        display_user="$user"
+        if (( ${#display_user} > 22 )); then
+            display_user="${display_user:0:19}..."
+        fi
+        tdz_row2 "${C_CHOICE}[${account_number}]${C_RESET} ${C_BOLD}${C_WHITE}${display_user}${C_RESET}" \
+            "${status_color}● ${C_BOLD}${status}${C_RESET}"
+        tdz_kv2 "EXPIRES" "$expiry_display" "LEFT" "$time_left"
+        tdz_kv2 "CONNS" "$connection_string" "DATA" "$bandwidth_display"
     done < <(sort "$DB_FILE")
 
-    echo -e "${C_CYAN}====================================================================================================${C_RESET}"
-    echo -e "${C_GREEN}Total trial accounts: ${trial_count}${C_RESET}"
+    tdz_box_divider
+    tdz_row2 "${C_GRAY}TOTAL${C_RESET} ${C_BOLD}${C_WHITE}${trial_count}${C_RESET}" \
+        "${C_GREEN}● ${C_BOLD}AUTO-CLEANUP${C_RESET}"
+    tdz_box_bot
 }
 
 view_user_bandwidth() {
