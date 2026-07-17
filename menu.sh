@@ -412,6 +412,52 @@ tdz_menu_status() {
     tdz_row "${left}${gap_text}${right}" "$color"
 }
 
+# Compact title card for forms and action screens. Detailed/copyable content
+# stays outside the box so long values remain easy to read and select.
+tdz_screen_title() {
+    local title="$1" description="${2:-}" border_color="${3:-$C_TITLE}"
+    echo
+    tdz_box_top "$border_color"
+    tdz_box_header "$title" "$border_color"
+    if [[ -n "$description" ]]; then
+        tdz_box_divider "$border_color"
+        tdz_row "${C_GRAY}${description}${C_RESET}" "$border_color"
+    fi
+    tdz_box_bot "$border_color"
+    echo
+}
+
+# Open section heading for reports and copyable connection details.
+tdz_section() {
+    local title="$1" content width pad pad_text=""
+    title=$(_tdz_fit "$title" $((TDZ_BOX_WIDTH - 4)))
+    content="── ${title} "
+    width=$(_tdz_w "$content")
+    pad=$((TDZ_BOX_WIDTH - width))
+    (( pad < 0 )) && pad=0
+    (( pad > 0 )) && printf -v pad_text "%${pad}s" ""
+    pad_text=${pad_text// /─}
+    printf "  %s%s%s%s\n" "$C_TITLE" "$content" "$pad_text" "$C_RESET"
+}
+
+tdz_detail() {
+    local label="$1" value="$2" value_color="${3:-$C_WHITE}"
+    printf "  %s• %-19s%s %s%s%s\n" \
+        "$C_GRAY" "${label}:" "$C_RESET" "$value_color" "$value" "$C_RESET"
+}
+
+tdz_message() {
+    local kind="${1^^}" message="$2" color label
+    case "$kind" in
+        OK|SUCCESS) color="$C_GREEN"; label="OK" ;;
+        WARNING|WARN) color="$C_YELLOW"; label="WARNING" ;;
+        INFO) color="$C_BLUE"; label="INFO" ;;
+        CANCELLED|CANCELED) color="$C_YELLOW"; label="CANCELLED" ;;
+        *) color="$C_RED"; label="ERROR" ;;
+    esac
+    printf "\n  %s[%s]%s %s\n" "$color" "$label" "$C_RESET" "$message"
+}
+
 SSH_SESSION_CACHE_DB_MTIME=0
 SSH_SESSION_TOTAL=0
 APT_CACHE_READY=0
@@ -420,7 +466,7 @@ declare -A SSH_SESSION_COUNTS=()
 declare -A SSH_SESSION_PIDS=()
 
 if [[ $EUID -ne 0 ]]; then
-   echo -e "${C_RED}❌ Error: This script requires root privileges to run.${C_RESET}"
+   echo -e "${C_RED}[ERROR] This script requires root privileges to run.${C_RESET}"
    exit 1
 fi
 
@@ -523,7 +569,7 @@ repair_debian_apt_mirrors() {
         local tmp_mode
         tmp_mode=$(stat -c '%a' /tmp 2>/dev/null || echo "")
         if [[ "$tmp_mode" != "1777" ]]; then
-            echo -e "${C_YELLOW}⚠️ /tmp permissions are $tmp_mode (should be 1777). Fixing...${C_RESET}"
+            echo -e "${C_YELLOW}[WARNING] /tmp permissions are $tmp_mode (should be 1777). Fixing...${C_RESET}"
             chmod 1777 /tmp 2>/dev/null
             chown root:root /tmp 2>/dev/null
         fi
@@ -563,7 +609,7 @@ repair_debian_apt_mirrors() {
     codename=$(sed -n 's/VERSION_CODENAME=//p' /etc/os-release 2>/dev/null | head -1)
     [[ -n "$codename" ]] || codename="bookworm"
 
-    echo -e "${C_YELLOW}⚠️ Debian apt sources reference an unreachable mirror. Switching to deb.debian.org ($codename)...${C_RESET}"
+    echo -e "${C_YELLOW}[WARNING] Debian apt sources reference an unreachable mirror. Switching to deb.debian.org ($codename)...${C_RESET}"
 
     # Backup
     cp "$src" "${src}.tdz-backup-$(date +%s)" 2>/dev/null
@@ -597,7 +643,7 @@ tdz_apt_update() {
     fi
 
     if repair_debian_apt_mirrors; then
-        echo -e "${C_YELLOW}⚠️ Debian mirror unreachable. Switching to deb.debian.org and retrying...${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] Debian mirror unreachable. Switching to deb.debian.org and retrying...${C_RESET}"
         apt-get clean >/dev/null 2>&1 || true
         if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
             APT_CACHE_READY=1
@@ -606,7 +652,7 @@ tdz_apt_update() {
     fi
 
     if repair_ubuntu_apt_mirrors; then
-        echo -e "${C_YELLOW}⚠️ APT mirror timed out. Switching Ubuntu sources to archive.ubuntu.com and retrying...${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] APT mirror timed out. Switching Ubuntu sources to archive.ubuntu.com and retrying...${C_RESET}"
         apt-get clean >/dev/null 2>&1 || true
         if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
             APT_CACHE_READY=1
@@ -615,7 +661,7 @@ tdz_apt_update() {
     fi
 
     if switch_ubuntu_to_old_releases; then
-        echo -e "${C_YELLOW}⚠️ Detected an end-of-life Ubuntu release. Switching APT sources to old-releases.ubuntu.com and retrying...${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] Detected an end-of-life Ubuntu release. Switching APT sources to old-releases.ubuntu.com and retrying...${C_RESET}"
         apt-get clean >/dev/null 2>&1 || true
         if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
             APT_CACHE_READY=1
@@ -623,7 +669,7 @@ tdz_apt_update() {
         fi
     fi
 
-    echo -e "${C_RED}❌ Failed to refresh package lists. Please check VPS network, DNS, or blocked Ubuntu mirrors.${C_RESET}"
+    echo -e "${C_RED}[ERROR] Failed to refresh package lists. Please check VPS network, DNS, or blocked Ubuntu mirrors.${C_RESET}"
     return 1
 }
 
@@ -653,9 +699,9 @@ check_environment() {
     done
 
     if (( ${#missing_packages[@]} > 0 )); then
-        echo -e "${C_YELLOW}⚠️ Installing missing dependencies: ${missing_packages[*]}${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] Installing missing dependencies: ${missing_packages[*]}${C_RESET}"
         tdz_apt_install "${missing_packages[@]}" >/dev/null 2>&1 || {
-            echo -e "${C_RED}❌ Error: Failed to install required dependencies: ${missing_packages[*]}.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Failed to install required dependencies: ${missing_packages[*]}.${C_RESET}"
             exit 1
         }
     fi
@@ -736,7 +782,7 @@ harden_sshd_for_tunnel_stability() {
         if sshd -t 2>/dev/null; then
             systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
         else
-            echo -e "${C_YELLOW}⚠️ sshd config validation failed — keeping old config.${C_RESET}" >&2
+            echo -e "${C_YELLOW}[WARNING] sshd config validation failed — keeping old config.${C_RESET}" >&2
             rm -f "$conf"
         fi
     fi
@@ -814,12 +860,12 @@ delete_tdztunnel_user_accounts() {
         killall -u "$username" -9 &>/dev/null
         if id "$username" &>/dev/null; then
             if userdel -r "$username" &>/dev/null; then
-                echo -e " ✅ System user '${C_YELLOW}$username${C_RESET}' deleted."
+                echo -e " [OK] System user '${C_YELLOW}$username${C_RESET}' deleted."
             else
-                echo -e " ❌ Failed to delete system user '${C_YELLOW}$username${C_RESET}'."
+                echo -e " [ERROR] Failed to delete system user '${C_YELLOW}$username${C_RESET}'."
             fi
         else
-            echo -e " ℹ️ System user '${C_YELLOW}$username${C_RESET}' was already missing. Removing manager data only."
+            echo -e " [INFO] System user '${C_YELLOW}$username${C_RESET}' was already missing. Removing manager data only."
         fi
         rm -f "$BANDWIDTH_DIR/${username}.usage"
         rm -rf "$BANDWIDTH_DIR/pidtrack/${username}"
@@ -838,38 +884,38 @@ delete_tdztunnel_user_accounts() {
 
 require_interactive_terminal() {
     if [[ ! -t 0 || ! -t 1 ]]; then
-        echo -e "${C_RED}❌ Error: The TDZ SSH TUNNEL menu must be run from an interactive terminal.${C_RESET}"
+        echo -e "${C_RED}[ERROR] The TDZ SSH TUNNEL menu must be run from an interactive terminal.${C_RESET}"
         exit 1
     fi
 }
 
 initial_setup() {
-    echo -e "${C_BLUE}⚙️ Initializing TDZ SSH TUNNEL setup...${C_RESET}"
+    echo -e "${C_BLUE}Initializing TDZ SSH TUNNEL setup...${C_RESET}"
     check_environment
     
     ensure_tdztunnel_dirs
     ensure_tdztunnel_system_group
     
-    echo -e "${C_BLUE}🔹 Hardening sshd for TDZ SSH TUNNEL stability...${C_RESET}"
+    echo -e "${C_BLUE}Hardening sshd for TDZ SSH TUNNEL stability...${C_RESET}"
     harden_sshd_for_tunnel_stability
 
-    echo -e "${C_BLUE}🔹 Configuring user limiter service...${C_RESET}"
+    echo -e "${C_BLUE}Configuring user limiter service...${C_RESET}"
     setup_limiter_service
     
-    echo -e "${C_BLUE}🔹 Configuring bandwidth monitoring service...${C_RESET}"
+    echo -e "${C_BLUE}Configuring bandwidth monitoring service...${C_RESET}"
     setup_bandwidth_service
     
-    echo -e "${C_BLUE}🔹 Installing trial account cleanup script...${C_RESET}"
+    echo -e "${C_BLUE}Installing trial account cleanup script...${C_RESET}"
     setup_trial_cleanup_script
     
-    echo -e "${C_BLUE}🔹 Cleaning legacy dynamic SSH banner hooks...${C_RESET}"
+    echo -e "${C_BLUE}Cleaning legacy dynamic SSH banner hooks...${C_RESET}"
     disable_dynamic_ssh_banner_system
     systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
     
     if [ ! -f "$INSTALL_FLAG_FILE" ]; then
         touch "$INSTALL_FLAG_FILE"
     fi
-    echo -e "${C_GREEN}✅ Setup finished.${C_RESET}"
+    echo -e "${C_GREEN}[OK] Setup finished.${C_RESET}"
 }
 
 _is_valid_ipv4() {
@@ -889,40 +935,40 @@ check_and_open_firewall_port() {
     if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
         firewall_detected=true
         if ! ufw status | grep -qw "$port/$protocol"; then
-            echo -e "${C_YELLOW}🔥 UFW firewall is active and port ${port}/${protocol} is closed.${C_RESET}"
-            read -p "👉 Do you want to open this port now? (y/n): " confirm
+            echo -e "${C_YELLOW}UFW firewall is active and port ${port}/${protocol} is closed.${C_RESET}"
+            read -p "  Do you want to open this port now? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                 ufw allow "$port/$protocol"
-                echo -e "${C_GREEN}✅ Port ${port}/${protocol} has been opened in UFW.${C_RESET}"
+                echo -e "${C_GREEN}[OK] Port ${port}/${protocol} has been opened in UFW.${C_RESET}"
             else
-                echo -e "${C_RED}❌ Warning: Port ${port}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
+                echo -e "${C_RED}[WARNING] Port ${port}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
                 return 1
             fi
         else
-             echo -e "${C_GREEN}✅ Port ${port}/${protocol} is already open in UFW.${C_RESET}"
+             echo -e "${C_GREEN}[OK] Port ${port}/${protocol} is already open in UFW.${C_RESET}"
         fi
     fi
 
     if command -v firewall-cmd &> /dev/null && systemctl is-active --quiet firewalld; then
         firewall_detected=true
         if ! firewall-cmd --list-ports --permanent | grep -qw "$port/$protocol"; then
-            echo -e "${C_YELLOW}🔥 firewalld is active and port ${port}/${protocol} is not open.${C_RESET}"
-            read -p "👉 Do you want to open this port now? (y/n): " confirm
+            echo -e "${C_YELLOW}firewalld is active and port ${port}/${protocol} is not open.${C_RESET}"
+            read -p "  Do you want to open this port now? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                 firewall-cmd --add-port="$port/$protocol" --permanent
                 firewall-cmd --reload
-                echo -e "${C_GREEN}✅ Port ${port}/${protocol} has been opened in firewalld.${C_RESET}"
+                echo -e "${C_GREEN}[OK] Port ${port}/${protocol} has been opened in firewalld.${C_RESET}"
             else
-                echo -e "${C_RED}❌ Warning: Port ${port}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
+                echo -e "${C_RED}[WARNING] Port ${port}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
                 return 1
             fi
         else
-            echo -e "${C_GREEN}✅ Port ${port}/${protocol} is already open in firewalld.${C_RESET}"
+            echo -e "${C_GREEN}[OK] Port ${port}/${protocol} is already open in firewalld.${C_RESET}"
         fi
     fi
 
     if ! $firewall_detected; then
-        echo -e "${C_BLUE}ℹ️ No active firewall (UFW or firewalld) detected. Assuming ports are open.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] No active firewall (UFW or firewalld) detected. Assuming ports are open.${C_RESET}"
     fi
     return 0
 }
@@ -935,40 +981,40 @@ check_and_open_firewall_port_range() {
     if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
         firewall_detected=true
         if ! ufw status | grep -Fq "$port_range/$protocol"; then
-            echo -e "${C_YELLOW}🔥 UFW firewall is active and range ${port_range}/${protocol} is closed.${C_RESET}"
-            read -p "👉 Do you want to open this port range now? (y/n): " confirm
+            echo -e "${C_YELLOW}UFW firewall is active and range ${port_range}/${protocol} is closed.${C_RESET}"
+            read -p "  Do you want to open this port range now? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                 ufw allow "$port_range/$protocol"
-                echo -e "${C_GREEN}✅ Range ${port_range}/${protocol} has been opened in UFW.${C_RESET}"
+                echo -e "${C_GREEN}[OK] Range ${port_range}/${protocol} has been opened in UFW.${C_RESET}"
             else
-                echo -e "${C_RED}❌ Warning: Range ${port_range}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
+                echo -e "${C_RED}[WARNING] Range ${port_range}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
                 return 1
             fi
         else
-            echo -e "${C_GREEN}✅ Range ${port_range}/${protocol} is already open in UFW.${C_RESET}"
+            echo -e "${C_GREEN}[OK] Range ${port_range}/${protocol} is already open in UFW.${C_RESET}"
         fi
     fi
 
     if command -v firewall-cmd &> /dev/null && systemctl is-active --quiet firewalld; then
         firewall_detected=true
         if ! firewall-cmd --quiet --query-port="$port_range/$protocol"; then
-            echo -e "${C_YELLOW}🔥 firewalld is active and range ${port_range}/${protocol} is not open.${C_RESET}"
-            read -p "👉 Do you want to open this port range now? (y/n): " confirm
+            echo -e "${C_YELLOW}firewalld is active and range ${port_range}/${protocol} is not open.${C_RESET}"
+            read -p "  Do you want to open this port range now? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                 firewall-cmd --add-port="$port_range/$protocol" --permanent
                 firewall-cmd --reload
-                echo -e "${C_GREEN}✅ Range ${port_range}/${protocol} has been opened in firewalld.${C_RESET}"
+                echo -e "${C_GREEN}[OK] Range ${port_range}/${protocol} has been opened in firewalld.${C_RESET}"
             else
-                echo -e "${C_RED}❌ Warning: Range ${port_range}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
+                echo -e "${C_RED}[WARNING] Range ${port_range}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
                 return 1
             fi
         else
-            echo -e "${C_GREEN}✅ Range ${port_range}/${protocol} is already open in firewalld.${C_RESET}"
+            echo -e "${C_GREEN}[OK] Range ${port_range}/${protocol} is already open in firewalld.${C_RESET}"
         fi
     fi
 
     if ! $firewall_detected; then
-        echo -e "${C_BLUE}ℹ️ No active firewall (UFW or firewalld) detected. Assuming range ${port_range}/${protocol} is open.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] No active firewall (UFW or firewalld) detected. Assuming range ${port_range}/${protocol} is open.${C_RESET}"
     fi
     return 0
 }
@@ -976,7 +1022,7 @@ check_and_open_firewall_port_range() {
 check_and_free_ports() {
     local ports_to_check=("$@")
     for port in "${ports_to_check[@]}"; do
-        echo -e "\n${C_BLUE}🔎 Checking if port $port is available...${C_RESET}"
+        echo -e "\n${C_BLUE}Checking if port $port is available...${C_RESET}"
         local conflicting_process_info
         conflicting_process_info=$(
             ss -H -lntp "( sport = :$port )" 2>/dev/null
@@ -989,29 +1035,29 @@ check_and_free_ports() {
             local conflicting_name
             conflicting_name=$(echo "$conflicting_process_info" | grep -oP 'users:\(\("(\K[^"]+)' | head -n 1)
             
-            echo -e "${C_YELLOW}⚠️ Warning: Port $port is in use by process '${conflicting_name:-unknown}' (PID: ${conflicting_pid:-N/A}).${C_RESET}"
-            read -p "👉 Do you want to attempt to stop this process? (y/n): " kill_confirm
+            echo -e "${C_YELLOW}[WARNING] Port $port is in use by process '${conflicting_name:-unknown}' (PID: ${conflicting_pid:-N/A}).${C_RESET}"
+            read -p "  Do you want to attempt to stop this process? (y/n): " kill_confirm
             if [[ "$kill_confirm" == "y" || "$kill_confirm" == "Y" ]]; then
                 if [[ -z "$conflicting_pid" ]]; then
-                    echo -e "${C_RED}❌ Could not determine which PID owns port $port. Please free it manually.${C_RESET}"
+                    echo -e "${C_RED}[ERROR] Could not determine which PID owns port $port. Please free it manually.${C_RESET}"
                     return 1
                 fi
-                echo -e "${C_GREEN}🛑 Stopping process PID $conflicting_pid...${C_RESET}"
+                echo -e "${C_GREEN}Stopping process PID $conflicting_pid...${C_RESET}"
                 systemctl stop "$(ps -p "$conflicting_pid" -o comm=)" &>/dev/null || kill -9 "$conflicting_pid"
                 sleep 2
                 
                 if ss -H -lntp "( sport = :$port )" 2>/dev/null | grep -q . || ss -H -lunp "( sport = :$port )" 2>/dev/null | grep -q .; then
-                     echo -e "${C_RED}❌ Failed to free port $port. Please handle it manually. Aborting.${C_RESET}"
+                     echo -e "${C_RED}[ERROR] Failed to free port $port. Please handle it manually. Aborting.${C_RESET}"
                      return 1
                 else
-                     echo -e "${C_GREEN}✅ Port $port has been successfully freed.${C_RESET}"
+                     echo -e "${C_GREEN}[OK] Port $port has been successfully freed.${C_RESET}"
                 fi
             else
-                echo -e "${C_RED}❌ Cannot proceed without freeing port $port. Aborting.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Cannot proceed without freeing port $port. Aborting.${C_RESET}"
                 return 1
             fi
         else
-            echo -e "${C_GREEN}✅ Port $port is free to use.${C_RESET}"
+            echo -e "${C_GREEN}[OK] Port $port is free to use.${C_RESET}"
         fi
     done
     return 0
@@ -1021,7 +1067,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-17.2
+# TDZ SSH TUNNEL limiter version 2026-07-17.3
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1067,6 +1113,45 @@ load_banner_identity() {
 
     [[ "$ADMIN_USERNAME" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]] || ADMIN_USERNAME="TUSTDZ"
     [[ "$CHANNEL_USERNAME" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]] || CHANNEL_USERNAME="TuhinBroh"
+}
+
+activate_pending_account() {
+    local target_user="$1" duration_days="$2"
+    local activated_expiry tmp_file
+
+    [[ "$duration_days" =~ ^[1-9][0-9]*$ ]] || return 1
+    activated_expiry=$(date -d "+${duration_days} days" +%Y-%m-%d 2>/dev/null) || return 1
+    tmp_file=$(mktemp "${DB_FILE}.activate.XXXXXX") || return 1
+
+    if ! chage -E "$activated_expiry" "$target_user" >/dev/null 2>&1; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    if ! awk -F: -v OFS=: -v target="$target_user" -v new_expiry="$activated_expiry" '
+        $1 == target && $6 == "pending" {
+            print $1, $2, new_expiry, $4, $5
+            updated=1
+            next
+        }
+        { print }
+        END { if (!updated) exit 2 }
+    ' "$DB_FILE" > "$tmp_file"; then
+        chage -E -1 "$target_user" >/dev/null 2>&1 || true
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    chmod --reference="$DB_FILE" "$tmp_file" 2>/dev/null || chmod 600 "$tmp_file"
+    chown --reference="$DB_FILE" "$tmp_file" 2>/dev/null || true
+    if ! mv -f "$tmp_file" "$DB_FILE"; then
+        chage -E -1 "$target_user" >/dev/null 2>&1 || true
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    logger -t tdztunnel-limiter "First-use activation: ${target_user} expires ${activated_expiry}"
+    printf '%s' "$activated_expiry"
 }
 
 load_banner_identity
@@ -1144,7 +1229,7 @@ while true; do
         dynamic_banners_enabled=true
     fi
 
-    while IFS=: read -r user pass expiry limit bandwidth_gb _extra; do
+    while IFS=: read -r user pass expiry limit bandwidth_gb account_type activation_value _extra; do
         [[ -z "$user" || "$user" == \#* ]] && continue
 
         declare -A unique_pids=()
@@ -1173,6 +1258,20 @@ while true; do
             online_count=1
         fi
 
+        pending_activation=false
+        if [[ "$account_type" == "pending" ]]; then
+            pending_activation=true
+            if [[ "$local_user_online" == true && "$activation_value" =~ ^[1-9][0-9]*$ ]]; then
+                activated_expiry=$(activate_pending_account "$user" "$activation_value")
+                if [[ -n "$activated_expiry" ]]; then
+                    expiry="$activated_expiry"
+                    account_type=""
+                    activation_value=""
+                    pending_activation=false
+                fi
+            fi
+        fi
+
         user_locked=false
         if [[ -n "${locked_users[$user]+x}" ]]; then
             user_locked=true
@@ -1195,10 +1294,10 @@ while true; do
             [[ "$accum_disp" =~ ^[0-9]+$ ]] || accum_disp=0
         fi
         bw_gb_used=$(awk "BEGIN {printf \"%.2f\", $accum_disp / 1073741824}")
-        bw_display="${bw_gb_used} GB / Unlimited"
+        bw_display="${bw_gb_used}GB/Unlimited"
         traffic_exceeded=false
         if [[ "$bandwidth_gb" != "0" && -n "$bandwidth_gb" ]]; then
-            bw_display="${bw_gb_used} GB / ${bandwidth_gb} GB"
+            bw_display="${bw_gb_used}/${bandwidth_gb}GB"
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$accum_disp" =~ ^[0-9]+$ ]] && (( accum_disp >= quota_bytes )); then
                 traffic_exceeded=true
@@ -1206,7 +1305,9 @@ while true; do
         fi
 
         # --- Format expiration date (DD-MM-YYYY) ---
-        if [[ "$expiry" == "Never" || -z "$expiry" ]]; then
+        if $pending_activation; then
+            expiry_display="First use +${activation_value}d"
+        elif [[ "$expiry" == "Never" || -z "$expiry" ]]; then
             expiry_display="Never"
         else
             expiry_display=$(date -d "$expiry" +%d-%m-%Y 2>/dev/null || echo "$expiry")
@@ -1216,7 +1317,10 @@ while true; do
         if $dynamic_banners_enabled; then
             SEP="---------------------------------"
 
-            if $is_expired; then
+            if $pending_activation; then
+                STATUS_TEXT="Pending Activation"
+                MSG_BLOCK=""
+            elif $is_expired; then
                 STATUS_TEXT="Expired"
                 MSG_BLOCK="<font color=\"red\">Oops! Your account has expired.<br>Please buy a new account<br>Or contact </font><a href=\"https://t.me/${ADMIN_USERNAME}\">@${ADMIN_USERNAME}</a><font color=\"red\"> to renew<br>your access.</font>"
             elif $traffic_exceeded; then
@@ -1377,7 +1481,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.2"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.3"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -1543,7 +1647,7 @@ update_ssh_banners_config() {
 setup_ssh_login_info() {
     ensure_tdztunnel_dirs || return 1
     if ! touch "/etc/tdztunnel/banners_enabled"; then
-        echo -e "${C_RED}❌ Failed to enable dynamic SSH banners.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Failed to enable dynamic SSH banners.${C_RESET}"
         return 1
     fi
     disable_static_ssh_banner_in_sshd_config
@@ -1579,21 +1683,21 @@ domain_cert_menu() {
     case "$dc_choice" in
         1)
             local domain_name email
-            echo -e "\n${C_BLUE}ℹ️ Before continuing, make sure your domain's A record points to this server's IP.${C_RESET}"
-            echo -e "${C_BLUE}ℹ️ Also make sure port 80 is open (certbot needs port 80 for Let's Encrypt validation).${C_RESET}"
+            echo -e "\n${C_BLUE}[INFO] Before continuing, make sure your domain's A record points to this server's IP.${C_RESET}"
+            echo -e "${C_BLUE}[INFO] Also make sure port 80 is open (certbot needs port 80 for Let's Encrypt validation).${C_RESET}"
             echo
-            read -p "👉 Enter your domain (e.g. vpn.example.com): " domain_name
+            read -p "  Enter your domain (e.g. vpn.example.com): " domain_name
             if [[ -z "$domain_name" ]]; then
-                echo -e "\n${C_RED}❌ Domain cannot be empty.${C_RESET}"
+                echo -e "\n${C_RED}[ERROR] Domain cannot be empty.${C_RESET}"
                 return 1
             fi
             if _is_valid_ipv4 "$domain_name"; then
-                echo -e "\n${C_RED}❌ Certbot requires a real domain name, not a raw IP.${C_RESET}"
+                echo -e "\n${C_RED}[ERROR] Certbot requires a real domain name, not a raw IP.${C_RESET}"
                 return 1
             fi
-            read -p "👉 Enter your email for Let's Encrypt: " email
+            read -p "  Enter your email for Let's Encrypt: " email
             if [[ -z "$email" ]]; then
-                echo -e "\n${C_RED}❌ Email cannot be empty.${C_RESET}"
+                echo -e "\n${C_RED}[ERROR] Email cannot be empty.${C_RESET}"
                 return 1
             fi
             obtain_certbot_edge_cert "$domain_name" "$email"
@@ -1602,25 +1706,25 @@ domain_cert_menu() {
             local common_name
             local preferred_host
             preferred_host=$(detect_preferred_host)
-            read -p "👉 Enter certificate Common Name [$preferred_host]: " common_name
+            read -p "  Enter certificate Common Name [$preferred_host]: " common_name
             common_name=${common_name:-$preferred_host}
             generate_self_signed_edge_cert "$common_name"
             ;;
         3)
             if [[ -z "$EDGE_DOMAIN" && ! -f "$TDZ_SSL_CERT_FILE" ]]; then
-                echo -e "\n${C_YELLOW}ℹ️ No certificate to remove.${C_RESET}"
+                echo -e "\n${C_YELLOW}[INFO] No certificate to remove.${C_RESET}"
                 return
             fi
-            read -p "👉 Confirm removal? (y/n): " confirm
+            read -p "  Confirm removal? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                 rm -f "$TDZ_SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
-                echo -e "\n${C_GREEN}✅ Certificate removed.${C_RESET}"
+                echo -e "\n${C_GREEN}[OK] Certificate removed.${C_RESET}"
             else
-                echo -e "\n${C_YELLOW}❌ Cancelled.${C_RESET}"
+                tdz_message CANCELLED "Certificate removal cancelled."
             fi
             ;;
         0|"") return ;;
-        *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" && sleep 1 ;;
+        *) echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}" && sleep 1 ;;
     esac
 }
 
@@ -1690,7 +1794,7 @@ _select_user_interface() {
         elif [[ -n "${all_user_lookup[$choice]+x}" ]]; then
             SELECTED_USER="$choice"; return
         else
-            echo -e "${C_RED}❌ Invalid selection. Please try again.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Invalid selection. Please try again.${C_RESET}"
         fi
     done
 }
@@ -1787,7 +1891,7 @@ _select_multi_user_interface() {
         choice=$(echo "$choice" | tr ',' ' ') # Replace commas with spaces
         
         if [[ -z "$choice" ]]; then
-            echo -e "${C_RED}❌ Invalid selection. Please try again.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Invalid selection. Please try again.${C_RESET}"
             continue
         fi
 
@@ -1846,7 +1950,7 @@ _select_multi_user_interface() {
             done
             return
         else
-            echo -e "${C_RED}❌ Invalid selection. Please check your numbers or usernames.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Invalid selection. Please check your numbers or usernames.${C_RESET}"
             SELECTED_USERS=()
             selected_indices=()
             selected_names=()
@@ -1857,12 +1961,17 @@ _select_multi_user_interface() {
 get_user_status() {
     local username="$1"
     if ! id "$username" &>/dev/null; then echo -e "${C_RED}Not Found${C_RESET}"; return; fi
-    local expiry_date=$(grep "^$username:" "$DB_FILE" | cut -d: -f3)
-    if passwd -S "$username" 2>/dev/null | grep -q " L "; then echo -e "${C_YELLOW}🔒 Locked${C_RESET}"; return; fi
+    local user_line expiry_date account_type
+    user_line=$(grep "^$username:" "$DB_FILE")
+    expiry_date=$(echo "$user_line" | cut -d: -f3)
+    account_type=$(echo "$user_line" | cut -d: -f6)
+    if passwd -S "$username" 2>/dev/null | grep -q " L "; then echo -e "${C_YELLOW}Locked${C_RESET}"; return; fi
+    if [[ "$account_type" == "pending" ]]; then echo -e "${C_CYAN}Pending Activation${C_RESET}"; return; fi
+    if [[ "$expiry_date" == "Never" || -z "$expiry_date" ]]; then echo -e "${C_GREEN}Active${C_RESET}"; return; fi
     local expiry_ts=$(date -d "$expiry_date" +%s 2>/dev/null || echo 0)
     local current_ts=$(date +%s)
-    if [[ $expiry_ts -lt $current_ts ]]; then echo -e "${C_RED}🗓️ Expired${C_RESET}"; return; fi
-    echo -e "${C_GREEN}🟢 Active${C_RESET}"
+    if (( expiry_ts > 0 && expiry_ts < current_ts )); then echo -e "${C_RED}Expired${C_RESET}"; return; fi
+    echo -e "${C_GREEN}Active${C_RESET}"
 }
 
 is_valid_tdztunnel_username() {
@@ -1910,20 +2019,20 @@ rename_tdztunnel_user() {
     local confirm active_process_count
 
     if ! db_has_user "$old_username" || ! id "$old_username" >/dev/null 2>&1; then
-        echo -e "\n${C_RED}❌ The current account is missing from the database or system.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] The current account is missing from the database or system.${C_RESET}"
         return 1
     fi
     if [[ "$new_username" == "$old_username" ]]; then
-        echo -e "\n${C_YELLOW}ℹ️ The username is already '${old_username}'. Nothing was changed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] The username is already '${old_username}'. Nothing was changed.${C_RESET}"
         return 1
     fi
     if ! is_valid_tdztunnel_username "$new_username"; then
-        echo -e "\n${C_RED}❌ Invalid username.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Invalid username.${C_RESET}"
         echo -e "${C_DIM}Use 1-32 letters, numbers, '_' or '-'; start with a letter or '_'.${C_RESET}"
         return 1
     fi
     if db_has_user "$new_username" || getent passwd "$new_username" >/dev/null 2>&1; then
-        echo -e "\n${C_RED}❌ Username '${new_username}' already exists.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Username '${new_username}' already exists.${C_RESET}"
         return 1
     fi
 
@@ -1932,23 +2041,23 @@ rename_tdztunnel_user() {
     account_type=$(awk -F: -v target="$old_username" '$1 == target {print $6; exit}' "$DB_FILE")
     trial_expiry_epoch=$(awk -F: -v target="$old_username" '$1 == target {print $7; exit}' "$DB_FILE")
     if [[ "$account_type" == "trial" && ! "$trial_expiry_epoch" =~ ^[0-9]+$ ]]; then
-        echo -e "\n${C_YELLOW}⚠️ This legacy trial was scheduled by username before rename-safe cleanup existed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[WARNING] This legacy trial was scheduled by username before rename-safe cleanup existed.${C_RESET}"
         echo -e "${C_DIM}Create a new trial instead; current trial accounts can be renamed safely.${C_RESET}"
         return 1
     fi
 
     passwd_entry=$(getent passwd "$old_username" 2>/dev/null) || {
-        echo -e "\n${C_RED}❌ Could not read the system account.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Could not read the system account.${C_RESET}"
         return 1
     }
     IFS=: read -r old_login old_password old_uid old_gid old_gecos old_home old_shell <<< "$passwd_entry"
     primary_group=$(getent group "$old_gid" 2>/dev/null | cut -d: -f1)
     if [[ -z "$primary_group" ]]; then
-        echo -e "\n${C_RED}❌ Could not resolve the account's primary group.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Could not resolve the account's primary group.${C_RESET}"
         return 1
     fi
     if [[ "$primary_group" == "$old_username" ]] && getent group "$new_username" >/dev/null 2>&1; then
-        echo -e "\n${C_RED}❌ Group '${new_username}' already exists; rename cancelled to avoid a group conflict.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Group '${new_username}' already exists; rename cancelled to avoid a group conflict.${C_RESET}"
         return 1
     fi
 
@@ -1957,13 +2066,13 @@ rename_tdztunnel_user() {
         new_home="/home/${new_username}"
         move_home=true
         if [[ -e "$new_home" ]]; then
-            echo -e "\n${C_RED}❌ Home path '${new_home}' already exists.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Home path '${new_home}' already exists.${C_RESET}"
             return 1
         fi
     fi
     if [[ -e "$BANDWIDTH_DIR/${new_username}.usage" ||
           -e "$DB_DIR/banners/${new_username}.txt" ]]; then
-        echo -e "\n${C_RED}❌ Stored data for '${new_username}' already exists; rename cancelled to prevent overwriting it.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Stored data for '${new_username}' already exists; rename cancelled to prevent overwriting it.${C_RESET}"
         return 1
     fi
 
@@ -1979,7 +2088,7 @@ rename_tdztunnel_user() {
             END { if (!found) exit 3 }
         ' "$DB_FILE" > "$db_tmp"; then
         rm -f "$db_tmp" "$db_backup"
-        echo -e "\n${C_RED}❌ Could not prepare the database migration.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Could not prepare the database migration.${C_RESET}"
         return 1
     fi
     chmod --reference="$DB_FILE" "$db_tmp" 2>/dev/null || true
@@ -2000,7 +2109,7 @@ rename_tdztunnel_user() {
                 }
             ' "$DB_DIR/banners/${old_username}.txt" > "$banner_tmp"; then
             rm -f "$banner_tmp" "$db_tmp" "$db_backup"
-            echo -e "\n${C_RED}❌ Could not prepare the dynamic banner migration.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Could not prepare the dynamic banner migration.${C_RESET}"
             return 1
         fi
         chmod --reference="$DB_DIR/banners/${old_username}.txt" "$banner_tmp" 2>/dev/null || true
@@ -2009,10 +2118,10 @@ rename_tdztunnel_user() {
 
     echo -e "\n${C_YELLOW}The account will be renamed:${C_RESET}"
     echo -e "  • Username: ${C_WHITE}${old_username}${C_RESET} → ${C_GREEN}${new_username}${C_RESET}"
-    read -r -p "Type RENAME to confirm: " confirm
+    read -r -p "  Type RENAME to confirm: " confirm
     if [[ "$confirm" != "RENAME" ]]; then
         rm -f "$banner_tmp" "$db_tmp" "$db_backup"
-        echo -e "\n${C_YELLOW}❌ Username change cancelled.${C_RESET}"
+        tdz_message CANCELLED "Username change cancelled."
         return 1
     fi
 
@@ -2020,19 +2129,19 @@ rename_tdztunnel_user() {
         limiter_was_active=true
         if ! systemctl stop tdztunnel-limiter >/dev/null 2>&1; then
             rm -f "$banner_tmp" "$db_tmp" "$db_backup"
-            echo -e "\n${C_RED}❌ Could not pause the account worker safely; rename cancelled.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Could not pause the account worker safely; rename cancelled.${C_RESET}"
             return 1
         fi
     fi
 
     active_process_count=$(pgrep -u "$old_username" 2>/dev/null | wc -l)
     if (( active_process_count > 0 )); then
-        echo -e "\n${C_YELLOW}⚠️ ${active_process_count} active process(es) must be disconnected before renaming.${C_RESET}"
-        read -r -p "Disconnect them and continue? (y/n): " confirm
+        echo -e "\n${C_YELLOW}[WARNING] ${active_process_count} active process(es) must be disconnected before renaming.${C_RESET}"
+        read -r -p "  Disconnect them and continue? (y/n): " confirm
         if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
             $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
             rm -f "$banner_tmp" "$db_tmp" "$db_backup"
-            echo -e "\n${C_YELLOW}❌ Username change cancelled.${C_RESET}"
+            tdz_message CANCELLED "Username change cancelled."
             return 1
         fi
         pkill -TERM -u "$old_username" >/dev/null 2>&1 || true
@@ -2042,7 +2151,7 @@ rename_tdztunnel_user() {
         if pgrep -u "$old_username" >/dev/null 2>&1; then
             $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
             rm -f "$banner_tmp" "$db_tmp" "$db_backup"
-            echo -e "\n${C_RED}❌ Some account processes could not be stopped; rename cancelled.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Some account processes could not be stopped; rename cancelled.${C_RESET}"
             return 1
         fi
     fi
@@ -2065,10 +2174,10 @@ rename_tdztunnel_user() {
         $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
         rm -f "$banner_tmp" "$db_tmp" "$db_backup"
         if $partial_rollback_ok; then
-            echo -e "\n${C_RED}❌ Linux account rename failed; the original account was preserved.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Linux account rename failed; the original account was preserved.${C_RESET}"
         else
-            echo -e "\n${C_RED}❌ Linux account rename failed and automatic rollback was incomplete.${C_RESET}"
-            echo -e "${C_YELLOW}⚠️ Do not close this SSH session; inspect the system account manually.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Linux account rename failed and automatic rollback was incomplete.${C_RESET}"
+            echo -e "${C_YELLOW}[WARNING] Do not close this SSH session; inspect the system account manually.${C_RESET}"
         fi
         return 1
     fi
@@ -2079,7 +2188,7 @@ rename_tdztunnel_user() {
                 "$old_home" "$new_home" "$move_home" false false false
             $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
             rm -f "$banner_tmp" "$db_tmp" "$db_backup"
-            echo -e "\n${C_RED}❌ Private group rename failed; the original username was restored.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Private group rename failed; the original username was restored.${C_RESET}"
             return 1
         fi
         group_renamed=true
@@ -2091,7 +2200,7 @@ rename_tdztunnel_user() {
                 "$old_home" "$new_home" "$move_home" "$group_renamed" false false
             $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
             rm -f "$banner_tmp" "$db_tmp" "$db_backup"
-            echo -e "\n${C_RED}❌ Bandwidth data migration failed; the original username was restored.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Bandwidth data migration failed; the original username was restored.${C_RESET}"
             return 1
         fi
         usage_moved=true
@@ -2103,7 +2212,7 @@ rename_tdztunnel_user() {
                 "$old_home" "$new_home" "$move_home" "$group_renamed" "$usage_moved" false
             $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
             rm -f "$banner_tmp" "$db_tmp" "$db_backup"
-            echo -e "\n${C_RED}❌ Banner migration failed; the original username was restored.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Banner migration failed; the original username was restored.${C_RESET}"
             return 1
         fi
         banner_created=true
@@ -2115,7 +2224,7 @@ rename_tdztunnel_user() {
             "$old_home" "$new_home" "$move_home" "$group_renamed" "$usage_moved" "$banner_created"
         $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
         rm -f "$db_tmp" "$db_backup"
-        echo -e "\n${C_RED}❌ Database migration failed; the original username was restored.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Database migration failed; the original username was restored.${C_RESET}"
         return 1
     fi
 
@@ -2125,7 +2234,7 @@ rename_tdztunnel_user() {
         rollback_tdztunnel_user_rename "$old_username" "$new_username" \
             "$old_home" "$new_home" "$move_home" "$group_renamed" "$usage_moved" "$banner_created"
         $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
-        echo -e "\n${C_RED}❌ Post-rename verification failed; the original username was restored.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Post-rename verification failed; the original username was restored.${C_RESET}"
         return 1
     fi
 
@@ -2139,68 +2248,81 @@ rename_tdztunnel_user() {
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
     if $limiter_was_active && ! systemctl start tdztunnel-limiter >/dev/null 2>&1; then
-        echo -e "${C_YELLOW}⚠️ Username changed, but the account worker must be restarted manually.${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] Username changed, but the account worker must be restarted manually.${C_RESET}"
     fi
 
-    echo -e "\n${C_GREEN}✅ Username changed successfully: ${old_username} → ${new_username}${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] Username changed successfully: ${old_username} → ${new_username}${C_RESET}"
     return 0
 }
 
 create_user() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ✨ Create New SSH User ---${C_RESET}"
-    read -p "👉 Enter username (or '0' to cancel): " username
+    tdz_screen_title "CREATE SSH USER" "Create a managed SSH account with limits and expiry."
+    read -r -p "$(echo -e "${C_PROMPT}  Username (0 = cancel): ${C_RESET}")" username
     local adopt_existing=false
     if [[ "$username" == "0" ]]; then
-        echo -e "\n${C_YELLOW}❌ User creation cancelled.${C_RESET}"
+        tdz_message CANCELLED "User creation cancelled."
         return
     fi
     if [[ -z "$username" ]]; then
-        echo -e "\n${C_RED}❌ Error: Username cannot be empty.${C_RESET}"
+        tdz_message ERROR "Username cannot be empty."
         return
     fi
     if db_has_user "$username"; then
-        echo -e "\n${C_RED}❌ Error: User '$username' already exists in TDZ SSH TUNNEL.${C_RESET}"
+        tdz_message ERROR "User '$username' already exists in TDZ SSH TUNNEL."
         return
     fi
     if id "$username" &>/dev/null; then
         if is_tdztunnel_orphan_user "$username"; then
-            echo -e "\n${C_YELLOW}⚠️ User '$username' already exists on the system but is missing from users.db.${C_RESET}"
+            tdz_message WARNING "User '$username' exists on the system but is missing from users.db."
             echo -e "${C_DIM}This usually happens after uninstalling the script without deleting the SSH users.${C_RESET}"
-            read -p "👉 Do you want to take control of this existing user and manage it with TDZ SSH TUNNEL? (y/n): " adopt_confirm
+            read -r -p "$(echo -e "${C_PROMPT}  Import and manage this account? [y/N]: ${C_RESET}")" adopt_confirm
             if [[ "$adopt_confirm" == "y" || "$adopt_confirm" == "Y" ]]; then
                 adopt_existing=true
             else
-                echo -e "\n${C_YELLOW}❌ User creation cancelled.${C_RESET}"
+                tdz_message CANCELLED "User creation cancelled."
                 return
             fi
         else
-            echo -e "\n${C_RED}❌ Error: System user '$username' already exists and does not look like a TDZ SSH TUNNEL account.${C_RESET}"
+            tdz_message ERROR "System user '$username' already exists and is not a TDZ-managed account."
             return
         fi
     fi
     local password=""
     while true; do
-        read -p "🔑 Enter password (or press Enter for auto-generated): " password
+        read -r -p "$(echo -e "${C_PROMPT}  Password (Enter = auto-generate): ${C_RESET}")" password
         if [[ -z "$password" ]]; then
             password=$(head /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 8)
-            echo -e "${C_GREEN}🔑 Auto-generated password: ${C_YELLOW}$password${C_RESET}"
+            printf "  ${C_GRAY}Generated password:${C_RESET} ${C_YELLOW}%s${C_RESET}\n" "$password"
             break
         else
             break
         fi
     done
-    read -p "🗓️ Enter account duration (in days) [30]: " days
+    read -r -p "$(echo -e "${C_PROMPT}  Duration in days [30]: ${C_RESET}")" days
     days=${days:-30}
-    if ! [[ "$days" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
-    read -p "📶 Enter simultaneous connection limit [1]: " limit
+    if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then tdz_message ERROR "Duration must be at least 1 day."; return; fi
+    read -r -p "$(echo -e "${C_PROMPT}  Connection limit [1]: ${C_RESET}")" limit
     limit=${limit:-1}
-    if ! [[ "$limit" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
-    read -p "📦 Enter bandwidth limit in GB (0 = unlimited) [0]: " bandwidth_gb
+    if ! [[ "$limit" =~ ^[0-9]+$ ]]; then tdz_message ERROR "Connection limit must be a whole number."; return; fi
+    read -r -p "$(echo -e "${C_PROMPT}  Bandwidth in GB (0 = unlimited) [0]: ${C_RESET}")" bandwidth_gb
     bandwidth_gb=${bandwidth_gb:-0}
-    if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
-    local expire_date
+    if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then tdz_message ERROR "Bandwidth must be a valid number."; return; fi
+    local first_use_activation=false
+    local first_use_choice
+    read -r -p "$(echo -e "${C_PROMPT}  First-Use Activation (start expiry on first connection)? [y/N]: ${C_RESET}")" first_use_choice
+    [[ "$first_use_choice" == "y" || "$first_use_choice" == "Y" ]] && first_use_activation=true
+
+    local expire_date stored_expiry metadata_suffix="" expiry_display activation_display="Immediate"
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
+    stored_expiry="$expire_date"
+    expiry_display="$expire_date"
+    if $first_use_activation; then
+        stored_expiry="Never"
+        metadata_suffix=":pending:${days}"
+        expiry_display="${days} days after first connection"
+        activation_display="First-Use"
+    fi
     ensure_tdztunnel_system_group
     if [[ "$adopt_existing" == "true" ]]; then
         usermod -s /usr/sbin/nologin "$username" &>/dev/null
@@ -2208,28 +2330,36 @@ create_user() {
         useradd -m -s /usr/sbin/nologin "$username"
     fi
     usermod -aG "$TDZ_USERS_GROUP" "$username" 2>/dev/null
-    echo "$username:$password" | chpasswd; chage -E "$expire_date" "$username"
-    echo "$username:$password:$expire_date:$limit:$bandwidth_gb" >> "$DB_FILE"
+    echo "$username:$password" | chpasswd
+    if $first_use_activation; then
+        chage -E -1 "$username"
+    else
+        chage -E "$expire_date" "$username"
+    fi
+    echo "$username:$password:$stored_expiry:$limit:$bandwidth_gb$metadata_suffix" >> "$DB_FILE"
     
     local bw_display="Unlimited"
-    if [[ "$bandwidth_gb" != "0" ]]; then bw_display="${bandwidth_gb} GB"; fi
+    if [[ "$bandwidth_gb" != "0" ]]; then bw_display="${bandwidth_gb}GB"; fi
     
     clear; show_banner
     if [[ "$adopt_existing" == "true" ]]; then
-        echo -e "${C_GREEN}✅ Existing system user '$username' has been imported into TDZ SSH TUNNEL!${C_RESET}\n"
+        tdz_message OK "Existing system account imported successfully."
     else
-        echo -e "${C_GREEN}✅ User '$username' created successfully!${C_RESET}\n"
+        tdz_message OK "SSH account created successfully."
     fi
-    echo -e "  - 👤 Username:          ${C_YELLOW}$username${C_RESET}"
-    echo -e "  - 🔑 Password:          ${C_YELLOW}$password${C_RESET}"
-    echo -e "  - 🗓️ Expires on:        ${C_YELLOW}$expire_date${C_RESET}"
-    echo -e "  - 📶 Connection Limit:  ${C_YELLOW}$limit${C_RESET}"
-    echo -e "  - 📦 Bandwidth Limit:   ${C_YELLOW}$bw_display${C_RESET}"
-    echo -e "    ${C_DIM}(Active monitoring service will enforce these limits)${C_RESET}"
+    echo
+    tdz_section "ACCOUNT DETAILS"
+    tdz_detail "Username" "$username" "$C_YELLOW"
+    tdz_detail "Password" "$password" "$C_YELLOW"
+    tdz_detail "Expires" "$expiry_display" "$C_YELLOW"
+    tdz_detail "Activation" "$activation_display"
+    tdz_detail "Connections" "$limit"
+    tdz_detail "Bandwidth" "$bw_display"
+    echo -e "  ${C_DIM}Limits are enforced automatically by the account worker.${C_RESET}"
 
     # Auto-ask for config generation
     echo
-    read -p "👉 Do you want to generate a client connection config for this user? (y/n): " gen_conf
+    read -r -p "$(echo -e "${C_PROMPT}  Generate client configuration now? [y/N]: ${C_RESET}")" gen_conf
     if [[ "$gen_conf" == "y" || "$gen_conf" == "Y" ]]; then
         generate_client_config "$username" "$password"
     fi
@@ -2242,11 +2372,11 @@ delete_user() {
     _select_multi_user_interface "DELETE USERS" "true"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
-    echo -e "\n${C_RED}⚠️ You selected ${#SELECTED_USERS[@]} user(s) to delete: ${C_YELLOW}${SELECTED_USERS[*]}${C_RESET}"
-    read -p "👉 Are you sure you want to PERMANENTLY delete them? (y/n): " confirm
-    if [[ "$confirm" != "y" ]]; then echo -e "\n${C_YELLOW}❌ Deletion cancelled.${C_RESET}"; return; fi
+    echo -e "\n${C_RED}[WARNING] You selected ${#SELECTED_USERS[@]} user(s) to delete: ${C_YELLOW}${SELECTED_USERS[*]}${C_RESET}"
+    read -p "  Are you sure you want to PERMANENTLY delete them? (y/n): " confirm
+    if [[ "$confirm" != "y" ]]; then tdz_message CANCELLED "Deletion cancelled."; return; fi
     
-    echo -e "\n${C_BLUE}🗑️ Deleting selected users...${C_RESET}"
+    echo -e "\n${C_BLUE}Deleting selected users...${C_RESET}"
     delete_tdztunnel_user_accounts "${SELECTED_USERS[@]}"
 }
 
@@ -2265,17 +2395,31 @@ edit_user() {
         local cur_bw; cur_bw=$(echo "$current_line" | cut -d: -f5)
         local cur_metadata; cur_metadata=$(echo "$current_line" | cut -d: -f6-)
         local cur_metadata_suffix=""; [[ -n "$cur_metadata" ]] && cur_metadata_suffix=":$cur_metadata"
-        [[ -z "$cur_bw" ]] && cur_bw="0"
-        local cur_bw_display="Unlimited"; [[ "$cur_bw" != "0" ]] && cur_bw_display="${cur_bw} GB"
+        [[ "$cur_limit" =~ ^[0-9]+$ ]] || cur_limit="1"
+        [[ "$cur_bw" =~ ^[0-9]+\.?[0-9]*$ ]] || cur_bw="0"
+        local cur_bw_display="Unlimited"; [[ "$cur_bw" != "0" ]] && cur_bw_display="${cur_bw}GB"
+        local cur_expiry_display="$cur_expiry"
+        local pending_first_use=false
+        if [[ "$cur_metadata" =~ ^pending:([1-9][0-9]*) ]]; then
+            pending_first_use=true
+            cur_expiry_display="First use +${BASH_REMATCH[1]}d"
+        fi
+
+        SSH_SESSION_CACHE_TS=0
+        refresh_ssh_session_cache
+        local cur_online="${SSH_SESSION_COUNTS[$username]:-0}"
+        [[ "$cur_online" =~ ^[0-9]+$ ]] || cur_online="0"
+        local cur_connections="${cur_online}/${cur_limit}"
         
         # Show bandwidth usage
-        local bw_used_display="N/A"
+        local bw_used_display="0.00GB"
         if [[ -f "$BANDWIDTH_DIR/${username}.usage" ]]; then
             local used_bytes; used_bytes=$(cat "$BANDWIDTH_DIR/${username}.usage" 2>/dev/null)
-            if [[ -n "$used_bytes" && "$used_bytes" != "0" ]]; then
-                bw_used_display=$(awk "BEGIN {printf \"%.2f GB\", $used_bytes / 1073741824}")
+            [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes="0"
+            if [[ "$used_bytes" != "0" ]]; then
+                bw_used_display=$(awk "BEGIN {printf \"%.2fGB\", $used_bytes / 1073741824}")
             else
-                bw_used_display="0.00 GB"
+                bw_used_display="0.00GB"
             fi
         fi
         
@@ -2283,8 +2427,8 @@ edit_user() {
         tdz_box_top
         tdz_box_header "EDIT USER"
         tdz_box_divider
-        tdz_kv2 "USER" "$username" "EXPIRES" "$cur_expiry"
-        tdz_kv2 "PASS" "$cur_pass" "CONNS" "$cur_limit"
+        tdz_kv2 "USER" "$username" "EXPIRES" "$cur_expiry_display"
+        tdz_kv2 "PASS" "$cur_pass" "CONNS" "$cur_connections"
         tdz_kv2 "USED" "$bw_used_display" "LIMIT" "$cur_bw_display"
         tdz_box_divider
         tdz_menu1 "[ 1]" "Change Username"
@@ -2304,38 +2448,40 @@ edit_user() {
         case $edit_choice in
             1)
                local new_username
-               read -r -p "Enter new username: " new_username
+               read -r -p "  Enter new username: " new_username
                if rename_tdztunnel_user "$username" "$new_username"; then
                    username="$new_username"
                fi
                ;;
             2)
                local new_pass=""
-               read -p "Enter new password (or press Enter for auto-generated): " new_pass
+               read -p "  Enter new password (or press Enter for auto-generated): " new_pass
                if [[ -z "$new_pass" ]]; then
                    new_pass=$(head /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 8)
-                   echo -e "${C_GREEN}🔑 Auto-generated: ${C_YELLOW}$new_pass${C_RESET}"
+                   echo -e "${C_GREEN}Auto-generated: ${C_YELLOW}$new_pass${C_RESET}"
                fi
                echo "$username:$new_pass" | chpasswd
                 sed -i "s/^$username:.*/$username:$new_pass:$cur_expiry:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
-               echo -e "\n${C_GREEN}✅ Password for '$username' changed to: ${C_YELLOW}$new_pass${C_RESET}"
+               echo -e "\n${C_GREEN}[OK] Password for '$username' changed to: ${C_YELLOW}$new_pass${C_RESET}"
                ;;
-            3) read -p "Enter new duration (in days from today): " days
-               if [[ "$days" =~ ^[0-9]+$ ]]; then
+            3) read -p "  Enter new duration (in days from today): " days
+               if [[ "$days" =~ ^[1-9][0-9]*$ ]]; then
                    local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d); chage -E "$new_expire_date" "$username"
-                    sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
-                   echo -e "\n${C_GREEN}✅ Expiration for '$username' set to ${C_YELLOW}$new_expire_date${C_RESET}."
-               else echo -e "\n${C_RED}❌ Invalid number of days.${C_RESET}"; fi ;;
-            4) read -p "Enter new simultaneous connection limit: " new_limit
+                    local expiry_metadata_suffix="$cur_metadata_suffix"
+                    $pending_first_use && expiry_metadata_suffix=""
+                    sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$expiry_metadata_suffix/" "$DB_FILE"
+                   echo -e "\n${C_GREEN}[OK] Expiration for '$username' set to ${C_YELLOW}$new_expire_date${C_RESET}."
+               else echo -e "\n${C_RED}[ERROR] Invalid number of days.${C_RESET}"; fi ;;
+            4) read -p "  Enter new simultaneous connection limit: " new_limit
                if [[ "$new_limit" =~ ^[0-9]+$ ]]; then
                     sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$new_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
-                   echo -e "\n${C_GREEN}✅ Connection limit for '$username' set to ${C_YELLOW}$new_limit${C_RESET}."
-               else echo -e "\n${C_RED}❌ Invalid limit.${C_RESET}"; fi ;;
-            5) read -p "Enter new bandwidth limit in GB (0 = unlimited): " new_bw
+                   echo -e "\n${C_GREEN}[OK] Connection limit for '$username' set to ${C_YELLOW}$new_limit${C_RESET}."
+               else echo -e "\n${C_RED}[ERROR] Invalid limit.${C_RESET}"; fi ;;
+            5) read -p "  Enter new bandwidth limit in GB (0 = unlimited): " new_bw
                if [[ "$new_bw" =~ ^[0-9]+\.?[0-9]*$ ]]; then
                     sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$cur_limit:$new_bw$cur_metadata_suffix/" "$DB_FILE"
-                   local bw_msg="Unlimited"; [[ "$new_bw" != "0" ]] && bw_msg="${new_bw} GB"
-                   echo -e "\n${C_GREEN}✅ Bandwidth limit for '$username' set to ${C_YELLOW}$bw_msg${C_RESET}."
+                   local bw_msg="Unlimited"; [[ "$new_bw" != "0" ]] && bw_msg="${new_bw}GB"
+                   echo -e "\n${C_GREEN}[OK] Bandwidth limit for '$username' set to ${C_YELLOW}$bw_msg${C_RESET}."
                    # Unlock user if they were locked due to bandwidth
                    if [[ "$new_bw" == "0" ]] || [[ -f "$BANDWIDTH_DIR/${username}.usage" ]]; then
                        local used_bytes; used_bytes=$(cat "$BANDWIDTH_DIR/${username}.usage" 2>/dev/null || echo 0)
@@ -2344,15 +2490,15 @@ edit_user() {
                            usermod -U "$username" &>/dev/null
                        fi
                    fi
-               else echo -e "\n${C_RED}❌ Invalid bandwidth value.${C_RESET}"; fi ;;
+               else echo -e "\n${C_RED}[ERROR] Invalid bandwidth value.${C_RESET}"; fi ;;
             6)
                echo "0" > "$BANDWIDTH_DIR/${username}.usage"
                # Unlock user if they were locked due to bandwidth
                usermod -U "$username" &>/dev/null
-               echo -e "\n${C_GREEN}✅ Bandwidth counter for '$username' has been reset to 0.${C_RESET}"
+               echo -e "\n${C_GREEN}[OK] Bandwidth counter for '$username' has been reset to 0.${C_RESET}"
                ;;
             0) return ;;
-            *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" ;;
+            *) echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}" ;;
         esac
         echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to continue editing..." && read -r || return
     done
@@ -2362,19 +2508,19 @@ lock_user() {
     _select_multi_user_interface "LOCK ACCOUNTS"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
-    echo -e "\n${C_BLUE}🔒 Locking selected users...${C_RESET}"
+    echo -e "\n${C_BLUE}Locking selected users...${C_RESET}"
     for u in "${SELECTED_USERS[@]}"; do
         if ! id "$u" &>/dev/null; then
-             echo -e " ❌ User '${C_YELLOW}$u${C_RESET}' does not exist on this system."
+             echo -e " [ERROR] User '${C_YELLOW}$u${C_RESET}' does not exist on this system."
              continue
         fi
         
         usermod -L "$u"
         if [ $? -eq 0 ]; then
             killall -u "$u" -9 &>/dev/null
-            echo -e " ✅ ${C_YELLOW}$u${C_RESET} locked and active sessions killed."
+            echo -e " [OK] ${C_YELLOW}$u${C_RESET} locked and active sessions killed."
         else
-            echo -e " ❌ Failed to lock ${C_YELLOW}$u${C_RESET}."
+            echo -e " [ERROR] Failed to lock ${C_YELLOW}$u${C_RESET}."
         fi
     done
 }
@@ -2383,18 +2529,18 @@ unlock_user() {
     _select_multi_user_interface "UNLOCK ACCOUNTS"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
-    echo -e "\n${C_BLUE}🔓 Unlocking selected users...${C_RESET}"
+    echo -e "\n${C_BLUE}Unlocking selected users...${C_RESET}"
     for u in "${SELECTED_USERS[@]}"; do
         if ! id "$u" &>/dev/null; then
-             echo -e " ❌ User '${C_YELLOW}$u${C_RESET}' does not exist on this system."
+             echo -e " [ERROR] User '${C_YELLOW}$u${C_RESET}' does not exist on this system."
              continue
         fi
         
         usermod -U "$u"
         if [ $? -eq 0 ]; then
-            echo -e " ✅ ${C_YELLOW}$u${C_RESET} unlocked."
+            echo -e " [OK] ${C_YELLOW}$u${C_RESET} unlocked."
         else
-            echo -e " ❌ Failed to unlock ${C_YELLOW}$u${C_RESET}."
+            echo -e " [ERROR] Failed to unlock ${C_YELLOW}$u${C_RESET}."
         fi
     done
 }
@@ -2412,7 +2558,7 @@ list_users() {
     tdz_box_divider
 
     if (( user_total == 0 )); then
-        tdz_row "${C_YELLOW}ℹ No users are currently being managed.${C_RESET}"
+        tdz_row "${C_YELLOW}[INFO] No users are currently being managed.${C_RESET}"
         tdz_box_bot
         return
     fi
@@ -2421,7 +2567,7 @@ list_users() {
     current_ts=$(date +%s)
     local -A system_user_lookup=()
     local -A locked_user_lookup=()
-    local user_count=0 active_count=0 attention_count=0
+    local user_count=0 active_count=0 pending_count=0 attention_count=0
     local first_account=true
 
     while IFS=: read -r system_user _rest; do
@@ -2436,14 +2582,15 @@ list_users() {
     done < <(passwd -Sa 2>/dev/null)
     refresh_ssh_session_cache
 
-    while IFS=: read -r user _password expiry limit bandwidth_gb account_type trial_expiry_epoch _rest; do
+    while IFS=: read -r user _password expiry limit bandwidth_gb account_type metadata_value _rest; do
         [[ -n "$user" && "$user" != \#* ]] || continue
         user_count=$((user_count + 1))
 
         local online_count="${SSH_SESSION_COUNTS[$user]:-0}"
-        local connection_string="$online_count / ${limit:-1}"
+        local connection_string="$online_count/${limit:-1}"
         local plain_status="ACTIVE" status_color="$C_GREEN"
         local quota_exceeded=false
+        local pending_activation=false
         local used_bytes=0 used_gb data_display
         local expiry_display expiry_check=0 time_left="Unknown"
         local account_number display_user
@@ -2456,9 +2603,9 @@ list_users() {
             [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
         fi
         used_gb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1073741824}")
-        data_display="${used_gb} GB / Unlimited"
+        data_display="${used_gb}GB/Unlimited"
         if [[ "$bandwidth_gb" != "0" ]]; then
-            data_display="${used_gb} GB / ${bandwidth_gb} GB"
+            data_display="${used_gb}/${bandwidth_gb}GB"
             local quota_bytes
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( used_bytes >= quota_bytes )); then
@@ -2466,10 +2613,14 @@ list_users() {
             fi
         fi
 
-        if [[ "$account_type" == "trial" && "$trial_expiry_epoch" =~ ^[0-9]+$ ]] &&
-           (( trial_expiry_epoch > 0 )); then
-            expiry_display=$(LC_TIME=C date -d "@${trial_expiry_epoch}" '+%d %b %Y • %H:%M' 2>/dev/null || echo "$expiry")
-            expiry_check=$trial_expiry_epoch
+        if [[ "$account_type" == "pending" && "$metadata_value" =~ ^[1-9][0-9]*$ ]]; then
+            pending_activation=true
+            expiry_display="First connection"
+            time_left="${metadata_value}d after use"
+        elif [[ "$account_type" == "trial" && "$metadata_value" =~ ^[0-9]+$ ]] &&
+           (( metadata_value > 0 )); then
+            expiry_display=$(LC_TIME=C date -d "@${metadata_value}" '+%d %b %Y • %H:%M' 2>/dev/null || echo "$expiry")
+            expiry_check=$metadata_value
         elif [[ -n "$expiry" && "$expiry" != "Never" ]]; then
             expiry_display=$(LC_TIME=C date -d "$expiry" '+%d %b %Y' 2>/dev/null || echo "$expiry")
             expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
@@ -2477,7 +2628,9 @@ list_users() {
             expiry_display="${expiry:-Unknown}"
         fi
 
-        if [[ "$expiry" == "Never" || -z "$expiry" ]]; then
+        if $pending_activation; then
+            :
+        elif [[ "$expiry" == "Never" || -z "$expiry" ]]; then
             time_left="Never"
         elif [[ "$expiry_check" =~ ^[0-9]+$ ]] && (( expiry_check > 0 )); then
             time_left=$(format_trial_time_left "$expiry_check")
@@ -2490,22 +2643,27 @@ list_users() {
              (( expiry_check > 0 && expiry_check < current_ts )); then
             plain_status="EXPIRED"
             status_color="$C_RED"
+        elif $pending_activation; then
+            plain_status="PENDING"
+            status_color="$C_CYAN"
         fi
 
-        if [[ "$plain_status" == "ACTIVE" && "$quota_exceeded" == true ]]; then
+        if [[ ( "$plain_status" == "ACTIVE" || "$plain_status" == "PENDING" ) && "$quota_exceeded" == true ]]; then
             if [[ -n "${locked_user_lookup[$user]+x}" ]]; then
                 plain_status="BW LOCKED"
             else
                 plain_status="QUOTA EXCEEDED"
             fi
             status_color="$C_RED"
-        elif [[ "$plain_status" == "ACTIVE" && -n "${locked_user_lookup[$user]+x}" ]]; then
+        elif [[ ( "$plain_status" == "ACTIVE" || "$plain_status" == "PENDING" ) && -n "${locked_user_lookup[$user]+x}" ]]; then
             plain_status="LOCKED"
             status_color="$C_YELLOW"
         fi
 
         if [[ "$plain_status" == "ACTIVE" ]]; then
             active_count=$((active_count + 1))
+        elif [[ "$plain_status" == "PENDING" ]]; then
+            pending_count=$((pending_count + 1))
         else
             attention_count=$((attention_count + 1))
         fi
@@ -2533,37 +2691,52 @@ list_users() {
 
     tdz_box_divider
     tdz_row2 "${C_GRAY}TOTAL${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
-        "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_YELLOW}ATTENTION ${attention_count}${C_RESET}"
+        "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_CYAN}PENDING ${pending_count}${C_RESET}"
+    if (( attention_count > 0 )); then
+        tdz_row2 "" "${C_YELLOW}ATTENTION ${attention_count}${C_RESET}"
+    fi
     tdz_box_bot
 }
 
 renew_user() {
     _select_multi_user_interface "RENEW ACCOUNTS"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
-    read -p "👉 Enter number of days to extend the account(s): " days; if ! [[ "$days" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
+    read -p "  Enter number of days to extend the account(s): " days; if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then echo -e "\n${C_RED}[ERROR] Days must be at least 1.${C_RESET}"; return; fi
     local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d)
     
-    echo -e "\n${C_BLUE}🔄 Renewing selected users for $days days...${C_RESET}"
+    echo -e "\n${C_BLUE}Renewing selected users for $days days...${C_RESET}"
     for u in "${SELECTED_USERS[@]}"; do
-        chage -E "$new_expire_date" "$u"
-        local line; line=$(grep "^$u:" "$DB_FILE"); local pass; pass=$(echo "$line"|cut -d: -f2); local limit; limit=$(echo "$line"|cut -d: -f4); local bw; bw=$(echo "$line"|cut -d: -f5); local metadata; metadata=$(echo "$line"|cut -d: -f6-)
+        local line record_user pass expiry limit bw account_type metadata_value metadata_rest
+        line=$(grep "^$u:" "$DB_FILE")
+        IFS=: read -r record_user pass expiry limit bw account_type metadata_value metadata_rest <<< "$line"
         [[ -z "$bw" ]] && bw="0"
-        local metadata_suffix=""; [[ -n "$metadata" ]] && metadata_suffix=":$metadata"
-        sed -i "s/^$u:.*/$u:$pass:$new_expire_date:$limit:$bw$metadata_suffix/" "$DB_FILE"
-        echo -e " ✅ ${C_YELLOW}$u${C_RESET} renewed until ${C_GREEN}${new_expire_date}${C_RESET}."
+        if [[ "$account_type" == "pending" && "$metadata_value" =~ ^[1-9][0-9]*$ ]]; then
+            local extended_pending_days=$((metadata_value + days))
+            chage -E -1 "$u"
+            sed -i "s/^$u:.*/$u:$pass:Never:$limit:$bw:pending:$extended_pending_days/" "$DB_FILE"
+            echo -e " [OK] ${C_YELLOW}$u${C_RESET} will remain valid for ${C_GREEN}${extended_pending_days} days${C_RESET} after first connection."
+        else
+            local metadata_suffix=""
+            [[ -n "$account_type" ]] && metadata_suffix=":$account_type"
+            [[ -n "$metadata_value" ]] && metadata_suffix+=":$metadata_value"
+            [[ -n "$metadata_rest" ]] && metadata_suffix+=":$metadata_rest"
+            chage -E "$new_expire_date" "$u"
+            sed -i "s/^$u:.*/$u:$pass:$new_expire_date:$limit:$bw$metadata_suffix/" "$DB_FILE"
+            echo -e " [OK] ${C_YELLOW}$u${C_RESET} renewed until ${C_GREEN}${new_expire_date}${C_RESET}."
+        fi
     done
 }
 
 cleanup_expired() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🧹 Cleanup Expired Users ---${C_RESET}"
+    tdz_screen_title "CLEANUP EXPIRED USERS" "Find and remove accounts whose expiry date has passed."
     
     local expired_users=()
     local current_ts
     current_ts=$(date +%s)
 
     if [[ ! -s "$DB_FILE" ]]; then
-        echo -e "\n${C_GREEN}✅ User database is empty. No expired users found.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] User database is empty. No expired users found.${C_RESET}"
         return
     fi
     
@@ -2577,16 +2750,16 @@ cleanup_expired() {
     done < "$DB_FILE"
 
     if [ ${#expired_users[@]} -eq 0 ]; then
-        echo -e "\n${C_GREEN}✅ No expired users found.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] No expired users found.${C_RESET}"
         return
     fi
 
     echo -e "\nThe following users have expired: ${C_RED}${expired_users[*]}${C_RESET}"
-    read -p "👉 Do you want to delete all of them? (y/n): " confirm
+    read -p "  Do you want to delete all of them? (y/n): " confirm
 
     if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
         for user in "${expired_users[@]}"; do
-            echo " - Deleting ${C_YELLOW}$user...${C_RESET}"
+            echo -e "  ${C_GRAY}•${C_RESET} Deleting ${C_YELLOW}$user${C_RESET}..."
             killall -u "$user" -9 &>/dev/null
             # Clean up bandwidth tracking
             rm -f "$BANDWIDTH_DIR/${user}.usage"
@@ -2594,11 +2767,11 @@ cleanup_expired() {
             userdel -r "$user" &>/dev/null
             sed -i "/^$user:/d" "$DB_FILE"
         done
-        echo -e "\n${C_GREEN}✅ Expired users have been cleaned up.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] Expired users have been cleaned up.${C_RESET}"
         invalidate_banner_cache
         refresh_dynamic_banner_routing_if_enabled
     else
-        echo -e "\n${C_YELLOW}❌ Cleanup cancelled.${C_RESET}"
+        tdz_message CANCELLED "Cleanup cancelled."
     fi
 }
 
@@ -2645,41 +2818,41 @@ EOF
 
 backup_user_data() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 💾 Backup User Data ---${C_RESET}"
-    read -p "👉 Enter path for backup file [/root/tdztunnel_users.tar.gz]: " backup_path
+    tdz_screen_title "BACKUP USER DATA" "Create a portable archive of accounts and usage data."
+    read -p "  Enter path for backup file [/root/tdztunnel_users.tar.gz]: " backup_path
     backup_path=${backup_path:-/root/tdztunnel_users.tar.gz}
     create_user_backup_archive "$backup_path"
     local rc=$?
     if [ "$rc" -ne 0 ]; then
         if [ "$rc" -eq 2 ]; then
-            echo -e "\n${C_YELLOW}ℹ️ No user data found to back up.${C_RESET}"
+            echo -e "\n${C_YELLOW}[INFO] No user data found to back up.${C_RESET}"
         else
-            echo -e "\n${C_RED}❌ ERROR: Backup failed.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Backup failed.${C_RESET}"
         fi
         return
     fi
-    echo -e "\n${C_GREEN}✅ SUCCESS: User data backup created at ${C_YELLOW}$backup_path${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] User data backup created at ${C_YELLOW}$backup_path${C_RESET}"
 }
 
 restore_user_data() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📥 Restore User Data ---${C_RESET}"
-    read -p "👉 Enter the full path to the user data backup file [/root/tdztunnel_users.tar.gz]: " backup_path
+    tdz_screen_title "RESTORE USER DATA" "Restore accounts, limits, expiry dates, and usage data."
+    read -p "  Enter the full path to the user data backup file [/root/tdztunnel_users.tar.gz]: " backup_path
     backup_path=${backup_path:-/root/tdztunnel_users.tar.gz}
     if [ ! -f "$backup_path" ]; then
-        echo -e "\n${C_RED}❌ ERROR: Backup file not found at '$backup_path'.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Backup file not found at '$backup_path'.${C_RESET}"
         return
     fi
-    echo -e "\n${C_RED}${C_BOLD}⚠️ WARNING:${C_RESET} This will overwrite all current users and settings."
+    echo -e "\n${C_RED}${C_BOLD}[WARNING]${C_RESET} This will overwrite all current users and settings."
     echo -e "It will restore user accounts, passwords, limits, and expiration dates from the backup file."
-    read -p "👉 Are you absolutely sure you want to proceed? (y/n): " confirm
-    if [[ "$confirm" != "y" ]]; then echo -e "\n${C_YELLOW}❌ Restore cancelled.${C_RESET}"; return; fi
+    read -p "  Are you absolutely sure you want to proceed? (y/n): " confirm
+    if [[ "$confirm" != "y" ]]; then tdz_message CANCELLED "Restore cancelled."; return; fi
     local temp_dir
     temp_dir=$(mktemp -d)
-    echo -e "\n${C_BLUE}⚙️ Extracting backup file to a temporary location...${C_RESET}"
+    echo -e "\n${C_BLUE}Extracting backup file to a temporary location...${C_RESET}"
     tar -xzf "$backup_path" -C "$temp_dir"
     if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}❌ ERROR: Failed to extract backup file. Aborting.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Failed to extract backup file. Aborting.${C_RESET}"
         rm -rf "$temp_dir"
         return
     fi
@@ -2691,11 +2864,11 @@ restore_user_data() {
     fi
     local restored_db_file="$restore_root/users.db"
     if [ ! -f "$restored_db_file" ]; then
-        echo -e "\n${C_RED}❌ ERROR: users.db not found in the backup. Cannot restore user accounts.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] users.db not found in the backup. Cannot restore user accounts.${C_RESET}"
         rm -rf "$temp_dir"
         return
     fi
-    echo -e "${C_BLUE}⚙️ Overwriting current user database and usage data...${C_RESET}"
+    echo -e "${C_BLUE}Overwriting current user database and usage data...${C_RESET}"
     mkdir -p "$DB_DIR"
     cp "$restored_db_file" "$DB_FILE"
     mkdir -p "$BANDWIDTH_DIR"
@@ -2704,25 +2877,31 @@ restore_user_data() {
         cp "$restore_root/bandwidth"/*.usage "$BANDWIDTH_DIR/" 2>/dev/null || true
     fi
     
-    echo -e "${C_BLUE}⚙️ Re-synchronizing system accounts with the restored database...${C_RESET}"
+    echo -e "${C_BLUE}Re-synchronizing system accounts with the restored database...${C_RESET}"
     ensure_tdztunnel_system_group
     
     while IFS=: read -r user pass expiry limit bandwidth_gb _extra; do
-        echo "Processing user: ${C_YELLOW}$user${C_RESET}"
+        echo -e "\n  ${C_GRAY}•${C_RESET} Account: ${C_YELLOW}$user${C_RESET}"
         if ! id "$user" &>/dev/null; then
-            echo " - User does not exist in system. Creating..."
+            echo -e "    ${C_GRAY}System user:${C_RESET} Creating"
             useradd -m -s /usr/sbin/nologin "$user"
+        else
+            echo -e "    ${C_GRAY}System user:${C_RESET} Existing"
         fi
         usermod -aG "$TDZ_USERS_GROUP" "$user" 2>/dev/null
-        echo " - Setting password..."
+        echo -e "    ${C_GRAY}Password:${C_RESET} Restored"
         echo "$user:$pass" | chpasswd
-        echo " - Setting expiration to $expiry..."
-        chage -E "$expiry" "$user"
-        echo " - Connection limit is $limit (enforced by PAM)"
+        echo -e "    ${C_GRAY}Expiration:${C_RESET} ${expiry}"
+        if [[ "$expiry" == "Never" || -z "$expiry" ]]; then
+            chage -E -1 "$user"
+        else
+            chage -E "$expiry" "$user"
+        fi
+        echo -e "    ${C_GRAY}Connections:${C_RESET} ${limit} (account worker)"
     done < "$DB_FILE"
 
     if [ -f "$restore_root/locks.db" ]; then
-        echo -e "${C_BLUE}⚙️ Restoring account lock states...${C_RESET}"
+        echo -e "${C_BLUE}Restoring account lock states...${C_RESET}"
         while IFS=: read -r lock_user lock_state _extra; do
             [[ -z "$lock_user" || "$lock_user" == \#* ]] && continue
             id "$lock_user" &>/dev/null || continue
@@ -2733,7 +2912,7 @@ restore_user_data() {
         done < "$restore_root/locks.db"
     fi
     rm -rf "$temp_dir"
-    echo -e "\n${C_GREEN}✅ SUCCESS: User data restore completed.${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] User data restore completed.${C_RESET}"
     
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
@@ -2966,7 +3145,11 @@ do_restore() {
         fi
         usermod -aG "$USERS_GROUP" "$user" 2>/dev/null
         echo "$user:$pass" | chpasswd 2>/dev/null
-        chage -E "$expiry" "$user" 2>/dev/null
+        if [[ "$expiry" == "Never" || -z "$expiry" ]]; then
+            chage -E -1 "$user" 2>/dev/null
+        else
+            chage -E "$expiry" "$user" 2>/dev/null
+        fi
         log_msg "Restored user: $user"
     done < "$DB_FILE"
     if [ -f "$restore_root/locks.db" ]; then
@@ -3139,11 +3322,11 @@ Commands:
 
 Auto-backup: ${INTERVAL_LABEL:-unknown}"
                     ;;
-                "/backup"|"💾 Backup Now"|*"Backup Now"*)
+                "/backup"|"Backup Now"|*"Backup Now"*)
                     RESTORE_STATE="IDLE"
                     do_backup
                     ;;
-                "/restore"|"📥 Restore Backup"|*"Restore Backup"*)
+                "/restore"|"Restore Backup"|*"Restore Backup"*)
                     RESTORE_STATE="WAITING_FILE"
                     tg_send "Please send the backup .tar.gz file now.
 
@@ -3151,7 +3334,7 @@ Send the backup file directly to this chat as a document.
 
 Type /cancel to abort."
                     ;;
-                "/status"|"📊 Status"|*"Status"*)
+                "/status"|"Status"|*"Status"*)
                     RESTORE_STATE="IDLE"
                     local_count=$(ls -1 "$BACKUP_DIR"/*.tar.gz 2>/dev/null | wc -l)
                     tg_send "Bot Status
@@ -3160,7 +3343,7 @@ State: $RESTORE_STATE
 Archives: $local_count files
 Last backup: $(ls -lth "$LAST_FILE" 2>/dev/null | awk '{print $6,$7,$8}')"
                     ;;
-                "/cancel"|"cancel"|"Cancel"|"❌ Cancel"|*"Cancel"*)
+                "/cancel"|"cancel"|"Cancel"|*"Cancel"*)
                     RESTORE_STATE="IDLE"
                     RESTORE_FILE=""
                     rm -f "$DOWNLOAD_DIR"/* 2>/dev/null
@@ -3265,7 +3448,7 @@ auto_backup_choose_interval() {
         6) AUTO_BACKUP_SELECTED_SECONDS=86400; AUTO_BACKUP_SELECTED_LABEL="1 day" ;;
         7)
             local custom_minutes
-            read -r -p "Enter interval in minutes (1-525600): " custom_minutes
+            read -r -p "  Enter interval in minutes (1-525600): " custom_minutes
             if ! [[ "$custom_minutes" =~ ^[1-9][0-9]*$ ]] || (( custom_minutes > 525600 )); then
                 echo -e "\n${C_RED}Invalid interval. Enter 1 to 525600 minutes.${C_RESET}"
                 return 1
@@ -3285,10 +3468,10 @@ auto_backup_choose_interval() {
 
 auto_backup_connect_bot() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- Connect Telegram Bot ---${C_RESET}\n"
-    read -r -p "Enter Bot Token: " bot_token
+    tdz_screen_title "CONNECT TELEGRAM BOT" "Configure automated backups and restore controls."
+    read -r -p "  Enter Bot Token: " bot_token
     [[ -z "$bot_token" ]] && { echo -e "\n${C_RED}Token cannot be empty.${C_RESET}"; press_enter; return; }
-    read -r -p "Enter Chat ID: " chat_id
+    read -r -p "  Enter Chat ID: " chat_id
     [[ -z "$chat_id" ]] && { echo -e "\n${C_RED}Chat ID cannot be empty.${C_RESET}"; press_enter; return; }
 
     echo -e "\n${C_BLUE}Testing bot token...${C_RESET}"
@@ -3325,7 +3508,7 @@ auto_backup_connect_bot() {
 
 auto_backup_edit_interval() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- Edit Auto Backup Interval ---${C_RESET}\n"
+    tdz_screen_title "EDIT BACKUP INTERVAL" "Change how often automatic backups are sent."
     if ! auto_backup_load_conf; then
         echo -e "${C_RED}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
         press_enter
@@ -3346,7 +3529,7 @@ auto_backup_edit_interval() {
     if ! auto_backup_save_conf "$saved_bot_token" "$saved_chat_id" \
         "$AUTO_BACKUP_SELECTED_SECONDS" "$AUTO_BACKUP_SELECTED_LABEL" ||
        ! auto_backup_write_worker; then
-        echo -e "\n${C_RED}❌ Could not save the new backup interval.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Could not save the new backup interval.${C_RESET}"
         press_enter
         return
     fi
@@ -3354,12 +3537,12 @@ auto_backup_edit_interval() {
     if [[ "$bot_was_running" == true ]]; then
         if pm2 restart "$AUTO_BACKUP_PM2_NAME" --update-env >/dev/null 2>&1; then
             pm2 save >/dev/null 2>&1 || true
-            echo -e "\n${C_GREEN}✅ Interval changed to ${AUTO_BACKUP_SELECTED_LABEL}; the bot was restarted.${C_RESET}"
+            echo -e "\n${C_GREEN}[OK] Interval changed to ${AUTO_BACKUP_SELECTED_LABEL}; the bot was restarted.${C_RESET}"
         else
-            echo -e "\n${C_RED}❌ Interval was saved, but the bot could not be restarted.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Interval was saved, but the bot could not be restarted.${C_RESET}"
         fi
     else
-        echo -e "\n${C_GREEN}✅ Interval changed to ${AUTO_BACKUP_SELECTED_LABEL}.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] Interval changed to ${AUTO_BACKUP_SELECTED_LABEL}.${C_RESET}"
         echo -e "${C_DIM}The new interval will be used the next time the bot starts.${C_RESET}"
     fi
     press_enter
@@ -3367,7 +3550,7 @@ auto_backup_edit_interval() {
 
 auto_backup_start() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- Start Auto Backup Bot ---${C_RESET}\n"
+    tdz_screen_title "START BACKUP BOT"
     if ! auto_backup_load_conf; then
         echo -e "${C_RED}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
         press_enter; return
@@ -3383,7 +3566,7 @@ auto_backup_start() {
 
 auto_backup_stop() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- Stop Auto Backup Bot ---${C_RESET}\n"
+    tdz_screen_title "STOP BACKUP BOT"
     pm2 delete "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1
     pm2 save >/dev/null 2>&1
     echo -e "${C_YELLOW}Auto-backup bot stopped.${C_RESET}"
@@ -3392,7 +3575,7 @@ auto_backup_stop() {
 
 auto_backup_restart() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- Restart Auto Backup Bot ---${C_RESET}\n"
+    tdz_screen_title "RESTART BACKUP BOT"
     if pm2 list 2>/dev/null | grep -q "$AUTO_BACKUP_PM2_NAME"; then
         pm2 restart "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1
         echo -e "${C_GREEN}Bot restarted.${C_RESET}"
@@ -3405,10 +3588,10 @@ auto_backup_restart() {
 
 auto_backup_reset() {
     clear; show_banner
-    echo -e "${C_RED}${C_BOLD}--- Reset Auto Backup Bot ---${C_RESET}\n"
+    tdz_screen_title "RESET BACKUP BOT" "Remove the current bot configuration and process." "$C_DANGER"
     echo -e "${C_RED}This will remove bot config and stop auto-backups.${C_RESET}"
     echo -e "${C_GREEN}Backup archives will be kept.${C_RESET}\n"
-    read -r -p "Are you sure? (y/n): " confirm
+    read -r -p "  Are you sure? (y/n): " confirm
     [[ "$confirm" != "y" ]] && { echo -e "\n${C_YELLOW}Cancelled.${C_RESET}"; press_enter; return; }
     pm2 delete "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1
     pm2 save >/dev/null 2>&1
@@ -3421,7 +3604,7 @@ auto_backup_reset() {
 
 auto_backup_send_now() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- Send Backup Now ---${C_RESET}\n"
+    tdz_screen_title "SEND BACKUP NOW"
     if ! auto_backup_load_conf; then
         echo -e "${C_RED}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
         press_enter; return
@@ -3457,7 +3640,7 @@ auto_backup_send_now() {
 
 auto_backup_status() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- Auto Backup Bot Status ---${C_RESET}\n"
+    tdz_screen_title "AUTO BACKUP BOT STATUS"
     if auto_backup_load_conf; then
         echo -e "${C_WHITE}Interval:${C_RESET} ${C_GREEN}${INTERVAL_LABEL:-unknown}${C_RESET}"
         echo -e "${C_WHITE}Chat ID:${C_RESET}  ${C_GREEN}$CHAT_ID${C_RESET}"
@@ -3526,32 +3709,32 @@ backup_data_menu() {
 }
 
 _enable_banner_in_sshd_config() {
-    echo -e "\n${C_BLUE}⚙️ Applying SSH banner settings...${C_RESET}"
+    echo -e "\n${C_BLUE}Applying SSH banner settings...${C_RESET}"
     disable_dynamic_ssh_banner_system
     sed -i.bak -E 's/^( *Banner *).*/#\1/' /etc/ssh/sshd_config
     if ! grep -q -E "^Banner $SSH_BANNER_FILE" /etc/ssh/sshd_config; then
         echo -e "\n# TDZ SSH TUNNEL SSH Banner\nBanner $SSH_BANNER_FILE" >> /etc/ssh/sshd_config
     fi
-    echo -e "${C_GREEN}✅ SSH banner settings updated.${C_RESET}"
+    echo -e "${C_GREEN}[OK] SSH banner settings updated.${C_RESET}"
 }
 
 _restart_ssh() {
-    echo -e "\n${C_BLUE}🔄 Restarting SSH service to apply changes...${C_RESET}"
+    echo -e "\n${C_BLUE}Restarting SSH service to apply changes...${C_RESET}"
     local ssh_service_name=""
     if [ -f /lib/systemd/system/sshd.service ]; then
         ssh_service_name="sshd.service"
     elif [ -f /lib/systemd/system/ssh.service ]; then
         ssh_service_name="ssh.service"
     else
-        echo -e "${C_RED}❌ Could not find sshd.service or ssh.service. Cannot restart SSH.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Could not find sshd.service or ssh.service. Cannot restart SSH.${C_RESET}"
         return 1
     fi
 
     systemctl restart "${ssh_service_name}"
     if [ $? -eq 0 ]; then
-        echo -e "${C_GREEN}✅ SSH service ('${ssh_service_name}') restarted successfully.${C_RESET}"
+        echo -e "${C_GREEN}[OK] SSH service ('${ssh_service_name}') restarted successfully.${C_RESET}"
     else
-        echo -e "${C_RED}❌ Failed to restart SSH service ('${ssh_service_name}'). Please check 'journalctl -u ${ssh_service_name}' for errors.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Failed to restart SSH service ('${ssh_service_name}'). Please check 'journalctl -u ${ssh_service_name}' for errors.${C_RESET}"
     fi
 }
 
@@ -3590,33 +3773,33 @@ save_banner_identity_config() {
 
 edit_dynamic_banner_contacts() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 👤 Dynamic Banner Contacts ---${C_RESET}\n"
+    tdz_screen_title "DYNAMIC BANNER CONTACTS" "Update the Telegram usernames shown to SSH users."
     load_banner_identity_config
     echo -e "${C_WHITE}Current Admin:${C_RESET}   ${C_GREEN}@${BANNER_ADMIN_USERNAME}${C_RESET}"
     echo -e "${C_WHITE}Current Channel:${C_RESET} ${C_GREEN}@${BANNER_CHANNEL_USERNAME}${C_RESET}"
     echo -e "${C_DIM}Enter Telegram usernames only. Links are generated automatically.${C_RESET}\n"
 
     local new_admin new_channel
-    read -r -p "Admin username [@${BANNER_ADMIN_USERNAME}]: " new_admin
-    read -r -p "Channel username [@${BANNER_CHANNEL_USERNAME}]: " new_channel
+    read -r -p "  Admin username [@${BANNER_ADMIN_USERNAME}]: " new_admin
+    read -r -p "  Channel username [@${BANNER_CHANNEL_USERNAME}]: " new_channel
     new_admin=${new_admin#@}
     new_channel=${new_channel#@}
     new_admin=${new_admin:-$BANNER_ADMIN_USERNAME}
     new_channel=${new_channel:-$BANNER_CHANNEL_USERNAME}
 
     if ! is_valid_telegram_username "$new_admin"; then
-        echo -e "\n${C_RED}❌ Invalid Admin username. Use 5-32 letters, numbers, or underscores, starting with a letter.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Invalid Admin username. Use 5-32 letters, numbers, or underscores, starting with a letter.${C_RESET}"
         press_enter
         return
     fi
     if ! is_valid_telegram_username "$new_channel"; then
-        echo -e "\n${C_RED}❌ Invalid Channel username. Use 5-32 letters, numbers, or underscores, starting with a letter.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Invalid Channel username. Use 5-32 letters, numbers, or underscores, starting with a letter.${C_RESET}"
         press_enter
         return
     fi
 
     if ! save_banner_identity_config "$new_admin" "$new_channel"; then
-        echo -e "\n${C_RED}❌ Could not save the banner contacts.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Could not save the banner contacts.${C_RESET}"
         press_enter
         return
     fi
@@ -3624,25 +3807,24 @@ edit_dynamic_banner_contacts() {
     local limiter_reloaded=true
     setup_limiter_service >/dev/null 2>&1 || limiter_reloaded=false
     refresh_dynamic_banner_routing_if_enabled
-    echo -e "\n${C_GREEN}✅ Dynamic banner contacts updated.${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] Dynamic banner contacts updated.${C_RESET}"
     echo -e "   • Admin: ${C_YELLOW}@${new_admin}${C_RESET}"
     echo -e "   • Channel: ${C_YELLOW}@${new_channel}${C_RESET}"
     if [[ "$limiter_reloaded" != true ]]; then
-        echo -e "${C_YELLOW}⚠️ Contacts were saved, but the banner worker could not be restarted.${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] Contacts were saved, but the banner worker could not be restarted.${C_RESET}"
     fi
     press_enter
 }
 
 set_ssh_banner_paste() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📋 Paste Static SSH Banner ---${C_RESET}"
-    echo -e "Paste your custom banner below. Press ${C_YELLOW}[Ctrl+D]${C_RESET} when you are finished."
+    tdz_screen_title "PASTE STATIC SSH BANNER" "Paste the banner, then press Ctrl+D on a new line to save."
+    echo -e "  Paste your custom banner below. Press ${C_YELLOW}[Ctrl+D]${C_RESET} when finished."
     echo -e "${C_DIM}The current static banner (if any) will be overwritten.${C_RESET}"
-    echo -e "--------------------------------------------------"
+    tdz_section "BANNER INPUT"
     cat > "$SSH_BANNER_FILE"
     chmod 644 "$SSH_BANNER_FILE"
-    echo -e "\n--------------------------------------------------"
-    echo -e "\n${C_GREEN}✅ Static banner content saved.${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] Static banner content saved.${C_RESET}"
     _enable_banner_in_sshd_config
     _restart_ssh
     echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return..." && read -r
@@ -3650,43 +3832,43 @@ set_ssh_banner_paste() {
 
 view_ssh_banner() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 👁️ Current SSH Banner ---${C_RESET}"
+    tdz_screen_title "CURRENT STATIC SSH BANNER"
     if [ -f "$SSH_BANNER_FILE" ]; then
-        echo -e "\n${C_CYAN}--- BEGIN BANNER ---${C_RESET}"
+        tdz_section "BEGIN BANNER"
         cat "$SSH_BANNER_FILE"
-        echo -e "${C_CYAN}---- END BANNER ----${C_RESET}"
+        tdz_section "END BANNER"
     else
-        echo -e "\n${C_YELLOW}ℹ️ No static banner is configured.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] No static banner is configured.${C_RESET}"
     fi
     echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return..." && read -r
 }
 
 remove_ssh_banner() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🗑️ Disable SSH Banners ---${C_RESET}"
-    read -p "👉 Are you sure you want to disable all SSH banners? (y/n): " confirm
+    tdz_screen_title "DISABLE SSH BANNERS" "Disable both dynamic and static SSH login banners." "$C_DANGER"
+    read -p "  Are you sure you want to disable all SSH banners? (y/n): " confirm
     if [[ "$confirm" != "y" ]]; then
-        echo -e "\n${C_YELLOW}❌ Action cancelled.${C_RESET}"
+        tdz_message CANCELLED "Action cancelled."
         echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return..." && read -r
         return
     fi
     if [ -f "$SSH_BANNER_FILE" ]; then
         rm -f "$SSH_BANNER_FILE"
-        echo -e "\n${C_GREEN}✅ Static banner removed.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] Static banner removed.${C_RESET}"
     else
-        echo -e "\n${C_YELLOW}ℹ️ No static banner is configured.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] No static banner is configured.${C_RESET}"
     fi
     disable_dynamic_ssh_banner_system
-    echo -e "\n${C_BLUE}⚙️ Disabling SSH banner settings...${C_RESET}"
+    echo -e "\n${C_BLUE}Disabling SSH banner settings...${C_RESET}"
     disable_static_ssh_banner_in_sshd_config
-    echo -e "${C_GREEN}✅ SSH banner disabled.${C_RESET}"
+    echo -e "${C_GREEN}[OK] SSH banner disabled.${C_RESET}"
     _restart_ssh
     echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return..." && read -r
 }
 
 preview_dynamic_ssh_banner() {
     if ! is_dynamic_ssh_banner_enabled; then
-        echo -e "\n${C_RED}❌ Dynamic banners are not enabled right now.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Dynamic banners are not enabled right now.${C_RESET}"
         press_enter
         return
     fi
@@ -3699,7 +3881,9 @@ preview_dynamic_ssh_banner() {
         return
     fi
 
-    echo -e "\n${C_CYAN}--- Dynamic Banner Preview for user '$u' ---${C_RESET}\n"
+    echo
+    tdz_section "DYNAMIC BANNER PREVIEW — $u"
+    echo
     if [[ -f "/etc/tdztunnel/banners/${u}.txt" ]]; then
         cat "/etc/tdztunnel/banners/${u}.txt"
     else
@@ -3707,9 +3891,8 @@ preview_dynamic_ssh_banner() {
         sleep 5
         if ! cat "/etc/tdztunnel/banners/${u}.txt" 2>/dev/null; then
             echo -e "\n${C_RED}Still not generated. Here are the last limiter logs:${C_RESET}"
-            echo -e "----------------------------------------------------------------------"
+            tdz_section "LIMITER LOG"
             journalctl -u tdztunnel-limiter -n 15 --no-pager
-            echo -e "----------------------------------------------------------------------"
         fi
     fi
     press_enter
@@ -3717,55 +3900,55 @@ preview_dynamic_ssh_banner() {
 
 install_udp_custom() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing udp-custom ---${C_RESET}"
+    tdz_screen_title "INSTALL UDP-CUSTOM" "Install the UDP transport service and udpgw helper."
     if [ -f "$UDP_CUSTOM_SERVICE_FILE" ] || [ -f "$UDPGW_SERVICE_FILE" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ udp-custom is already installed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] udp-custom is already installed.${C_RESET}"
         return
     fi
 
     check_and_free_ports 36712 7800 || return
     check_and_open_firewall_port 36712 udp || return
 
-    echo -e "\n${C_GREEN}⚙️ Creating directory for udp-custom...${C_RESET}"
+    echo -e "\n${C_GREEN}Creating directory for udp-custom...${C_RESET}"
     rm -rf "$UDP_CUSTOM_DIR"
     mkdir -p "$UDP_CUSTOM_DIR"
 
-    echo -e "\n${C_GREEN}⚙️ Detecting system architecture...${C_RESET}"
+    echo -e "\n${C_GREEN}Detecting system architecture...${C_RESET}"
     local arch
     arch=$(uname -m)
     local binary_url=""
     if [[ "$arch" == "x86_64" ]]; then
         binary_url="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/raw/main/udp/udp-custom-linux-amd64"
-        echo -e "${C_BLUE}ℹ️ Detected x86_64 (amd64) architecture.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Detected x86_64 (amd64) architecture.${C_RESET}"
     elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
         binary_url="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/raw/main/udp/udp-custom-linux-arm"
-        echo -e "${C_BLUE}ℹ️ Detected ARM64 architecture.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Detected ARM64 architecture.${C_RESET}"
     else
-        echo -e "\n${C_RED}❌ Unsupported architecture: $arch. Cannot install udp-custom.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Unsupported architecture: $arch. Cannot install udp-custom.${C_RESET}"
         rm -rf "$UDP_CUSTOM_DIR"
         return
     fi
 
-    echo -e "\n${C_GREEN}📥 Downloading udp-custom binary...${C_RESET}"
+    echo -e "\n${C_GREEN}Downloading udp-custom binary...${C_RESET}"
     wget -q --show-progress -O "$UDP_CUSTOM_DIR/udp-custom" "$binary_url"
     if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}❌ Failed to download the udp-custom binary.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Failed to download the udp-custom binary.${C_RESET}"
         rm -rf "$UDP_CUSTOM_DIR"
         return
     fi
     chmod +x "$UDP_CUSTOM_DIR/udp-custom"
 
-    echo -e "\n${C_GREEN}📦 Downloading udpgw helper...${C_RESET}"
+    echo -e "\n${C_GREEN}Downloading udpgw helper...${C_RESET}"
     wget -q --show-progress -O "$UDPGW_BINARY" "https://raw.githubusercontent.com/http-custom/udp-custom/main/module/udpgw"
     if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}❌ Failed to download the udpgw helper binary.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Failed to download the udpgw helper binary.${C_RESET}"
         rm -rf "$UDP_CUSTOM_DIR"
         rm -f "$UDPGW_BINARY"
         return
     fi
     chmod +x "$UDPGW_BINARY"
 
-    echo -e "\n${C_GREEN}📝 Creating default config.json...${C_RESET}"
+    echo -e "\n${C_GREEN}Creating default config.json...${C_RESET}"
     cat > "$UDP_CUSTOM_DIR/config.json" <<EOF
 {
   "listen": ":36712",
@@ -3778,7 +3961,7 @@ install_udp_custom() {
 EOF
     chmod 644 "$UDP_CUSTOM_DIR/config.json"
 
-    echo -e "\n${C_GREEN}📝 Creating udpgw systemd service file...${C_RESET}"
+    echo -e "\n${C_GREEN}Creating udpgw systemd service file...${C_RESET}"
     cat > "$UDPGW_SERVICE_FILE" <<EOF
 [Unit]
 Description=TDZ SSH TUNNEL UDPGW Backend
@@ -3795,7 +3978,7 @@ RestartSec=2s
 WantedBy=multi-user.target
 EOF
 
-    echo -e "\n${C_GREEN}📝 Creating systemd service file...${C_RESET}"
+    echo -e "\n${C_GREEN}Creating systemd service file...${C_RESET}"
     cat > "$UDP_CUSTOM_SERVICE_FILE" <<EOF
 [Unit]
 Description=UDP Custom by TDZ SSH TUNNEL
@@ -3813,7 +3996,7 @@ RestartSec=2s
 WantedBy=multi-user.target
 EOF
 
-    echo -e "\n${C_GREEN}▶️ Enabling and starting udp-custom service...${C_RESET}"
+    echo -e "\n${C_BLUE}[INFO] Enabling and starting udp-custom service...${C_RESET}"
     systemctl daemon-reload
     systemctl enable udpgw.service
     systemctl start udpgw.service
@@ -3821,35 +4004,35 @@ EOF
     systemctl start udp-custom.service
     sleep 2
     if systemctl is-active --quiet udpgw && systemctl is-active --quiet udp-custom; then
-        echo -e "\n${C_GREEN}✅ SUCCESS: udp-custom is installed and active.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] udp-custom is installed and active.${C_RESET}"
     else
-        echo -e "\n${C_RED}❌ ERROR: udp-custom service failed to start.${C_RESET}"
-        echo -e "${C_YELLOW}ℹ️ Displaying last 15 lines of the udp-custom and udpgw logs for diagnostics:${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] udp-custom service failed to start.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] Displaying last 15 lines of the udp-custom and udpgw logs for diagnostics:${C_RESET}"
         journalctl -u udp-custom.service -n 15 --no-pager
         journalctl -u udpgw.service -n 15 --no-pager
     fi
 }
 
 uninstall_udp_custom() {
-    echo -e "\n${C_BOLD}${C_PURPLE}--- 🗑️ Uninstalling udp-custom ---${C_RESET}"
+    tdz_screen_title "UNINSTALL UDP-CUSTOM"
     if [ ! -f "$UDP_CUSTOM_SERVICE_FILE" ] && [ ! -f "$UDPGW_SERVICE_FILE" ]; then
-        echo -e "${C_YELLOW}ℹ️ udp-custom is not installed, skipping.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] udp-custom is not installed, skipping.${C_RESET}"
         return
     fi
-    echo -e "${C_GREEN}🛑 Stopping and disabling udpgw service...${C_RESET}"
+    echo -e "${C_GREEN}Stopping and disabling udpgw service...${C_RESET}"
     systemctl stop udpgw.service >/dev/null 2>&1
     systemctl disable udpgw.service >/dev/null 2>&1
-    echo -e "${C_GREEN}🛑 Stopping and disabling udp-custom service...${C_RESET}"
+    echo -e "${C_GREEN}Stopping and disabling udp-custom service...${C_RESET}"
     systemctl stop udp-custom.service >/dev/null 2>&1
     systemctl disable udp-custom.service >/dev/null 2>&1
-    echo -e "${C_GREEN}🗑️ Removing systemd service file...${C_RESET}"
+    echo -e "${C_GREEN}Removing systemd service file...${C_RESET}"
     rm -f "$UDP_CUSTOM_SERVICE_FILE"
     rm -f "$UDPGW_SERVICE_FILE"
     systemctl daemon-reload
-    echo -e "${C_GREEN}🗑️ Removing udp-custom directory and files...${C_RESET}"
+    echo -e "${C_GREEN}Removing udp-custom directory and files...${C_RESET}"
     rm -rf "$UDP_CUSTOM_DIR"
     rm -f "$UDPGW_BINARY"
-    echo -e "${C_GREEN}✅ udp-custom has been uninstalled successfully.${C_RESET}"
+    echo -e "${C_GREEN}[OK] udp-custom has been uninstalled successfully.${C_RESET}"
 }
 
 
@@ -3876,36 +4059,36 @@ ensure_badvpn_service_is_quiet() {
 
 install_badvpn() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing badvpn (udpgw) ---${C_RESET}"
+    tdz_screen_title "INSTALL BADVPN" "Build and enable the udpgw service on UDP port 7300."
     if [ -f "$BADVPN_SERVICE_FILE" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ badvpn is already installed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] badvpn is already installed.${C_RESET}"
         return
     fi
     check_and_open_firewall_port 7300 udp || return
-    echo -e "\n${C_GREEN}🔄 Updating package lists...${C_RESET}"
+    echo -e "\n${C_GREEN}Updating package lists...${C_RESET}"
     tdz_apt_update || return
-    echo -e "\n${C_GREEN}📦 Installing all required packages...${C_RESET}"
+    echo -e "\n${C_GREEN}Installing all required packages...${C_RESET}"
     tdz_apt_install cmake g++ make screen git build-essential libssl-dev libnspr4-dev libnss3-dev pkg-config || {
-        echo -e "${C_RED}❌ Failed to install badvpn build dependencies.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Failed to install badvpn build dependencies.${C_RESET}"
         return
     }
-    echo -e "\n${C_GREEN}📥 Cloning badvpn from github...${C_RESET}"
+    echo -e "\n${C_GREEN}Cloning badvpn from github...${C_RESET}"
     git clone https://github.com/ambrop72/badvpn.git "$BADVPN_BUILD_DIR"
-    cd "$BADVPN_BUILD_DIR" || { echo -e "${C_RED}❌ Failed to change directory to build folder.${C_RESET}"; return; }
-    echo -e "\n${C_GREEN}⚙️ Running CMake...${C_RESET}"
-    cmake . || { echo -e "${C_RED}❌ CMake configuration failed.${C_RESET}"; rm -rf "$BADVPN_BUILD_DIR"; return; }
-    echo -e "\n${C_GREEN}🛠️ Compiling source...${C_RESET}"
-    make || { echo -e "${C_RED}❌ Compilation (make) failed.${C_RESET}"; rm -rf "$BADVPN_BUILD_DIR"; return; }
+    cd "$BADVPN_BUILD_DIR" || { echo -e "${C_RED}[ERROR] Failed to change directory to build folder.${C_RESET}"; return; }
+    echo -e "\n${C_GREEN}Running CMake...${C_RESET}"
+    cmake . || { echo -e "${C_RED}[ERROR] CMake configuration failed.${C_RESET}"; rm -rf "$BADVPN_BUILD_DIR"; return; }
+    echo -e "\n${C_GREEN}Compiling source...${C_RESET}"
+    make || { echo -e "${C_RED}[ERROR] Compilation (make) failed.${C_RESET}"; rm -rf "$BADVPN_BUILD_DIR"; return; }
     local badvpn_binary
     badvpn_binary=$(find "$BADVPN_BUILD_DIR" -name "badvpn-udpgw" -type f | head -n 1)
     if [[ -z "$badvpn_binary" || ! -f "$badvpn_binary" ]]; then
-        echo -e "${C_RED}❌ ERROR: Could not find the compiled 'badvpn-udpgw' binary after compilation.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Could not find the compiled 'badvpn-udpgw' binary after compilation.${C_RESET}"
         rm -rf "$BADVPN_BUILD_DIR"
         return
     fi
-    echo -e "${C_GREEN}ℹ️ Found binary at: $badvpn_binary${C_RESET}"
+    echo -e "${C_GREEN}[INFO] Found binary at: $badvpn_binary${C_RESET}"
     chmod +x "$badvpn_binary"
-    echo -e "\n${C_GREEN}📝 Creating systemd service file...${C_RESET}"
+    echo -e "\n${C_GREEN}Creating systemd service file...${C_RESET}"
     cat > "$BADVPN_SERVICE_FILE" <<-EOF
 [Unit]
 Description=BadVPN UDP Gateway
@@ -3920,35 +4103,35 @@ StandardError=null
 [Install]
 WantedBy=multi-user.target
 EOF
-    echo -e "\n${C_GREEN}▶️ Enabling and starting badvpn service...${C_RESET}"
+    echo -e "\n${C_BLUE}[INFO] Enabling and starting badvpn service...${C_RESET}"
     systemctl daemon-reload
     systemctl enable badvpn.service
     systemctl start badvpn.service
     sleep 2
     if systemctl is-active --quiet badvpn; then
-        echo -e "\n${C_GREEN}✅ SUCCESS: badvpn (udpgw) is installed and active on port 7300.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] badvpn (udpgw) is installed and active on port 7300.${C_RESET}"
     else
-        echo -e "\n${C_RED}❌ ERROR: badvpn service failed to start.${C_RESET}"
-        echo -e "${C_YELLOW}ℹ️ Displaying last 15 lines of the service log for diagnostics:${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] badvpn service failed to start.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] Displaying last 15 lines of the service log for diagnostics:${C_RESET}"
         journalctl -u badvpn.service -n 15 --no-pager
     fi
 }
 
 uninstall_badvpn() {
-    echo -e "\n${C_BOLD}${C_PURPLE}--- 🗑️ Uninstalling badvpn (udpgw) ---${C_RESET}"
+    tdz_screen_title "UNINSTALL BADVPN"
     if [ ! -f "$BADVPN_SERVICE_FILE" ]; then
-        echo -e "${C_YELLOW}ℹ️ badvpn is not installed, skipping.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] badvpn is not installed, skipping.${C_RESET}"
         return
     fi
-    echo -e "${C_GREEN}🛑 Stopping and disabling badvpn service...${C_RESET}"
+    echo -e "${C_GREEN}Stopping and disabling badvpn service...${C_RESET}"
     systemctl stop badvpn.service >/dev/null 2>&1
     systemctl disable badvpn.service >/dev/null 2>&1
-    echo -e "${C_GREEN}🗑️ Removing systemd service file...${C_RESET}"
+    echo -e "${C_GREEN}Removing systemd service file...${C_RESET}"
     rm -f "$BADVPN_SERVICE_FILE"
     systemctl daemon-reload
-    echo -e "${C_GREEN}🗑️ Removing badvpn build directory...${C_RESET}"
+    echo -e "${C_GREEN}Removing badvpn build directory...${C_RESET}"
     rm -rf "$BADVPN_BUILD_DIR"
-    echo -e "${C_GREEN}✅ badvpn has been uninstalled successfully.${C_RESET}"
+    echo -e "${C_GREEN}[OK] badvpn has been uninstalled successfully.${C_RESET}"
 }
 
 load_edge_cert_info() {
@@ -4008,9 +4191,9 @@ ensure_edge_stack_packages() {
     command -v python3 &> /dev/null || missing_packages+=("python3")
 
     if (( ${#missing_packages[@]} > 0 )); then
-        echo -e "\n${C_BLUE}📦 Installing required packages: ${missing_packages[*]}${C_RESET}"
+        echo -e "\n${C_BLUE}Installing required packages: ${missing_packages[*]}${C_RESET}"
         tdz_apt_install "${missing_packages[@]}" || {
-            echo -e "${C_RED}❌ Failed to install the required packages.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Failed to install the required packages.${C_RESET}"
             return 1
         }
     fi
@@ -4019,7 +4202,7 @@ ensure_edge_stack_packages() {
 
 build_shared_tls_bundle() {
     if [ ! -s "$SSL_CERT_CHAIN_FILE" ] || [ ! -s "$SSL_CERT_KEY_FILE" ]; then
-        echo -e "${C_RED}❌ Certificate chain or key is missing.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Certificate chain or key is missing.${C_RESET}"
         return 1
     fi
     cat "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" > "$TDZ_SSL_CERT_FILE" || return 1
@@ -4031,32 +4214,32 @@ build_shared_tls_bundle() {
 generate_self_signed_edge_cert() {
     local common_name="$1"
     mkdir -p "$SSL_CERT_DIR"
-    echo -e "\n${C_GREEN}🔐 Generating a shared self-signed certificate...${C_RESET}"
+    echo -e "\n${C_GREEN}Generating a shared self-signed certificate...${C_RESET}"
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
         -keyout "$SSL_CERT_KEY_FILE" \
         -out "$SSL_CERT_CHAIN_FILE" \
         -subj "/CN=$common_name" \
         >/dev/null 2>&1 || {
-            echo -e "${C_RED}❌ Failed to generate the self-signed certificate.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Failed to generate the self-signed certificate.${C_RESET}"
             return 1
         }
     build_shared_tls_bundle || return 1
     save_edge_cert_info "self-signed" "$common_name" ""
-    echo -e "${C_GREEN}✅ Shared certificate created for ${C_YELLOW}$common_name${C_RESET}"
+    echo -e "${C_GREEN}[OK] Shared certificate created for ${C_YELLOW}$common_name${C_RESET}"
     return 0
 }
 
 _install_certbot() {
     if command -v certbot &> /dev/null; then
-        echo -e "${C_GREEN}✅ Certbot is already installed.${C_RESET}"
+        echo -e "${C_GREEN}[OK] Certbot is already installed.${C_RESET}"
         return 0
     fi
-    echo -e "${C_BLUE}📦 Installing Certbot...${C_RESET}"
+    echo -e "${C_BLUE}Installing Certbot...${C_RESET}"
     tdz_apt_install certbot || {
-        echo -e "${C_RED}❌ Failed to install Certbot.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Failed to install Certbot.${C_RESET}"
         return 1
     }
-    echo -e "${C_GREEN}✅ Certbot installed successfully.${C_RESET}"
+    echo -e "${C_GREEN}[OK] Certbot installed successfully.${C_RESET}"
     return 0
 }
 
@@ -4072,7 +4255,7 @@ obtain_certbot_edge_cert() {
     if systemctl is-active --quiet haproxy; then restart_haproxy=1; fi
     if systemctl is-active --quiet nginx; then restart_nginx=1; fi
 
-    echo -e "\n${C_BLUE}🛑 Stopping HAProxy and Nginx for Certbot validation...${C_RESET}"
+    echo -e "\n${C_BLUE}Stopping HAProxy and Nginx for Certbot validation...${C_RESET}"
     systemctl stop haproxy >/dev/null 2>&1
     systemctl stop nginx >/dev/null 2>&1
     sleep 2
@@ -4083,11 +4266,11 @@ obtain_certbot_edge_cert() {
         return 1
     }
 
-    echo -e "\n${C_BLUE}⚡ Requesting a Certbot certificate for ${C_YELLOW}$domain_name${C_RESET}"
+    echo -e "\n${C_BLUE}Requesting a Certbot certificate for ${C_YELLOW}$domain_name${C_RESET}"
     certbot certonly --standalone -d "$domain_name" --non-interactive --agree-tos -m "$email"
     if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}❌ Certbot failed to obtain a certificate.${C_RESET}"
-        echo -e "${C_YELLOW}ℹ️ Make sure the domain points to this server and port 80 is reachable.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Certbot failed to obtain a certificate.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] Make sure the domain points to this server and port 80 is reachable.${C_RESET}"
         [[ "$restart_nginx" -eq 1 ]] && systemctl start nginx >/dev/null 2>&1
         [[ "$restart_haproxy" -eq 1 ]] && systemctl start haproxy >/dev/null 2>&1
         return 1
@@ -4096,7 +4279,7 @@ obtain_certbot_edge_cert() {
     local certbot_chain="/etc/letsencrypt/live/$domain_name/fullchain.pem"
     local certbot_key="/etc/letsencrypt/live/$domain_name/privkey.pem"
     if [ ! -f "$certbot_chain" ] || [ ! -f "$certbot_key" ]; then
-        echo -e "\n${C_RED}❌ Certbot completed, but the certificate files were not found.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Certbot completed, but the certificate files were not found.${C_RESET}"
         [[ "$restart_nginx" -eq 1 ]] && systemctl start nginx >/dev/null 2>&1
         [[ "$restart_haproxy" -eq 1 ]] && systemctl start haproxy >/dev/null 2>&1
         return 1
@@ -4110,7 +4293,7 @@ obtain_certbot_edge_cert() {
         return 1
     }
     save_edge_cert_info "certbot" "$domain_name" "$email"
-    echo -e "${C_GREEN}✅ Certbot certificate copied into ${C_YELLOW}$SSL_CERT_DIR${C_RESET}"
+    echo -e "${C_GREEN}[OK] Certbot certificate copied into ${C_YELLOW}$SSL_CERT_DIR${C_RESET}"
     return 0
 }
 
@@ -4162,18 +4345,18 @@ select_edge_certificate() {
     case "$cert_choice" in
         1)
             if $has_existing_cert; then
-                echo -e "${C_GREEN}✅ Reusing the existing shared certificate.${C_RESET}"
+                echo -e "${C_GREEN}[OK] Reusing the existing shared certificate.${C_RESET}"
                 return 0
             fi
             local common_name
-            read -p "👉 Enter the certificate Common Name / SNI label [$preferred_host]: " common_name
+            read -p "  Enter the certificate Common Name / SNI label [$preferred_host]: " common_name
             common_name=${common_name:-$preferred_host}
             generate_self_signed_edge_cert "$common_name"
             ;;
         2)
             if $has_existing_cert; then
                 local common_name
-                read -p "👉 Enter the certificate Common Name / SNI label [$preferred_host]: " common_name
+                read -p "  Enter the certificate Common Name / SNI label [$preferred_host]: " common_name
                 common_name=${common_name:-$preferred_host}
                 generate_self_signed_edge_cert "$common_name"
             else
@@ -4184,22 +4367,22 @@ select_edge_certificate() {
                     default_domain="$preferred_host"
                 fi
                 if [[ -n "$default_domain" ]]; then
-                    read -p "👉 Enter your domain name [$default_domain]: " domain_name
+                    read -p "  Enter your domain name [$default_domain]: " domain_name
                     domain_name=${domain_name:-$default_domain}
                 else
-                    read -p "👉 Enter your domain name (e.g. vpn.example.com): " domain_name
+                    read -p "  Enter your domain name (e.g. vpn.example.com): " domain_name
                 fi
                 if [[ -z "$domain_name" ]]; then
-                    echo -e "${C_RED}❌ Domain name cannot be empty.${C_RESET}"
+                    echo -e "${C_RED}[ERROR] Domain name cannot be empty.${C_RESET}"
                     return 1
                 fi
                 if _is_valid_ipv4 "$domain_name"; then
-                    echo -e "${C_RED}❌ Certbot requires a real domain name, not a raw IP address.${C_RESET}"
+                    echo -e "${C_RED}[ERROR] Certbot requires a real domain name, not a raw IP address.${C_RESET}"
                     return 1
                 fi
-                read -p "👉 Enter your email for Let's Encrypt: " email
+                read -p "  Enter your email for Let's Encrypt: " email
                 if [[ -z "$email" ]]; then
-                    echo -e "${C_RED}❌ Email cannot be empty.${C_RESET}"
+                    echo -e "${C_RED}[ERROR] Email cannot be empty.${C_RESET}"
                     return 1
                 fi
                 obtain_certbot_edge_cert "$domain_name" "$email"
@@ -4207,7 +4390,7 @@ select_edge_certificate() {
             ;;
         3)
             if ! $has_existing_cert; then
-                echo -e "${C_RED}❌ Invalid option.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Invalid option.${C_RESET}"
                 return 1
             fi
             local default_domain=""
@@ -4220,29 +4403,29 @@ select_edge_certificate() {
                 default_domain="$preferred_host"
             fi
             if [[ -n "$default_domain" ]]; then
-                read -p "👉 Enter your domain name [$default_domain]: " domain_name
+                read -p "  Enter your domain name [$default_domain]: " domain_name
                 domain_name=${domain_name:-$default_domain}
             else
-                read -p "👉 Enter your domain name (e.g. vpn.example.com): " domain_name
+                read -p "  Enter your domain name (e.g. vpn.example.com): " domain_name
             fi
             if [[ -z "$domain_name" ]]; then
-                echo -e "${C_RED}❌ Domain name cannot be empty.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Domain name cannot be empty.${C_RESET}"
                 return 1
             fi
             if _is_valid_ipv4 "$domain_name"; then
-                echo -e "${C_RED}❌ Certbot requires a real domain name, not a raw IP address.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Certbot requires a real domain name, not a raw IP address.${C_RESET}"
                 return 1
             fi
-            read -p "👉 Enter your email for Let's Encrypt [${EDGE_EMAIL}]: " email
+            read -p "  Enter your email for Let's Encrypt [${EDGE_EMAIL}]: " email
             email=${email:-$EDGE_EMAIL}
             if [[ -z "$email" ]]; then
-                echo -e "${C_RED}❌ Email cannot be empty.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Email cannot be empty.${C_RESET}"
                 return 1
             fi
             obtain_certbot_edge_cert "$domain_name" "$email"
             ;;
         *)
-            echo -e "${C_RED}❌ Invalid option.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Invalid option.${C_RESET}"
             return 1
             ;;
     esac
@@ -4514,21 +4697,21 @@ EOF
 }
 
 install_ws_ssh_bridge() {
-    echo -e "${C_BLUE}📝 Writing WS-to-SSH bridge script...${C_RESET}"
+    echo -e "${C_BLUE}Writing WS-to-SSH bridge script...${C_RESET}"
     write_ws_ssh_bridge_script
     write_ws_ssh_bridge_service
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable tdz-ws-ssh-bridge >/dev/null 2>&1
     systemctl restart tdz-ws-ssh-bridge || {
-        echo -e "${C_RED}❌ Failed to start WS-to-SSH bridge.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Failed to start WS-to-SSH bridge.${C_RESET}"
         systemctl status tdz-ws-ssh-bridge --no-pager
         return 1
     }
     sleep 1
     if systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        echo -e "${C_GREEN}✅ WS-to-SSH bridge active on 127.0.0.1:${WS_SSH_BRIDGE_PORT}${C_RESET}"
+        echo -e "${C_GREEN}[OK] WS-to-SSH bridge active on 127.0.0.1:${WS_SSH_BRIDGE_PORT}${C_RESET}"
     else
-        echo -e "${C_RED}❌ WS-to-SSH bridge is not active.${C_RESET}"
+        echo -e "${C_RED}[ERROR] WS-to-SSH bridge is not active.${C_RESET}"
         return 1
     fi
 }
@@ -4741,25 +4924,25 @@ configure_edge_stack() {
 
     backup_edge_configs
 
-    echo -e "\n${C_BLUE}📝 Writing internal Nginx config (127.0.0.1:${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT})...${C_RESET}"
+    echo -e "\n${C_BLUE}Writing internal Nginx config (127.0.0.1:${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT})...${C_RESET}"
     write_internal_nginx_config "$server_name"
 
-    echo -e "${C_BLUE}📝 Writing HAProxy edge config (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})...${C_RESET}"
+    echo -e "${C_BLUE}Writing HAProxy edge config (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})...${C_RESET}"
     write_haproxy_edge_config
 
-    echo -e "${C_BLUE}📝 Installing WS-to-SSH bridge (DarkTunnel payload support)...${C_RESET}"
+    echo -e "${C_BLUE}Installing WS-to-SSH bridge (DarkTunnel payload support)...${C_RESET}"
     install_ws_ssh_bridge || return 1
 
-    echo -e "\n${C_BLUE}🧪 Validating Nginx configuration...${C_RESET}"
+    echo -e "\n${C_BLUE}Validating Nginx configuration...${C_RESET}"
     if ! nginx -t >/dev/null 2>&1; then
-        echo -e "${C_RED}❌ Nginx configuration validation failed.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Nginx configuration validation failed.${C_RESET}"
         nginx -t
         return 1
     fi
 
-    echo -e "${C_BLUE}🧪 Validating HAProxy configuration...${C_RESET}"
+    echo -e "${C_BLUE}Validating HAProxy configuration...${C_RESET}"
     if ! haproxy -c -f "$HAPROXY_CONFIG" >/dev/null 2>&1; then
-        echo -e "${C_RED}❌ HAProxy configuration validation failed.${C_RESET}"
+        echo -e "${C_RED}[ERROR] HAProxy configuration validation failed.${C_RESET}"
         haproxy -c -f "$HAPROXY_CONFIG"
         return 1
     fi
@@ -4768,35 +4951,35 @@ configure_edge_stack() {
     systemctl enable nginx >/dev/null 2>&1
     systemctl enable haproxy >/dev/null 2>&1
 
-    echo -e "\n${C_BLUE}▶️ Restarting internal Nginx...${C_RESET}"
+    echo -e "\n${C_BLUE}[INFO] Restarting internal Nginx...${C_RESET}"
     systemctl restart nginx || {
-        echo -e "${C_RED}❌ Nginx failed to restart.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Nginx failed to restart.${C_RESET}"
         systemctl status nginx --no-pager
         return 1
     }
 
-    echo -e "${C_BLUE}▶️ Restarting HAProxy edge...${C_RESET}"
+    echo -e "${C_BLUE}[INFO] Restarting HAProxy edge...${C_RESET}"
     systemctl restart haproxy || {
-        echo -e "${C_RED}❌ HAProxy failed to restart.${C_RESET}"
+        echo -e "${C_RED}[ERROR] HAProxy failed to restart.${C_RESET}"
         systemctl status haproxy --no-pager
         return 1
     }
 
     sleep 2
     if ! systemctl is-active --quiet nginx; then
-        echo -e "${C_RED}❌ Nginx is not active after restart.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Nginx is not active after restart.${C_RESET}"
         systemctl status nginx --no-pager
         return 1
     fi
     if ! systemctl is-active --quiet haproxy; then
-        echo -e "${C_RED}❌ HAProxy is not active after restart.${C_RESET}"
+        echo -e "${C_RED}[ERROR] HAProxy is not active after restart.${C_RESET}"
         systemctl status haproxy --no-pager
         return 1
     fi
 
     save_edge_ports_info
     save_edge_port_settings || {
-        echo -e "${C_RED}❌ Could not save the public edge port settings.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Could not save the public edge port settings.${C_RESET}"
         return 1
     }
     return 0
@@ -4811,11 +4994,11 @@ tdz_tcp_port_in_use() {
 validate_edge_public_port() {
     local port="$1" label="$2"
     if ! tdz_is_valid_port_number "$port"; then
-        echo -e "${C_RED}❌ ${label} must be a number from 1 to 65535.${C_RESET}"
+        echo -e "${C_RED}[ERROR] ${label} must be a number from 1 to 65535.${C_RESET}"
         return 1
     fi
     if tdz_is_reserved_edge_port "$port"; then
-        echo -e "${C_RED}❌ Port ${port} is reserved by an internal TDZ service.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Port ${port} is reserved by an internal TDZ service.${C_RESET}"
         return 1
     fi
     return 0
@@ -4869,12 +5052,12 @@ apply_edge_public_ports() {
     validate_edge_public_port "$new_http" "HTTP/WS port" || return 1
     validate_edge_public_port "$new_tls" "TLS/SSL port" || return 1
     if [[ "$new_http" == "$new_tls" ]]; then
-        echo -e "${C_RED}❌ HTTP/WS and TLS/SSL must use different ports.${C_RESET}"
+        echo -e "${C_RED}[ERROR] HTTP/WS and TLS/SSL must use different ports.${C_RESET}"
         return 1
     fi
 
     if [[ "$new_http" == "$old_http" && "$new_tls" == "$old_tls" && "$force_apply" != true ]]; then
-        echo -e "${C_YELLOW}ℹ️ Those ports are already selected.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] Those ports are already selected.${C_RESET}"
         return 0
     fi
 
@@ -4891,7 +5074,7 @@ apply_edge_public_ports() {
 
     if [[ "$haproxy_was_active" == true || "$nginx_was_active" == true ]]; then
         if [[ "$stack_ready" != true ]]; then
-            echo -e "${C_RED}❌ The running edge stack is incomplete, so its ports cannot be changed safely.${C_RESET}"
+            echo -e "${C_RED}[ERROR] The running edge stack is incomplete, so its ports cannot be changed safely.${C_RESET}"
             echo -e "${C_DIM}Repair or reinstall the HAProxy edge stack first.${C_RESET}"
             return 1
         fi
@@ -4902,12 +5085,12 @@ apply_edge_public_ports() {
         [[ -f "$NGINX_PORTS_FILE" ]] && cp -af "$NGINX_PORTS_FILE" "$rollback_dir/nginx_ports.conf"
 
         if [[ "$new_http" != "$old_http" ]] && tdz_tcp_port_in_use "$new_http"; then
-            echo -e "${C_RED}❌ Port ${new_http} is already in use. No changes were applied.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Port ${new_http} is already in use. No changes were applied.${C_RESET}"
             rm -rf "$rollback_dir"
             return 1
         fi
         if [[ "$new_tls" != "$old_tls" ]] && tdz_tcp_port_in_use "$new_tls"; then
-            echo -e "${C_RED}❌ Port ${new_tls} is already in use. No changes were applied.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Port ${new_tls} is already in use. No changes were applied.${C_RESET}"
             rm -rf "$rollback_dir"
             return 1
         fi
@@ -4924,7 +5107,7 @@ apply_edge_public_ports() {
         [[ -z "$server_name" ]] && server_name="_"
 
         if ! configure_edge_stack "$server_name"; then
-            echo -e "${C_RED}❌ The new configuration failed. Restoring the previous working ports...${C_RESET}"
+            echo -e "${C_RED}[ERROR] The new configuration failed. Restoring the previous working ports...${C_RESET}"
             EDGE_PUBLIC_HTTP_PORT="$old_http"
             EDGE_PUBLIC_TLS_PORT="$old_tls"
             restore_edge_stack_after_port_failure "$rollback_dir" \
@@ -4934,17 +5117,17 @@ apply_edge_public_ports() {
         fi
 
         rm -rf "$rollback_dir"
-        echo -e "${C_GREEN}✅ Public ports changed and the edge stack restarted successfully.${C_RESET}"
+        echo -e "${C_GREEN}[OK] Public ports changed and the edge stack restarted successfully.${C_RESET}"
     else
         EDGE_PUBLIC_HTTP_PORT="$new_http"
         EDGE_PUBLIC_TLS_PORT="$new_tls"
         if ! save_edge_port_settings; then
             EDGE_PUBLIC_HTTP_PORT="$old_http"
             EDGE_PUBLIC_TLS_PORT="$old_tls"
-            echo -e "${C_RED}❌ Could not save the new public ports.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Could not save the new public ports.${C_RESET}"
             return 1
         fi
-        echo -e "${C_GREEN}✅ Public ports saved. They will be used when the edge stack is installed or reconfigured.${C_RESET}"
+        echo -e "${C_GREEN}[OK] Public ports saved. They will be used when the edge stack is installed or reconfigured.${C_RESET}"
     fi
 
     echo -e "   • HTTP/WS: ${C_YELLOW}${EDGE_PUBLIC_HTTP_PORT}${C_RESET}"
@@ -4976,11 +5159,11 @@ edge_public_port_menu() {
 
         local new_http="$EDGE_PUBLIC_HTTP_PORT" new_tls="$EDGE_PUBLIC_TLS_PORT" force_apply=false
         case "$port_choice" in
-            1) read -r -p "New HTTP/WS port: " new_http ;;
-            2) read -r -p "New TLS/SSL port: " new_tls ;;
+            1) read -r -p "  New HTTP/WS port: " new_http ;;
+            2) read -r -p "  New TLS/SSL port: " new_tls ;;
             3)
-                read -r -p "New HTTP/WS port: " new_http
-                read -r -p "New TLS/SSL port: " new_tls
+                read -r -p "  New HTTP/WS port: " new_http
+                read -r -p "  New TLS/SSL port: " new_tls
                 ;;
             4)
                 new_http="$DEFAULT_EDGE_PUBLIC_HTTP_PORT"
@@ -4994,14 +5177,14 @@ edge_public_port_menu() {
         validate_edge_public_port "$new_http" "HTTP/WS port" || { press_enter; continue; }
         validate_edge_public_port "$new_tls" "TLS/SSL port" || { press_enter; continue; }
         if [[ "$new_http" == "$new_tls" ]]; then
-            echo -e "${C_RED}❌ HTTP/WS and TLS/SSL must use different ports.${C_RESET}"
+            echo -e "${C_RED}[ERROR] HTTP/WS and TLS/SSL must use different ports.${C_RESET}"
             press_enter
             continue
         fi
 
         echo -e "\n${C_YELLOW}New public ports: HTTP/WS ${new_http}, TLS/SSL ${new_tls}.${C_RESET}"
         echo -e "${C_DIM}If the edge stack is running, active connections will briefly disconnect during restart.${C_RESET}"
-        read -r -p "Apply this configuration? (y/n): " confirm
+        read -r -p "  Apply this configuration? (y/n): " confirm
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
             apply_edge_public_ports "$new_http" "$new_tls" "$force_apply"
         else
@@ -5013,17 +5196,18 @@ edge_public_port_menu() {
 
 install_ssl_tunnel() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing HAProxy Edge Stack (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} -> ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}) ---${C_RESET}"
+    tdz_screen_title "INSTALL HAPROXY EDGE STACK" \
+        "Public ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} → Nginx ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
     echo -e "\n${C_CYAN}This installer will configure:${C_RESET}"
     echo -e "   • HAProxy on ${C_WHITE}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
     echo -e "   • Internal Nginx on ${C_WHITE}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
     echo -e "   • Loopback SSL decryptor on ${C_WHITE}${HAPROXY_INTERNAL_DECRYPT_PORT}${C_RESET}"
 
     if [ -f "$HAPROXY_CONFIG" ] || [ -f "$NGINX_CONFIG_FILE" ]; then
-        echo -e "\n${C_YELLOW}⚠️ Existing HAProxy/Nginx configs will be replaced with the TDZ SSH TUNNEL edge layout.${C_RESET}"
-        read -p "👉 Continue with the replacement? (y/n): " confirm_replace
+        echo -e "\n${C_YELLOW}[WARNING] Existing HAProxy/Nginx configs will be replaced with the TDZ SSH TUNNEL edge layout.${C_RESET}"
+        read -p "  Continue with the replacement? (y/n): " confirm_replace
         if [[ "$confirm_replace" != "y" && "$confirm_replace" != "Y" ]]; then
-            echo -e "${C_RED}❌ Installation cancelled.${C_RESET}"
+            tdz_message CANCELLED "Installation cancelled."
             return
         fi
     fi
@@ -5054,18 +5238,18 @@ install_ssl_tunnel() {
 
     configure_edge_stack "$server_name" || return
 
-    echo -e "\n${C_GREEN}✅ SUCCESS: HAProxy edge stack is active.${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] HAProxy edge stack is active.${C_RESET}"
     echo -e "   • Public edge ports: ${C_YELLOW}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
     echo -e "   • Internal Nginx ports: ${C_YELLOW}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
     echo -e "   • Shared certificate: ${C_YELLOW}${EDGE_CERT_MODE:-unknown}${C_RESET}"
 }
 
 uninstall_ssl_tunnel() {
-    echo -e "\n${C_BOLD}${C_PURPLE}--- 🗑️ Uninstalling HAProxy Edge Stack ---${C_RESET}"
+    tdz_screen_title "UNINSTALL HAPROXY EDGE STACK"
     if ! command -v haproxy &> /dev/null; then
-        echo -e "${C_YELLOW}ℹ️ HAProxy is not installed, skipping service removal.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] HAProxy is not installed, skipping service removal.${C_RESET}"
     else
-        echo -e "${C_GREEN}🛑 Stopping and disabling HAProxy...${C_RESET}"
+        echo -e "${C_GREEN}Stopping and disabling HAProxy...${C_RESET}"
         systemctl stop haproxy >/dev/null 2>&1
         systemctl disable haproxy >/dev/null 2>&1
     fi
@@ -5086,23 +5270,23 @@ EOF
         delete_cert="y"
     elif [ -f "$TDZ_SSL_CERT_FILE" ] || [ -f "$SSL_CERT_CHAIN_FILE" ] || [ -f "$SSL_CERT_KEY_FILE" ]; then
         if systemctl is-active --quiet nginx; then
-            echo -e "${C_YELLOW}⚠️ The shared certificate is also used by the internal Nginx proxy.${C_RESET}"
+            echo -e "${C_YELLOW}[WARNING] The shared certificate is also used by the internal Nginx proxy.${C_RESET}"
         fi
-        read -p "👉 Delete the shared TLS certificate too? (y/n): " delete_cert
+        read -p "  Delete the shared TLS certificate too? (y/n): " delete_cert
     fi
 
     if [[ "$delete_cert" == "y" || "$delete_cert" == "Y" ]]; then
         if systemctl is-active --quiet nginx; then
-            echo -e "${C_GREEN}🛑 Stopping Nginx because the shared certificate is being removed...${C_RESET}"
+            echo -e "${C_GREEN}Stopping Nginx because the shared certificate is being removed...${C_RESET}"
             systemctl stop nginx >/dev/null 2>&1
         fi
         rm -f "$TDZ_SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
         rm -f "$NGINX_PORTS_FILE"
-        echo -e "${C_GREEN}🗑️ Shared certificate files removed.${C_RESET}"
+        echo -e "${C_GREEN}Shared certificate files removed.${C_RESET}"
     fi
 
-    echo -e "${C_GREEN}✅ HAProxy edge stack has been removed.${C_RESET}"
-    echo -e "${C_GREEN}🛑 Stopping WS-to-SSH bridge...${C_RESET}"
+    echo -e "${C_GREEN}[OK] HAProxy edge stack has been removed.${C_RESET}"
+    echo -e "${C_GREEN}Stopping WS-to-SSH bridge...${C_RESET}"
     uninstall_ws_ssh_bridge
     if systemctl is-active --quiet nginx; then
         echo -e "${C_DIM}The internal Nginx proxy is still installed on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
@@ -5112,77 +5296,75 @@ EOF
 show_dnstt_details() {
     if [ -f "$DNSTT_CONFIG_FILE" ]; then
         source "$DNSTT_CONFIG_FILE"
-        echo -e "\n${C_GREEN}=====================================================${C_RESET}"
-        echo -e "${C_GREEN}            📡 DNSTT Connection Details             ${C_RESET}"
-        echo -e "${C_GREEN}=====================================================${C_RESET}"
-        echo -e "\n${C_WHITE}Your connection details:${C_RESET}"
-        echo -e "  - ${C_CYAN}Tunnel Domain:${C_RESET} ${C_YELLOW}$TUNNEL_DOMAIN${C_RESET}"
-        echo -e "  - ${C_CYAN}Public Key:${C_RESET}    ${C_YELLOW}$PUBLIC_KEY${C_RESET}"
+        echo
+        tdz_section "DNSTT CONNECTION DETAILS"
+        tdz_detail "Tunnel Domain" "$TUNNEL_DOMAIN" "$C_YELLOW"
+        tdz_detail "Public Key" "$PUBLIC_KEY" "$C_YELLOW"
         if [[ -n "$FORWARD_DESC" ]]; then
-            echo -e "  - ${C_CYAN}Forwarding To:${C_RESET} ${C_YELLOW}$FORWARD_DESC${C_RESET}"
+            tdz_detail "Forwarding To" "$FORWARD_DESC"
         else
-            echo -e "  - ${C_CYAN}Forwarding To:${C_RESET} ${C_YELLOW}Unknown (config_missing)${C_RESET}"
+            tdz_detail "Forwarding To" "Unknown (config missing)" "$C_YELLOW"
         fi
         if [[ -n "$MTU_VALUE" ]]; then
-            echo -e "  - ${C_CYAN}MTU Value:${C_RESET}     ${C_YELLOW}$MTU_VALUE${C_RESET}"
+            tdz_detail "MTU" "$MTU_VALUE" "$C_YELLOW"
         fi
         if [[ "$DNSTT_RECORDS_MANAGED" == "false" && -n "$NS_DOMAIN" ]]; then
-             echo -e "  - ${C_CYAN}NS Record:${C_RESET}     ${C_YELLOW}$NS_DOMAIN${C_RESET}"
+            tdz_detail "NS Record" "$NS_DOMAIN" "$C_YELLOW"
         fi
         
         if [[ "$FORWARD_DESC" == *"V2Ray"* ]]; then
-             echo -e "  - ${C_CYAN}Action Required:${C_RESET} ${C_YELLOW}Ensure a V2Ray service (vless/vmess/trojan) listens on port 8787 (no TLS)${C_RESET}"
+            tdz_detail "Action Required" "Run V2Ray (VLESS/VMess/Trojan) on port 8787 without TLS" "$C_YELLOW"
         elif [[ "$FORWARD_DESC" == *"SSH"* ]]; then
-             echo -e "  - ${C_CYAN}Action Required:${C_RESET} ${C_YELLOW}Ensure your SSH client is configured to use the DNS tunnel.${C_RESET}"
+            tdz_detail "Action Required" "Configure the SSH client to use this DNS tunnel" "$C_YELLOW"
         fi
         
         echo -e "\n${C_DIM}Use these details in your client configuration.${C_RESET}"
     else
-        echo -e "\n${C_YELLOW}ℹ️ DNSTT configuration file not found. Details are unavailable.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] DNSTT configuration file not found. Details are unavailable.${C_RESET}"
     fi
 }
 
 install_dnstt() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📡 DNSTT (DNS Tunnel) Management ---${C_RESET}"
+    tdz_screen_title "INSTALL DNSTT" "Configure DNS tunnelling on UDP port 53."
     if [ -f "$DNSTT_SERVICE_FILE" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ DNSTT is already installed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] DNSTT is already installed.${C_RESET}"
         show_dnstt_details
         return
     fi
     
     # --- FIX: Force release of Port 53 / Disable systemd-resolved ---
-    echo -e "${C_GREEN}⚙️ Forcing release of Port 53 (stopping systemd-resolved)...${C_RESET}"
+    echo -e "${C_GREEN}Forcing release of Port 53 (stopping systemd-resolved)...${C_RESET}"
     systemctl stop systemd-resolved >/dev/null 2>&1
     systemctl disable systemd-resolved >/dev/null 2>&1
     rm -f /etc/resolv.conf
     echo "nameserver 8.8.8.8" | tee /etc/resolv.conf > /dev/null
     # ----------------------------------------------------------------
     
-    echo -e "\n${C_BLUE}🔎 Checking if port 53 (UDP) is available...${C_RESET}"
+    echo -e "\n${C_BLUE}Checking if port 53 (UDP) is available...${C_RESET}"
     if ss -lunp | grep -q ':53\s'; then
         if [[ $(ps -p $(ss -lunp | grep ':53\s' | grep -oP 'pid=\K[0-9]+') -o comm=) == "systemd-resolve" ]]; then
-            echo -e "${C_YELLOW}⚠️ Warning: Port 53 is in use by 'systemd-resolved'.${C_RESET}"
+            echo -e "${C_YELLOW}[WARNING] Port 53 is in use by 'systemd-resolved'.${C_RESET}"
             echo -e "${C_YELLOW}This is the system's DNS stub resolver. It must be disabled to run DNSTT.${C_RESET}"
-            read -p "👉 Allow the script to automatically disable it and reconfigure DNS? (y/n): " resolve_confirm
+            read -p "  Allow the script to automatically disable it and reconfigure DNS? (y/n): " resolve_confirm
             if [[ "$resolve_confirm" == "y" || "$resolve_confirm" == "Y" ]]; then
-                echo -e "${C_GREEN}⚙️ Stopping and disabling systemd-resolved to free port 53...${C_RESET}"
+                echo -e "${C_GREEN}Stopping and disabling systemd-resolved to free port 53...${C_RESET}"
                 systemctl stop systemd-resolved
                 systemctl disable systemd-resolved
                 chattr -i /etc/resolv.conf &>/dev/null
                 rm -f /etc/resolv.conf
                 echo "nameserver 8.8.8.8" > /etc/resolv.conf
                 chattr +i /etc/resolv.conf
-                echo -e "${C_GREEN}✅ Port 53 has been freed and DNS set to 8.8.8.8.${C_RESET}"
+                echo -e "${C_GREEN}[OK] Port 53 has been freed and DNS set to 8.8.8.8.${C_RESET}"
             else
-                echo -e "${C_RED}❌ Cannot proceed without freeing port 53. Aborting.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Cannot proceed without freeing port 53. Aborting.${C_RESET}"
                 return
             fi
         else
             check_and_free_ports "53" || return
         fi
     else
-        echo -e "${C_GREEN}✅ Port 53 (UDP) is free to use.${C_RESET}"
+        echo -e "${C_GREEN}[OK] Port 53 (UDP) is free to use.${C_RESET}"
     fi
 
     check_and_open_firewall_port 53 udp || return
@@ -5204,16 +5386,16 @@ install_dnstt() {
     if [[ "$fwd_choice" == "1" ]]; then
         forward_port="22"
         forward_desc="SSH (port 22)"
-        echo -e "${C_GREEN}ℹ️ DNSTT will forward to SSH on 127.0.0.1:22.${C_RESET}"
+        echo -e "${C_GREEN}[INFO] DNSTT will forward to SSH on 127.0.0.1:22.${C_RESET}"
         
 
         
     elif [[ "$fwd_choice" == "2" ]]; then
         forward_port="8787"
         forward_desc="V2Ray (port 8787)"
-        echo -e "${C_GREEN}ℹ️ DNSTT will forward to V2Ray on 127.0.0.1:8787.${C_RESET}"
+        echo -e "${C_GREEN}[INFO] DNSTT will forward to V2Ray on 127.0.0.1:8787.${C_RESET}"
     else
-        echo -e "${C_RED}❌ Invalid choice. Aborting.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Invalid choice. Aborting.${C_RESET}"
         return
     fi
     local FORWARD_TARGET="127.0.0.1:$forward_port"
@@ -5222,57 +5404,57 @@ install_dnstt() {
     local TUNNEL_DOMAIN=""
     local DNSTT_RECORDS_MANAGED="false"
 
-    echo -e "\n${C_BLUE}ℹ️ DNSTT requires two DNS records that you must create yourself:${C_RESET}"
+    echo -e "\n${C_BLUE}[INFO] DNSTT requires two DNS records that you must create yourself:${C_RESET}"
     echo -e "   ${C_CYAN}1.${C_RESET} An NS record pointing a tunnel subdomain to a nameserver subdomain"
     echo -e "   ${C_CYAN}2.${C_RESET} An A record pointing the nameserver subdomain to this server's IP"
     echo -e "   ${C_DIM}(The script will not create these for you — set them up at your DNS provider.)${C_RESET}"
     echo
-    read -p "👉 Enter your full nameserver domain (e.g., ns1.yourdomain.com): " NS_DOMAIN
-    if [[ -z "$NS_DOMAIN" ]]; then echo -e "\n${C_RED}❌ Nameserver domain cannot be empty. Aborting.${C_RESET}"; return; fi
-    read -p "👉 Enter your full tunnel domain (e.g., tun.yourdomain.com): " TUNNEL_DOMAIN
-    if [[ -z "$TUNNEL_DOMAIN" ]]; then echo -e "\n${C_RED}❌ Tunnel domain cannot be empty. Aborting.${C_RESET}"; return; fi
+    read -p "  Enter your full nameserver domain (e.g., ns1.yourdomain.com): " NS_DOMAIN
+    if [[ -z "$NS_DOMAIN" ]]; then echo -e "\n${C_RED}[ERROR] Nameserver domain cannot be empty. Aborting.${C_RESET}"; return; fi
+    read -p "  Enter your full tunnel domain (e.g., tun.yourdomain.com): " TUNNEL_DOMAIN
+    if [[ -z "$TUNNEL_DOMAIN" ]]; then echo -e "\n${C_RED}[ERROR] Tunnel domain cannot be empty. Aborting.${C_RESET}"; return; fi
 
-    read -p "👉 Enter MTU value (e.g., 512, 1200) or press [Enter] for default: " mtu_value
+    read -p "  Enter MTU value (e.g., 512, 1200) or press [Enter] for default: " mtu_value
     local mtu_string=""
     if [[ "$mtu_value" =~ ^[0-9]+$ ]]; then
         mtu_string=" -mtu $mtu_value"
-        echo -e "${C_GREEN}ℹ️ Using MTU: $mtu_value${C_RESET}"
+        echo -e "${C_GREEN}[INFO] Using MTU: $mtu_value${C_RESET}"
     else
         mtu_value=""
-        echo -e "${C_YELLOW}ℹ️ Using default MTU.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] Using default MTU.${C_RESET}"
     fi
 
-    echo -e "\n${C_BLUE}📥 Downloading pre-compiled DNSTT server binary...${C_RESET}"
+    echo -e "\n${C_BLUE}Downloading pre-compiled DNSTT server binary...${C_RESET}"
     local arch
     arch=$(uname -m)
     local binary_url=""
     if [[ "$arch" == "x86_64" ]]; then
         binary_url="https://dnstt.network/dnstt-server-linux-amd64"
-        echo -e "${C_BLUE}ℹ️ Detected x86_64 (amd64) architecture.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Detected x86_64 (amd64) architecture.${C_RESET}"
     elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
         binary_url="https://dnstt.network/dnstt-server-linux-arm64"
-        echo -e "${C_BLUE}ℹ️ Detected ARM64 architecture.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Detected ARM64 architecture.${C_RESET}"
     else
-        echo -e "\n${C_RED}❌ Unsupported architecture: $arch. Cannot install DNSTT.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Unsupported architecture: $arch. Cannot install DNSTT.${C_RESET}"
         return
     fi
     
     curl -sL "$binary_url" -o "$DNSTT_BINARY"
     if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}❌ Failed to download the DNSTT binary.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Failed to download the DNSTT binary.${C_RESET}"
         return
     fi
     chmod +x "$DNSTT_BINARY"
 
-    echo -e "${C_BLUE}🔐 Generating cryptographic keys...${C_RESET}"
+    echo -e "${C_BLUE}Generating cryptographic keys...${C_RESET}"
     mkdir -p "$DNSTT_KEYS_DIR"
     "$DNSTT_BINARY" -gen-key -privkey-file "$DNSTT_KEYS_DIR/server.key" -pubkey-file "$DNSTT_KEYS_DIR/server.pub"
-    if [[ ! -f "$DNSTT_KEYS_DIR/server.key" ]]; then echo -e "${C_RED}❌ Failed to generate DNSTT keys.${C_RESET}"; return; fi
+    if [[ ! -f "$DNSTT_KEYS_DIR/server.key" ]]; then echo -e "${C_RED}[ERROR] Failed to generate DNSTT keys.${C_RESET}"; return; fi
     
     local PUBLIC_KEY
     PUBLIC_KEY=$(cat "$DNSTT_KEYS_DIR/server.pub")
     
-    echo -e "\n${C_BLUE}📝 Creating systemd service...${C_RESET}"
+    echo -e "\n${C_BLUE}Creating systemd service...${C_RESET}"
     cat > "$DNSTT_SERVICE_FILE" <<-EOF
 [Unit]
 Description=DNSTT (DNS Tunnel) Server for $forward_desc
@@ -5286,7 +5468,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-    echo -e "\n${C_BLUE}💾 Saving configuration and starting service...${C_RESET}"
+    echo -e "\n${C_BLUE}Saving configuration and starting service...${C_RESET}"
     cat > "$DNSTT_CONFIG_FILE" <<-EOF
 NS_SUBDOMAIN="$NS_SUBDOMAIN"
 TUNNEL_SUBDOMAIN="$TUNNEL_SUBDOMAIN"
@@ -5303,68 +5485,68 @@ EOF
     systemctl start dnstt.service
     sleep 2
     if systemctl is-active --quiet dnstt.service; then
-        echo -e "\n${C_GREEN}✅ SUCCESS: DNSTT has been installed and started!${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] DNSTT has been installed and started!${C_RESET}"
         show_dnstt_details
     else
-        echo -e "\n${C_RED}❌ ERROR: DNSTT service failed to start.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] DNSTT service failed to start.${C_RESET}"
         journalctl -u dnstt.service -n 15 --no-pager
     fi
 }
 
 uninstall_dnstt() {
-    echo -e "\n${C_BOLD}${C_PURPLE}--- 🗑️ Uninstalling DNSTT ---${C_RESET}"
+    tdz_screen_title "UNINSTALL DNSTT"
     if [ ! -f "$DNSTT_SERVICE_FILE" ]; then
-        echo -e "${C_YELLOW}ℹ️ DNSTT does not appear to be installed, skipping.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] DNSTT does not appear to be installed, skipping.${C_RESET}"
         return
     fi
     local confirm="y"
     if [[ "$UNINSTALL_MODE" != "silent" ]]; then
-        read -p "👉 Are you sure you want to uninstall DNSTT? (y/n): " confirm
+        read -p "  Are you sure you want to uninstall DNSTT? (y/n): " confirm
     fi
     if [[ "$confirm" != "y" ]]; then
-        echo -e "\n${C_YELLOW}❌ Uninstallation cancelled.${C_RESET}"
+        tdz_message CANCELLED "Uninstallation cancelled."
         return
     fi
-    echo -e "${C_BLUE}🛑 Stopping and disabling DNSTT service...${C_RESET}"
+    echo -e "${C_BLUE}Stopping and disabling DNSTT service...${C_RESET}"
     systemctl stop dnstt.service > /dev/null 2>&1
     systemctl disable dnstt.service > /dev/null 2>&1
     if [ -f "$DNSTT_CONFIG_FILE" ]; then
         source "$DNSTT_CONFIG_FILE"
-        echo -e "${C_YELLOW}⚠️ DNS records (NS + A) for $NS_DOMAIN / $TUNNEL_DOMAIN were configured manually.${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] DNS records (NS + A) for $NS_DOMAIN / $TUNNEL_DOMAIN were configured manually.${C_RESET}"
         echo -e "${C_YELLOW}   Please delete them at your DNS provider if no longer needed.${C_RESET}"
     fi
-    echo -e "${C_BLUE}🗑️ Removing service files and binaries...${C_RESET}"
+    echo -e "${C_BLUE}Removing service files and binaries...${C_RESET}"
     rm -f "$DNSTT_SERVICE_FILE"
     rm -f "$DNSTT_BINARY"
     rm -rf "$DNSTT_KEYS_DIR"
     rm -f "$DNSTT_CONFIG_FILE"
     systemctl daemon-reload
     
-    echo -e "${C_YELLOW}ℹ️ Making /etc/resolv.conf writable again...${C_RESET}"
+    echo -e "${C_YELLOW}[INFO] Making /etc/resolv.conf writable again...${C_RESET}"
     chattr -i /etc/resolv.conf &>/dev/null
 
-    echo -e "\n${C_GREEN}✅ DNSTT has been successfully uninstalled.${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] DNSTT has been successfully uninstalled.${C_RESET}"
 }
 
 install_tdz_proxy() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🦅 Installing TDZ Proxy (Websockets/Socks) ---${C_RESET}"
+    tdz_screen_title "INSTALL TDZ PROXY" "Install the WebSocket and SOCKS proxy service."
     
     if [ -f "$TDZPROXY_SERVICE_FILE" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ TDZ Proxy is already installed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] TDZ Proxy is already installed.${C_RESET}"
         if [ -f "$TDZPROXY_CONFIG_FILE" ]; then
             source "$TDZPROXY_CONFIG_FILE"
             echo -e "   It is configured to run on port(s): ${C_YELLOW}$PORTS${C_RESET}"
             echo -e "   Installed Version: ${C_YELLOW}${INSTALLED_VERSION:-Unknown}${C_RESET}"
         fi
-        read -p "👉 Do you want to reinstall/update? (y/n): " confirm_reinstall
+        read -p "  Do you want to reinstall/update? (y/n): " confirm_reinstall
         if [[ "$confirm_reinstall" != "y" ]]; then return; fi
     fi
 
-    echo -e "\n${C_BLUE}🌐 Fetching available versions from GitHub...${C_RESET}"
+    echo -e "\n${C_BLUE}Fetching available versions from GitHub...${C_RESET}"
     local releases_json=$(curl -s "https://api.github.com/repos/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/releases")
     if [[ -z "$releases_json" || "$releases_json" == "[]" ]]; then
-        echo -e "${C_RED}❌ Error: Could not fetch releases. Check internet or API limits.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Could not fetch releases. Check internet or API limits.${C_RESET}"
         return
     fi
 
@@ -5372,7 +5554,7 @@ install_tdz_proxy() {
     mapfile -t versions < <(echo "$releases_json" | jq -r '.[].tag_name')
     
     if [ ${#versions[@]} -eq 0 ]; then
-        echo -e "${C_RED}❌ No releases found in the repository.${C_RESET}"
+        echo -e "${C_RED}[ERROR] No releases found in the repository.${C_RESET}"
         return
     fi
 
@@ -5401,50 +5583,50 @@ install_tdz_proxy() {
             SELECTED_VERSION="${versions[$((choice-1))]}"
             break
         else
-            echo -e "${C_RED}❌ Invalid selection.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Invalid selection.${C_RESET}"
         fi
     done
 
     local ports
-    read -p "👉 Enter port(s) for TDZ Proxy (e.g., 8080 or 8080 8888) [8080]: " ports
+    read -p "  Enter port(s) for TDZ Proxy (e.g., 8080 or 8080 8888) [8080]: " ports
     ports=${ports:-8080}
 
     local port_array=($ports)
     for port in "${port_array[@]}"; do
         if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-            echo -e "\n${C_RED}❌ Invalid port number: $port. Aborting.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Invalid port number: $port. Aborting.${C_RESET}"
             return
         fi
         check_and_free_ports "$port" || return
         check_and_open_firewall_port "$port" tcp || return
     done
 
-    echo -e "\n${C_GREEN}⚙️ Detecting system architecture...${C_RESET}"
+    echo -e "\n${C_GREEN}Detecting system architecture...${C_RESET}"
     local arch=$(uname -m)
     local binary_name=""
     if [[ "$arch" == "x86_64" ]]; then
         binary_name="tdzproxy"
-        echo -e "${C_BLUE}ℹ️ Detected x86_64 (amd64) architecture.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Detected x86_64 (amd64) architecture.${C_RESET}"
     elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
         binary_name="tdzproxyarm"
-        echo -e "${C_BLUE}ℹ️ Detected ARM64 architecture.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Detected ARM64 architecture.${C_RESET}"
     else
-        echo -e "\n${C_RED}❌ Unsupported architecture: $arch. Cannot install TDZ Proxy.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Unsupported architecture: $arch. Cannot install TDZ Proxy.${C_RESET}"
         return
     fi
     
     # Construct download URL based on selected version
     local download_url="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/releases/download/$SELECTED_VERSION/$binary_name"
 
-    echo -e "\n${C_GREEN}📥 Downloading TDZ Proxy $SELECTED_VERSION ($binary_name)...${C_RESET}"
+    echo -e "\n${C_GREEN}Downloading TDZ Proxy $SELECTED_VERSION ($binary_name)...${C_RESET}"
     wget -q --show-progress -O "$TDZPROXY_BINARY" "$download_url"
     if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}❌ Failed to download the binary. Please ensure version $SELECTED_VERSION has asset '$binary_name'.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Failed to download the binary. Please ensure version $SELECTED_VERSION has asset '$binary_name'.${C_RESET}"
         return
     fi
     chmod +x "$TDZPROXY_BINARY"
 
-    echo -e "\n${C_GREEN}📝 Creating systemd service file...${C_RESET}"
+    echo -e "\n${C_GREEN}Creating systemd service file...${C_RESET}"
     cat > "$TDZPROXY_SERVICE_FILE" <<EOF
 [Unit]
 Description=TDZ Proxy ($SELECTED_VERSION)
@@ -5461,53 +5643,53 @@ RestartSec=2s
 WantedBy=default.target
 EOF
 
-    echo -e "\n${C_GREEN}💾 Saving configuration...${C_RESET}"
+    echo -e "\n${C_GREEN}Saving configuration...${C_RESET}"
     cat > "$TDZPROXY_CONFIG_FILE" <<EOF
 PORTS="$ports"
 INSTALLED_VERSION="$SELECTED_VERSION"
 EOF
 
-    echo -e "\n${C_GREEN}▶️ Enabling and starting TDZ Proxy service...${C_RESET}"
+    echo -e "\n${C_BLUE}[INFO] Enabling and starting TDZ Proxy service...${C_RESET}"
     systemctl daemon-reload
     systemctl enable tdzproxy.service
     systemctl restart tdzproxy.service
     sleep 2
     
     if systemctl is-active --quiet tdzproxy; then
-        echo -e "\n${C_GREEN}✅ SUCCESS: TDZ Proxy $SELECTED_VERSION is installed and active.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] TDZ Proxy $SELECTED_VERSION is installed and active.${C_RESET}"
         echo -e "   Listening on port(s): ${C_YELLOW}$ports${C_RESET}"
     else
-        echo -e "\n${C_RED}❌ ERROR: TDZ Proxy service failed to start.${C_RESET}"
-        echo -e "${C_YELLOW}ℹ️ Displaying last 15 lines of the service log for diagnostics:${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] TDZ Proxy service failed to start.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] Displaying last 15 lines of the service log for diagnostics:${C_RESET}"
         journalctl -u tdzproxy.service -n 15 --no-pager
     fi
 }
 
 uninstall_tdz_proxy() {
-    echo -e "\n${C_BOLD}${C_PURPLE}--- 🗑️ Uninstalling TDZ Proxy ---${C_RESET}"
+    tdz_screen_title "UNINSTALL TDZ PROXY"
     if [ ! -f "$TDZPROXY_SERVICE_FILE" ]; then
-        echo -e "${C_YELLOW}ℹ️ TDZ Proxy is not installed, skipping.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] TDZ Proxy is not installed, skipping.${C_RESET}"
         return
     fi
-    echo -e "${C_GREEN}🛑 Stopping and disabling TDZ Proxy service...${C_RESET}"
+    echo -e "${C_GREEN}Stopping and disabling TDZ Proxy service...${C_RESET}"
     systemctl stop tdzproxy.service >/dev/null 2>&1
     systemctl disable tdzproxy.service >/dev/null 2>&1
-    echo -e "${C_GREEN}🗑️ Removing service file...${C_RESET}"
+    echo -e "${C_GREEN}Removing service file...${C_RESET}"
     rm -f "$TDZPROXY_SERVICE_FILE"
     systemctl daemon-reload
-    echo -e "${C_GREEN}🗑️ Removing binary and config files...${C_RESET}"
+    echo -e "${C_GREEN}Removing binary and config files...${C_RESET}"
     rm -f "$TDZPROXY_BINARY"
     rm -f "$TDZPROXY_CONFIG_FILE"
-    echo -e "${C_GREEN}✅ TDZ Proxy has been uninstalled successfully.${C_RESET}"
+    echo -e "${C_GREEN}[OK] TDZ Proxy has been uninstalled successfully.${C_RESET}"
 }
 
 # --- ZiVPN Installation Logic ---
 install_zivpn() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing ZiVPN (UDP/VPN) ---${C_RESET}"
+    tdz_screen_title "INSTALL ZIVPN" "Configure the UDP VPN service on port 5667."
     
     if [ -f "$ZIVPN_SERVICE_FILE" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ ZiVPN is already installed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] ZiVPN is already installed.${C_RESET}"
         return
     fi
 
@@ -5515,39 +5697,39 @@ install_zivpn() {
     check_and_open_firewall_port 5667 udp || return
     check_and_open_firewall_port_range "6000:19999" udp || return
 
-    echo -e "\n${C_GREEN}⚙️ Checking system architecture...${C_RESET}"
+    echo -e "\n${C_GREEN}Checking system architecture...${C_RESET}"
     local arch=$(uname -m)
     local zivpn_url=""
     
     if [[ "$arch" == "x86_64" ]]; then
         zivpn_url="https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-amd64"
-        echo -e "${C_BLUE}ℹ️ Detected AMD64/x86_64 architecture.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Detected AMD64/x86_64 architecture.${C_RESET}"
     elif [[ "$arch" == "aarch64" ]]; then
         zivpn_url="https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-arm64"
-        echo -e "${C_BLUE}ℹ️ Detected ARM64 architecture.${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Detected ARM64 architecture.${C_RESET}"
     elif [[ "$arch" == "armv7l" || "$arch" == "arm" ]]; then
          zivpn_url="https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-arm"
-         echo -e "${C_BLUE}ℹ️ Detected ARM architecture.${C_RESET}"
+         echo -e "${C_BLUE}[INFO] Detected ARM architecture.${C_RESET}"
     else
-        echo -e "${C_RED}❌ Unsupported architecture: $arch${C_RESET}"
+        echo -e "${C_RED}[ERROR] Unsupported architecture: $arch${C_RESET}"
         return
     fi
 
-    echo -e "\n${C_GREEN}📦 Downloading ZiVPN binary...${C_RESET}"
+    echo -e "\n${C_GREEN}Downloading ZiVPN binary...${C_RESET}"
     if ! wget -q --show-progress -O "$ZIVPN_BIN" "$zivpn_url"; then
-        echo -e "${C_RED}❌ Download failed. Check internet connection.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Download failed. Check internet connection.${C_RESET}"
         return
     fi
     chmod +x "$ZIVPN_BIN"
 
-    echo -e "\n${C_GREEN}⚙️ Configuring ZIVPN...${C_RESET}"
+    echo -e "\n${C_GREEN}Configuring ZIVPN...${C_RESET}"
     mkdir -p "$ZIVPN_DIR"
     
     # Generate Certificates
-    echo -e "${C_BLUE}🔐 Generating self-signed certificates...${C_RESET}"
+    echo -e "${C_BLUE}Generating self-signed certificates...${C_RESET}"
     if ! command -v openssl &>/dev/null; then
         tdz_apt_install openssl >/dev/null 2>&1 || {
-            echo -e "${C_RED}❌ Failed to install openssl for ZiVPN certificate generation.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Failed to install openssl for ZiVPN certificate generation.${C_RESET}"
             return
         }
     fi
@@ -5557,17 +5739,17 @@ install_zivpn() {
         -keyout "$ZIVPN_KEY_FILE" -out "$ZIVPN_CERT_FILE" 2>/dev/null
 
     if [ ! -f "$ZIVPN_CERT_FILE" ]; then
-        echo -e "${C_RED}❌ Failed to generate certificates.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Failed to generate certificates.${C_RESET}"
         return
     fi
 
     # System Tuning
-    echo -e "${C_BLUE}🔧 Tuning system network parameters...${C_RESET}"
+    echo -e "${C_BLUE}Tuning system network parameters...${C_RESET}"
     sysctl -w net.core.rmem_max=16777216 >/dev/null
     sysctl -w net.core.wmem_max=16777216 >/dev/null
 
     # Create Service
-    echo -e "${C_BLUE}📝 Creating systemd service file...${C_RESET}"
+    echo -e "${C_BLUE}Creating systemd service file...${C_RESET}"
     cat <<EOF > "$ZIVPN_SERVICE_FILE"
 [Unit]
 Description=zivpn VPN Server
@@ -5590,8 +5772,8 @@ WantedBy=multi-user.target
 EOF
 
     # Configure Passwords
-    echo -e "\n${C_YELLOW}🔑 ZiVPN Password Setup${C_RESET}"
-    read -p "👉 Enter passwords separated by commas (e.g., user1,user2) [Default: 'zi']: " input_config
+    echo -e "\n${C_YELLOW}ZiVPN Password Setup${C_RESET}"
+    read -p "  Enter passwords separated by commas (e.g., user1,user2) [Default: 'zi']: " input_config
     
     if [ -n "$input_config" ]; then
         IFS=',' read -r -a config_array <<< "$input_config"
@@ -5616,13 +5798,13 @@ EOF
 }
 EOF
 
-    echo -e "\n${C_GREEN}⚡ Starting ZiVPN Service...${C_RESET}"
+    echo -e "\n${C_GREEN}Starting ZiVPN Service...${C_RESET}"
     systemctl daemon-reload
     systemctl enable zivpn.service
     systemctl start zivpn.service
 
     # Port Forwarding / Firewall
-    echo -e "${C_BLUE}🔥 Configuring Firewall Rules (Redirecting 6000-19999 -> 5667)...${C_RESET}"
+    echo -e "${C_BLUE}Configuring Firewall Rules (Redirecting 6000-19999 -> 5667)...${C_RESET}"
     
     # Determine primary interface
     local iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
@@ -5632,34 +5814,36 @@ EOF
             iptables -t nat -A PREROUTING -i "$iface" -p udp --dport 6000:19999 -j DNAT --to-destination :5667
         # Note: IPTables rules are not persistent by default without iptables-persistent package
     else
-        echo -e "${C_YELLOW}⚠️ Could not detect default interface for IPTables redirection.${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] Could not detect default interface for IPTables redirection.${C_RESET}"
     fi
 
     # Cleanup
     rm -f zi.sh zi2.sh 2>/dev/null
 
     if systemctl is-active --quiet zivpn.service; then
-        echo -e "\n${C_GREEN}✅ ZiVPN Installed Successfully!${C_RESET}"
-        echo -e "   - UDP Port: 5667 (Direct)"
-        echo -e "   - UDP Ports: 6000-19999 (Forwarded)"
+        tdz_message OK "ZiVPN installed and started successfully."
+        echo
+        tdz_section "ZIVPN CONNECTION DETAILS"
+        tdz_detail "Direct UDP Port" "5667"
+        tdz_detail "Forwarded Ports" "6000-19999"
     else
-        echo -e "\n${C_RED}❌ ZiVPN Service failed to start. Check logs: journalctl -u zivpn.service${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] ZiVPN Service failed to start. Check logs: journalctl -u zivpn.service${C_RESET}"
     fi
 }
 
 uninstall_zivpn() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🗑️ Uninstall ZiVPN ---${C_RESET}"
+    tdz_screen_title "UNINSTALL ZIVPN"
     
     if [ ! -f "$ZIVPN_SERVICE_FILE" ] && [ ! -f "$ZIVPN_BIN" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ ZiVPN does not appear to be installed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] ZiVPN does not appear to be installed.${C_RESET}"
         return
     fi
 
-    read -p "👉 Are you sure you want to uninstall ZiVPN? (y/n): " confirm
+    read -p "  Are you sure you want to uninstall ZiVPN? (y/n): " confirm
     if [[ "$confirm" != "y" ]]; then echo -e "${C_YELLOW}Cancelled.${C_RESET}"; return; fi
 
-    echo -e "\n${C_BLUE}🛑 Stopping services...${C_RESET}"
+    echo -e "\n${C_BLUE}Stopping services...${C_RESET}"
     systemctl stop zivpn.service 2>/dev/null
     systemctl disable zivpn.service 2>/dev/null
 
@@ -5669,7 +5853,7 @@ uninstall_zivpn() {
         iptables -t nat -D PREROUTING -i "$iface" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
     fi
     
-    echo -e "${C_BLUE}🗑️ Removing files...${C_RESET}"
+    echo -e "${C_BLUE}Removing files...${C_RESET}"
     rm -f "$ZIVPN_SERVICE_FILE"
     rm -rf "$ZIVPN_DIR"
     rm -f "$ZIVPN_BIN"
@@ -5677,39 +5861,39 @@ uninstall_zivpn() {
     systemctl daemon-reload
     
     # Clean cache (from original uninstall script logic)
-    echo -e "${C_BLUE}🧹 Cleaning memory cache...${C_RESET}"
+    echo -e "${C_BLUE}Cleaning memory cache...${C_RESET}"
     sync; echo 3 > /proc/sys/vm/drop_caches
 
-    echo -e "\n${C_GREEN}✅ ZiVPN Uninstalled Successfully.${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] ZiVPN Uninstalled Successfully.${C_RESET}"
 }
 
 purge_nginx() {
     local mode="$1"
     if [[ "$mode" != "silent" ]]; then
         clear; show_banner
-        echo -e "${C_BOLD}${C_PURPLE}--- 🔥 Purge Internal Nginx Proxy ---${C_RESET}"
+        tdz_screen_title "PURGE INTERNAL NGINX" "Remove Nginx and its TDZ edge configuration." "$C_DANGER"
         if ! command -v nginx &> /dev/null; then
             rm -f "$NGINX_PORTS_FILE"
-            echo -e "\n${C_YELLOW}ℹ️ Nginx is not installed. Nothing to do.${C_RESET}"
+            echo -e "\n${C_YELLOW}[INFO] Nginx is not installed. Nothing to do.${C_RESET}"
             return
         fi
-        echo -e "\n${C_YELLOW}⚠️ This removes the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
+        echo -e "\n${C_YELLOW}[WARNING] This removes the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
         if systemctl is-active --quiet haproxy; then
-            echo -e "${C_YELLOW}⚠️ HAProxy will stay installed, but web payload routing from ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} will stop until you reinstall the stack.${C_RESET}"
+            echo -e "${C_YELLOW}[WARNING] HAProxy will stay installed, but web payload routing from ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} will stop until you reinstall the stack.${C_RESET}"
         fi
-        read -p "👉 Continue and purge Nginx? (y/n): " confirm
+        read -p "  Continue and purge Nginx? (y/n): " confirm
         if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-            echo -e "\n${C_YELLOW}❌ Uninstallation cancelled.${C_RESET}"
+            tdz_message CANCELLED "Uninstallation cancelled."
             return
         fi
     fi
-    echo -e "\n${C_BLUE}🛑 Stopping Nginx service...${C_RESET}"
+    echo -e "\n${C_BLUE}Stopping Nginx service...${C_RESET}"
     systemctl stop nginx >/dev/null 2>&1
     systemctl disable nginx >/dev/null 2>&1
-    echo -e "\n${C_BLUE}🗑️ Purging Nginx packages...${C_RESET}"
+    echo -e "\n${C_BLUE}Purging Nginx packages...${C_RESET}"
     tdz_apt_purge nginx nginx-common >/dev/null 2>&1
     apt-get autoremove -y >/dev/null 2>&1
-    echo -e "\n${C_BLUE}🗑️ Removing leftover files...${C_RESET}"
+    echo -e "\n${C_BLUE}Removing leftover files...${C_RESET}"
     rm -f /etc/ssl/certs/nginx-selfsigned.pem
     rm -f /etc/ssl/private/nginx-selfsigned.key
     rm -rf /etc/nginx
@@ -5719,17 +5903,18 @@ purge_nginx() {
     rm -f "${NGINX_CONFIG_FILE}.bak.tdztunnel"
     rm -f "$NGINX_PORTS_FILE"
     if [[ "$mode" != "silent" ]]; then
-        echo -e "\n${C_GREEN}✅ Internal Nginx proxy purged. Shared TDZ SSH TUNNEL certificates were kept.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] Internal Nginx proxy purged. Shared TDZ SSH TUNNEL certificates were kept.${C_RESET}"
     fi
 }
 
 install_nginx_proxy() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Reconfiguring Internal Nginx Proxy (${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}) ---${C_RESET}"
+    tdz_screen_title "CONFIGURE INTERNAL NGINX" \
+        "Backend ports: ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
     echo -e "\n${C_CYAN}This keeps HAProxy on ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} and rewrites the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
 
     if [ ! -s "$TDZ_SSL_CERT_FILE" ] || [ ! -s "$SSL_CERT_CHAIN_FILE" ] || [ ! -s "$SSL_CERT_KEY_FILE" ]; then
-        echo -e "\n${C_YELLOW}⚠️ No shared TDZ SSH TUNNEL certificate was found.${C_RESET}"
+        echo -e "\n${C_YELLOW}[WARNING] No shared TDZ SSH TUNNEL certificate was found.${C_RESET}"
         echo -e "${C_DIM}Running the full HAProxy edge installer so the certificate and both services stay aligned.${C_RESET}"
         install_ssl_tunnel
         return
@@ -5758,14 +5943,14 @@ install_nginx_proxy() {
 
     configure_edge_stack "$server_name" || return
 
-    echo -e "\n${C_GREEN}✅ Internal Nginx proxy reconfigured successfully.${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] Internal Nginx proxy reconfigured successfully.${C_RESET}"
     echo -e "   • Public HAProxy edge: ${C_YELLOW}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
     echo -e "   • Internal Nginx: ${C_YELLOW}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
 }
 
 request_certbot_ssl() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🔒 Shared Certbot Certificate (HAProxy + Nginx) ---${C_RESET}"
+    tdz_screen_title "SHARED CERTBOT CERTIFICATE" "Apply one certificate to HAProxy and internal Nginx."
     echo -e "\n${C_DIM}This will replace the shared certificate used by HAProxy on ${EDGE_PUBLIC_TLS_PORT} and internal Nginx on ${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
 
     mkdir -p "$DB_DIR" "$SSL_CERT_DIR"
@@ -5785,24 +5970,24 @@ request_certbot_ssl() {
     fi
 
     if [[ -n "$default_domain" ]]; then
-        read -p "👉 Enter your domain name [$default_domain]: " domain_name
+        read -p "  Enter your domain name [$default_domain]: " domain_name
         domain_name=${domain_name:-$default_domain}
     else
-        read -p "👉 Enter your domain name (e.g. vpn.example.com): " domain_name
+        read -p "  Enter your domain name (e.g. vpn.example.com): " domain_name
     fi
     if [[ -z "$domain_name" ]]; then
-        echo -e "\n${C_RED}❌ Domain name cannot be empty.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Domain name cannot be empty.${C_RESET}"
         return
     fi
     if _is_valid_ipv4 "$domain_name"; then
-        echo -e "\n${C_RED}❌ Certbot requires a real domain name, not a raw IP address.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Certbot requires a real domain name, not a raw IP address.${C_RESET}"
         return
     fi
 
-    read -p "👉 Enter your email for Let's Encrypt [${EDGE_EMAIL}]: " email
+    read -p "  Enter your email for Let's Encrypt [${EDGE_EMAIL}]: " email
     email=${email:-$EDGE_EMAIL}
     if [[ -z "$email" ]]; then
-        echo -e "\n${C_RED}❌ Email address cannot be empty.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Email address cannot be empty.${C_RESET}"
         return
     fi
 
@@ -5812,7 +5997,7 @@ request_certbot_ssl() {
     obtain_certbot_edge_cert "$domain_name" "$email" || return
     configure_edge_stack "$domain_name" || return
 
-    echo -e "\n${C_GREEN}✅ Shared Certbot certificate applied successfully.${C_RESET}"
+    echo -e "\n${C_GREEN}[OK] Shared Certbot certificate applied successfully.${C_RESET}"
     echo -e "   • Domain: ${C_YELLOW}${domain_name}${C_RESET}"
     echo -e "   • Public edge: ${C_YELLOW}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
 }
@@ -5866,25 +6051,25 @@ nginx_proxy_menu() {
     case $choice in
         1) 
             if systemctl is-active --quiet nginx; then
-                echo -e "\n${C_BLUE}🛑 Stopping Nginx...${C_RESET}"
+                echo -e "\n${C_BLUE}Stopping Nginx...${C_RESET}"
                 systemctl stop nginx
-                echo -e "${C_GREEN}✅ Nginx stopped.${C_RESET}"
+                echo -e "${C_GREEN}[OK] Nginx stopped.${C_RESET}"
                 if systemctl is-active --quiet haproxy; then
-                    echo -e "${C_YELLOW}⚠️ HAProxy is still running, but web traffic that depends on internal Nginx will not work until Nginx starts again.${C_RESET}"
+                    echo -e "${C_YELLOW}[WARNING] HAProxy is still running, but web traffic that depends on internal Nginx will not work until Nginx starts again.${C_RESET}"
                 fi
             else
-                echo -e "\n${C_BLUE}▶️ Starting Nginx...${C_RESET}"
+                echo -e "\n${C_BLUE}[INFO] Starting Nginx...${C_RESET}"
                 systemctl start nginx
                 if systemctl is-active --quiet nginx; then
-                    echo -e "${C_GREEN}✅ Nginx started.${C_RESET}"
+                    echo -e "${C_GREEN}[OK] Nginx started.${C_RESET}"
                 else
-                    echo -e "${C_RED}❌ Failed to start Nginx.${C_RESET}"
+                    echo -e "${C_RED}[ERROR] Failed to start Nginx.${C_RESET}"
                 fi
             fi
             press_enter
             ;;
         2)
-            echo -e "\n${C_BLUE}🔄 Restarting Nginx and HAProxy...${C_RESET}"
+            echo -e "\n${C_BLUE}Restarting Nginx and HAProxy...${C_RESET}"
             local restart_ok=true
             systemctl restart nginx || restart_ok=false
             if command -v haproxy &> /dev/null; then
@@ -5893,9 +6078,9 @@ nginx_proxy_menu() {
                 restart_ok=false
             fi
             if $restart_ok && systemctl is-active --quiet nginx && systemctl is-active --quiet haproxy; then
-                echo -e "${C_GREEN}✅ HAProxy + Nginx stack restarted.${C_RESET}"
+                echo -e "${C_GREEN}[OK] HAProxy + Nginx stack restarted.${C_RESET}"
             else
-                echo -e "${C_RED}❌ One or more services failed to restart.${C_RESET}"
+                echo -e "${C_RED}[ERROR] One or more services failed to restart.${C_RESET}"
             fi
             press_enter
             ;;
@@ -5930,21 +6115,21 @@ install_xui_panel() {
         1)
             local installer_file installer_hash installer_url
             installer_file=$(mktemp /tmp/tdz-xui-installer.XXXXXX.sh) || {
-                echo -e "\n${C_RED}❌ Could not create a temporary installer file.${C_RESET}"
+                echo -e "\n${C_RED}[ERROR] Could not create a temporary installer file.${C_RESET}"
                 return 1
             }
             installer_url="https://raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/${XUI_INSTALLER_COMMIT}/install.sh"
-            echo -e "\n${C_BLUE}⚙️ Downloading ${XUI_PATCHED_LABEL} installer...${C_RESET}"
+            echo -e "\n${C_BLUE}Downloading ${XUI_PATCHED_LABEL} installer...${C_RESET}"
             if ! curl -fLsS --retry 3 --connect-timeout 10 -o "$installer_file" "$installer_url"; then
                 rm -f "$installer_file"
-                echo -e "${C_RED}❌ Failed to download the patched installer.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Failed to download the patched installer.${C_RESET}"
                 return 1
             fi
 
             installer_hash=$(sha256sum "$installer_file" 2>/dev/null | awk '{print $1}')
             if [[ "$installer_hash" != "$XUI_INSTALLER_SHA256" ]]; then
                 rm -f "$installer_file"
-                echo -e "${C_RED}❌ Installer integrity check failed. Installation stopped.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Installer integrity check failed. Installation stopped.${C_RESET}"
                 return 1
             fi
 
@@ -5952,35 +6137,35 @@ install_xui_panel() {
             # non-existent "main" branch. Pin every fallback to the same commit.
             sed -i "s|raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/main/|raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/${XUI_INSTALLER_COMMIT}/|g" "$installer_file"
 
-            echo -e "${C_BLUE}⚙️ Installing ${XUI_PATCHED_LABEL}...${C_RESET}"
+            echo -e "${C_BLUE}Installing ${XUI_PATCHED_LABEL}...${C_RESET}"
             if bash "$installer_file" "$XUI_PATCHED_TAG"; then
-                echo -e "\n${C_GREEN}✅ ${XUI_PATCHED_LABEL} installed successfully.${C_RESET}"
+                echo -e "\n${C_GREEN}[OK] ${XUI_PATCHED_LABEL} installed successfully.${C_RESET}"
             else
-                echo -e "\n${C_RED}❌ X-UI installation failed.${C_RESET}"
+                echo -e "\n${C_RED}[ERROR] X-UI installation failed.${C_RESET}"
             fi
             rm -f "$installer_file"
             ;;
         0)
-            echo -e "\n${C_YELLOW}❌ Installation cancelled.${C_RESET}"
+            tdz_message CANCELLED "Installation cancelled."
             ;;
         *)
-            echo -e "\n${C_RED}❌ Invalid option.${C_RESET}"
+            echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}"
             ;;
     esac
 }
 
 uninstall_xui_panel() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🗑️ Uninstall X-UI Panel ---${C_RESET}"
+    tdz_screen_title "UNINSTALL X-UI PANEL" "Remove the patched panel and its installed files." "$C_DANGER"
     if ! command -v x-ui &> /dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ X-UI does not appear to be installed.${C_RESET}"
+        echo -e "\n${C_YELLOW}[INFO] X-UI does not appear to be installed.${C_RESET}"
         return
     fi
-    read -p "👉 Are you sure you want to thoroughly uninstall X-UI? (y/n): " confirm
+    read -p "  Are you sure you want to thoroughly uninstall X-UI? (y/n): " confirm
     if [[ "$confirm" == "y" ]]; then
-        echo -e "\n${C_BLUE}⚙️ Running the default X-UI uninstaller first...${C_RESET}"
+        echo -e "\n${C_BLUE}Running the default X-UI uninstaller first...${C_RESET}"
         x-ui uninstall >/dev/null 2>&1
-        echo -e "\n${C_BLUE}🧹 Performing a full cleanup to ensure complete removal...${C_RESET}"
+        echo -e "\n${C_BLUE}Performing a full cleanup to ensure complete removal...${C_RESET}"
         echo " - Stopping and disabling x-ui service..."
         systemctl stop x-ui >/dev/null 2>&1
         systemctl disable x-ui >/dev/null 2>&1
@@ -5991,9 +6176,9 @@ uninstall_xui_panel() {
         rm -rf /etc/x-ui/
         echo " - Reloading systemd daemon..."
         systemctl daemon-reload
-        echo -e "\n${C_GREEN}✅ X-UI has been thoroughly uninstalled.${C_RESET}"
+        echo -e "\n${C_GREEN}[OK] X-UI has been thoroughly uninstalled.${C_RESET}"
     else
-        echo -e "\n${C_YELLOW}❌ Uninstallation cancelled.${C_RESET}"
+        tdz_message CANCELLED "Uninstallation cancelled."
     fi
 }
 
@@ -6327,19 +6512,17 @@ protocol_menu() {
 
 uninstall_script() {
     clear; show_banner
-    echo -e "${C_RED}=====================================================${C_RESET}"
-    echo -e "${C_RED}       🔥 DANGER: UNINSTALL SCRIPT & ALL DATA 🔥      ${C_RESET}"
-    echo -e "${C_RED}=====================================================${C_RESET}"
-    echo -e "${C_YELLOW}This will PERMANENTLY remove this script and all its components, including:"
-    echo -e " - The main command ($(command -v menu))"
-    echo -e " - All configuration and user data ($DB_DIR)"
-    echo -e " - The active limiter service ($LIMITER_SERVICE)"
-    echo -e " - All installed services (badvpn, udp-custom, HAProxy Edge Stack, Nginx, DNSTT)"
-    echo -e "\n${C_RED}This action is irreversible.${C_RESET}"
-    echo ""
-    read -p "👉 Type 'yes' to confirm and proceed with uninstallation: " confirm
+    tdz_screen_title "UNINSTALL TDZ SSH TUNNEL" \
+        "Permanently remove the script, services, and configuration." "$C_DANGER"
+    tdz_section "ITEMS TO REMOVE"
+    tdz_detail "Main Command" "$(command -v menu)"
+    tdz_detail "Configuration" "$DB_DIR"
+    tdz_detail "Limiter Service" "$LIMITER_SERVICE"
+    tdz_detail "Components" "HAProxy, Nginx, DNSTT, badvpn, udp-custom"
+    tdz_message WARNING "This action cannot be undone."
+    read -p "  Type 'yes' to confirm and proceed with uninstallation: " confirm
     if [[ "$confirm" != "yes" ]]; then
-        echo -e "\n${C_GREEN}✅ Uninstallation cancelled.${C_RESET}"
+        tdz_message CANCELLED "Uninstallation cancelled."
         return
     fi
     local -a removable_users=()
@@ -6348,26 +6531,27 @@ uninstall_script() {
     mapfile -t removable_users < <(get_tdztunnel_known_users)
     if [[ ${#removable_users[@]} -gt 0 ]]; then
         echo -e "\n${C_YELLOW}TDZ SSH TUNNEL SSH users detected on this VPS:${C_RESET} ${removable_users[*]}"
-        read -p "👉 Do you also want to permanently delete these SSH users before uninstalling? (y/n): " remove_users_confirm
+        read -p "  Do you also want to permanently delete these SSH users before uninstalling? (y/n): " remove_users_confirm
         if [[ "$remove_users_confirm" == "y" || "$remove_users_confirm" == "Y" ]]; then
             remove_users_on_uninstall=true
         fi
     fi
     export UNINSTALL_MODE="silent"
-    echo -e "\n${C_BLUE}--- 💥 Starting Uninstallation 💥 ---${C_RESET}"
+    echo
+    tdz_section "UNINSTALLATION PROGRESS"
     
     if [[ "$remove_users_on_uninstall" == "true" ]]; then
-        echo -e "\n${C_BLUE}🗑️ Removing TDZ SSH TUNNEL SSH users before uninstall...${C_RESET}"
+        echo -e "\n${C_BLUE}Removing TDZ SSH TUNNEL SSH users before uninstall...${C_RESET}"
         delete_tdztunnel_user_accounts "${removable_users[@]}"
     fi
     
-    echo -e "\n${C_BLUE}🗑️ Removing active limiter service...${C_RESET}"
+    echo -e "\n${C_BLUE}Removing active limiter service...${C_RESET}"
     systemctl stop tdztunnel-limiter &>/dev/null
     systemctl disable tdztunnel-limiter &>/dev/null
     rm -f "$LIMITER_SERVICE"
     rm -f "$LIMITER_SCRIPT"
     
-    echo -e "\n${C_BLUE}🗑️ Removing bandwidth monitoring service...${C_RESET}"
+    echo -e "\n${C_BLUE}Removing bandwidth monitoring service...${C_RESET}"
     systemctl stop tdztunnel-bandwidth &>/dev/null
     systemctl disable tdztunnel-bandwidth &>/dev/null
     rm -f "$BANDWIDTH_SERVICE"
@@ -6375,7 +6559,7 @@ uninstall_script() {
     rm -rf "$LEGACY_BANDWIDTH_DIR"
     rm -f "$TRIAL_CLEANUP_SCRIPT"
     
-    echo -e "\n${C_BLUE}\ud83d\uddd1\ufe0f Removing SSH login banner...${C_RESET}"
+    echo -e "\n${C_BLUE}Removing SSH login banner...${C_RESET}"
     rm -f "$LOGIN_INFO_SCRIPT"
     rm -f "$SSHD_TDZ_CONFIG"
     systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null
@@ -6390,20 +6574,17 @@ uninstall_script() {
     uninstall_tdz_proxy
     uninstall_zivpn
 
-    echo -e "\n${C_BLUE}🔄 Reloading systemd daemon...${C_RESET}"
+    echo -e "\n${C_BLUE}Reloading systemd daemon...${C_RESET}"
     systemctl daemon-reload
     
-    echo -e "\n${C_BLUE}🗑️ Removing script and configuration files...${C_RESET}"
+    echo -e "\n${C_BLUE}Removing script and configuration files...${C_RESET}"
     rm -rf "$BADVPN_BUILD_DIR"
     rm -rf "$UDP_CUSTOM_DIR"
     rm -rf "$DB_DIR"
     rm -f "$(command -v menu)"
     
-    echo -e "\n${C_GREEN}=============================================${C_RESET}"
-    echo -e "${C_GREEN}      Script has been successfully uninstalled.     ${C_RESET}"
-    echo -e "${C_GREEN}=============================================${C_RESET}"
-    echo -e "\nAll associated files and services have been removed."
-    echo "The 'menu' command will no longer work."
+    tdz_message OK "TDZ SSH TUNNEL was removed successfully."
+    echo -e "  ${C_DIM}All associated files and services were removed. The 'menu' command is no longer available.${C_RESET}"
     exit 0
 }
 
@@ -6414,9 +6595,9 @@ create_trial_account() {
     
     # Ensure 'at' daemon is available
     if ! command -v at &>/dev/null; then
-        echo -e "${C_YELLOW}⚠️ 'at' command not found. Installing...${C_RESET}"
+        echo -e "${C_YELLOW}[WARNING] 'at' command not found. Installing...${C_RESET}"
         tdz_apt_install at >/dev/null 2>&1 || {
-            echo -e "${C_RED}❌ Failed to install 'at'. Cannot schedule auto-expiry.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Failed to install 'at'. Cannot schedule auto-expiry.${C_RESET}"
             return
         }
         systemctl enable atd &>/dev/null
@@ -6456,41 +6637,41 @@ create_trial_account() {
         5) duration_hours=12;  duration_label="12 Hours" ;;
         6) duration_hours=24;  duration_label="1 Day" ;;
         7) duration_hours=72;  duration_label="3 Days" ;;
-        8) read -p "👉 Enter custom duration in hours: " custom_hours
+        8) read -r -p "$(echo -e "${C_PROMPT}  Custom duration in hours: ${C_RESET}")" custom_hours
            if ! [[ "$custom_hours" =~ ^[0-9]+$ ]] || [[ "$custom_hours" -lt 1 ]]; then
-               echo -e "\n${C_RED}❌ Invalid number of hours.${C_RESET}"; return
+               echo -e "\n${C_RED}[ERROR] Invalid number of hours.${C_RESET}"; return
            fi
            duration_hours=$custom_hours
            duration_label="$custom_hours Hours"
            ;;
-        0) echo -e "\n${C_YELLOW}❌ Cancelled.${C_RESET}"; return ;;
-        *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}"; return ;;
+        0) tdz_message CANCELLED "Trial creation cancelled."; return ;;
+        *) echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}"; return ;;
     esac
     
     # Username
     local rand_suffix=$(head /dev/urandom | tr -dc 'a-z0-9' | head -c 5)
     local default_username="trial_${rand_suffix}"
-    read -p "👤 Username [${default_username}]: " username
+    read -r -p "$(echo -e "${C_PROMPT}  Username [${default_username}]: ${C_RESET}")" username
     username=${username:-$default_username}
     
     if id "$username" &>/dev/null || grep -q "^$username:" "$DB_FILE"; then
-        echo -e "\n${C_RED}❌ Error: User '$username' already exists.${C_RESET}"; return
+        echo -e "\n${C_RED}[ERROR] User '$username' already exists.${C_RESET}"; return
     fi
     
     # Password
     local password=$(head /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 8)
-    read -p "🔑 Password [${password}]: " custom_pass
+    read -r -p "$(echo -e "${C_PROMPT}  Password [${password}]: ${C_RESET}")" custom_pass
     password=${custom_pass:-$password}
     
     # Connection limit
-    read -p "📶 Connection limit [1]: " limit
+    read -r -p "$(echo -e "${C_PROMPT}  Connection limit [1]: ${C_RESET}")" limit
     limit=${limit:-1}
-    if ! [[ "$limit" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
+    if ! [[ "$limit" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}[ERROR] Invalid number.${C_RESET}"; return; fi
     
     # Bandwidth limit
-    read -p "📦 Bandwidth limit in GB (0 = unlimited) [0]: " bandwidth_gb
+    read -r -p "$(echo -e "${C_PROMPT}  Bandwidth in GB (0 = unlimited) [0]: ${C_RESET}")" bandwidth_gb
     bandwidth_gb=${bandwidth_gb:-0}
-    if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
+    if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then echo -e "\n${C_RED}[ERROR] Invalid number.${C_RESET}"; return; fi
     
     # Calculate expiry
     local expire_date
@@ -6521,25 +6702,23 @@ create_trial_account() {
     echo "$TRIAL_CLEANUP_SCRIPT --uid $trial_uid $expiry_epoch" | at now + ${duration_hours} hours 2>/dev/null
     
     local bw_display="Unlimited"
-    if [[ "$bandwidth_gb" != "0" ]]; then bw_display="${bandwidth_gb} GB"; fi
+    if [[ "$bandwidth_gb" != "0" ]]; then bw_display="${bandwidth_gb}GB"; fi
     
     clear; show_banner
-    echo -e "${C_GREEN}✅ Trial account created successfully!${C_RESET}\n"
-    echo -e "${C_YELLOW}========================================${C_RESET}"
-    echo -e "  ⏱️  ${C_BOLD}TRIAL ACCOUNT${C_RESET}"
-    echo -e "${C_YELLOW}========================================${C_RESET}"
-    echo -e "  - 👤 Username:          ${C_YELLOW}$username${C_RESET}"
-    echo -e "  - 🔑 Password:          ${C_YELLOW}$password${C_RESET}"
-    echo -e "  - ⏱️ Duration:          ${C_CYAN}$duration_label${C_RESET}"
-    echo -e "  - 🕐 Auto-expires at:   ${C_RED}$expiry_timestamp${C_RESET}"
-    echo -e "  - 📶 Connection Limit:  ${C_YELLOW}$limit${C_RESET}"
-    echo -e "  - 📦 Bandwidth Limit:   ${C_YELLOW}$bw_display${C_RESET}"
-    echo -e "${C_YELLOW}========================================${C_RESET}"
-    echo -e "\n${C_DIM}The account will be automatically deleted when the trial expires.${C_RESET}"
+    tdz_message OK "Trial account created successfully."
+    echo
+    tdz_section "TRIAL ACCOUNT DETAILS"
+    tdz_detail "Username" "$username" "$C_YELLOW"
+    tdz_detail "Password" "$password" "$C_YELLOW"
+    tdz_detail "Duration" "$duration_label"
+    tdz_detail "Auto Expires" "$expiry_timestamp" "$C_RED"
+    tdz_detail "Connections" "$limit"
+    tdz_detail "Bandwidth" "$bw_display"
+    echo -e "  ${C_DIM}This account is removed automatically when its trial expires.${C_RESET}"
     
     # Auto-ask for config generation
     echo
-    read -p "👉 Generate client config for this trial user? (y/n): " gen_conf
+    read -r -p "$(echo -e "${C_PROMPT}  Generate client configuration now? [y/N]: ${C_RESET}")" gen_conf
     if [[ "$gen_conf" == "y" || "$gen_conf" == "Y" ]]; then
         generate_client_config "$username" "$password"
     fi
@@ -6587,7 +6766,7 @@ list_trial_accounts() {
     tdz_box_divider
 
     if (( trial_total == 0 )); then
-        tdz_row "${C_YELLOW}ℹ No trial accounts found.${C_RESET}"
+        tdz_row "${C_YELLOW}[INFO] No trial accounts found.${C_RESET}"
         tdz_box_bot
         return
     fi
@@ -6605,7 +6784,7 @@ list_trial_accounts() {
         local expiry_check=0 passwd_state account_number display_user
 
         online_count="${SSH_SESSION_COUNTS[$user]:-0}"
-        connection_string="${online_count} / ${limit:-1}"
+        connection_string="${online_count}/${limit:-1}"
 
         if [[ "$trial_expiry_epoch" =~ ^[0-9]+$ ]] && (( trial_expiry_epoch > 0 )); then
             expiry_display=$(LC_TIME=C date -d "@${trial_expiry_epoch}" '+%d %b %Y • %H:%M' 2>/dev/null || echo "$expiry")
@@ -6623,9 +6802,9 @@ list_trial_accounts() {
         fi
         used_gb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1073741824}")
         if [[ -z "$bandwidth_gb" || "$bandwidth_gb" == "0" ]]; then
-            bandwidth_display="${used_gb} GB / Unlimited"
+            bandwidth_display="${used_gb}GB/Unlimited"
         else
-            bandwidth_display="${used_gb} GB / ${bandwidth_gb} GB"
+            bandwidth_display="${used_gb}/${bandwidth_gb}GB"
         fi
 
         passwd_state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
@@ -6671,7 +6850,7 @@ view_user_bandwidth() {
     if [[ "$u" == "NO_USERS" || -z "$u" ]]; then return; fi
     
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📊 Bandwidth Details: ${C_YELLOW}$u${C_PURPLE} ---${C_RESET}\n"
+    tdz_screen_title "BANDWIDTH USAGE" "Account: $u"
     
     local line; line=$(grep "^$u:" "$DB_FILE")
     local bandwidth_gb; bandwidth_gb=$(echo "$line" | cut -d: -f5)
@@ -6686,11 +6865,12 @@ view_user_bandwidth() {
     local used_mb; used_mb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1048576}")
     local used_gb; used_gb=$(awk "BEGIN {printf \"%.3f\", $used_bytes / 1073741824}")
     
-    echo -e "  ${C_CYAN}Data Used:${C_RESET}        ${C_WHITE}${used_gb} GB${C_RESET} (${used_mb} MB)"
+    tdz_section "USAGE SUMMARY"
+    tdz_detail "Data Used" "${used_gb}GB (${used_mb}MB)"
     
     if [[ "$bandwidth_gb" == "0" ]]; then
-        echo -e "  ${C_CYAN}Bandwidth Limit:${C_RESET}  ${C_GREEN}Unlimited${C_RESET}"
-        echo -e "  ${C_CYAN}Status:${C_RESET}           ${C_GREEN}No quota restrictions${C_RESET}"
+        tdz_detail "Bandwidth Limit" "Unlimited" "$C_GREEN"
+        tdz_detail "Status" "No quota restriction" "$C_GREEN"
     else
         local quota_bytes; quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
         local percentage; percentage=$(awk "BEGIN {printf \"%.1f\", ($used_bytes / $quota_bytes) * 100}")
@@ -6698,9 +6878,9 @@ view_user_bandwidth() {
         if [[ "$remaining_bytes" -lt 0 ]]; then remaining_bytes=0; fi
         local remaining_gb; remaining_gb=$(awk "BEGIN {printf \"%.3f\", $remaining_bytes / 1073741824}")
         
-        echo -e "  ${C_CYAN}Bandwidth Limit:${C_RESET}  ${C_YELLOW}${bandwidth_gb} GB${C_RESET}"
-        echo -e "  ${C_CYAN}Remaining:${C_RESET}        ${C_WHITE}${remaining_gb} GB${C_RESET}"
-        echo -e "  ${C_CYAN}Usage:${C_RESET}            ${C_WHITE}${percentage}%${C_RESET}"
+        tdz_detail "Bandwidth Limit" "${bandwidth_gb}GB" "$C_YELLOW"
+        tdz_detail "Remaining" "${remaining_gb}GB"
+        tdz_detail "Usage" "${percentage}%"
         
         # Progress bar
         local bar_width=30
@@ -6711,70 +6891,85 @@ view_user_bandwidth() {
         if (( $(awk "BEGIN {print ($percentage > 80)}" ) )); then bar_color="$C_RED"
         elif (( $(awk "BEGIN {print ($percentage > 50)}" ) )); then bar_color="$C_YELLOW"
         fi
-        printf "  ${C_CYAN}Progress:${C_RESET}         ${bar_color}["
+        printf "  ${C_GRAY}• %-19s${C_RESET} ${bar_color}[" "Progress:"
         for ((i=0; i<filled; i++)); do printf "█"; done
         for ((i=0; i<empty; i++)); do printf "░"; done
         printf "]${C_RESET} ${percentage}%%\n"
         
         if [[ "$used_bytes" -ge "$quota_bytes" ]]; then
-            echo -e "\n  ${C_RED}⚠️ USER HAS EXCEEDED BANDWIDTH QUOTA — ACCOUNT LOCKED${C_RESET}"
+            tdz_message WARNING "Bandwidth quota exceeded; the account is locked."
         fi
     fi
 }
 
 bulk_create_users() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 👥 Bulk Create Users ---${C_RESET}"
+    tdz_screen_title "BULK CREATE USERS" "Create up to 100 managed accounts with shared limits."
     
-    read -p "👉 Enter username prefix (e.g., 'user'): " prefix
-    if [[ -z "$prefix" ]]; then echo -e "\n${C_RED}❌ Prefix cannot be empty.${C_RESET}"; return; fi
+    read -p "  Enter username prefix (e.g., 'user'): " prefix
+    if [[ -z "$prefix" ]]; then echo -e "\n${C_RED}[ERROR] Prefix cannot be empty.${C_RESET}"; return; fi
     
-    read -p "🔢 How many users to create? " count
+    read -p "  How many users to create? " count
     if ! [[ "$count" =~ ^[0-9]+$ ]] || [[ "$count" -lt 1 ]] || [[ "$count" -gt 100 ]]; then
-        echo -e "\n${C_RED}❌ Invalid count (1-100).${C_RESET}"; return
+        echo -e "\n${C_RED}[ERROR] Invalid count (1-100).${C_RESET}"; return
     fi
     
-    read -p "🗓️ Account duration (in days) [30]: " days
+    read -p "  Account duration (in days) [30]: " days
     days=${days:-30}
-    if ! [[ "$days" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
+    if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then echo -e "\n${C_RED}[ERROR] Duration must be at least 1 day.${C_RESET}"; return; fi
     
-    read -p "📶 Connection limit per user [1]: " limit
+    read -p "  Connection limit per user [1]: " limit
     limit=${limit:-1}
-    if ! [[ "$limit" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
+    if ! [[ "$limit" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}[ERROR] Invalid number.${C_RESET}"; return; fi
     
-    read -p "📦 Bandwidth limit in GB per user (0 = unlimited) [0]: " bandwidth_gb
+    read -p "  Bandwidth limit in GB per user (0 = unlimited) [0]: " bandwidth_gb
     bandwidth_gb=${bandwidth_gb:-0}
-    if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
-    
-    local expire_date
+    if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then echo -e "\n${C_RED}[ERROR] Invalid number.${C_RESET}"; return; fi
+
+    local first_use_activation=false first_use_choice
+    read -p "  First-Use Activation (start expiry on first connection)? [y/N]: " first_use_choice
+    [[ "$first_use_choice" == "y" || "$first_use_choice" == "Y" ]] && first_use_activation=true
+
+    local expire_date stored_expiry metadata_suffix="" table_expiry activation_display="Immediate"
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
-    local bw_display="Unlimited"; [[ "$bandwidth_gb" != "0" ]] && bw_display="${bandwidth_gb} GB"
+    stored_expiry="$expire_date"
+    table_expiry="$expire_date"
+    if $first_use_activation; then
+        stored_expiry="Never"
+        metadata_suffix=":pending:${days}"
+        table_expiry="FIRST USE"
+        activation_display="First-Use"
+    fi
+    local bw_display="Unlimited"; [[ "$bandwidth_gb" != "0" ]] && bw_display="${bandwidth_gb}GB"
     ensure_tdztunnel_system_group
     
-    echo -e "\n${C_BLUE}⚙️ Creating $count users with prefix '${prefix}'...${C_RESET}\n"
-    echo -e "${C_YELLOW}================================================================${C_RESET}"
+    echo
+    tdz_section "CREATED ACCOUNTS"
     printf "${C_BOLD}${C_WHITE}%-20s | %-15s | %-12s${C_RESET}\n" "USERNAME" "PASSWORD" "EXPIRES"
-    echo -e "${C_YELLOW}----------------------------------------------------------------${C_RESET}"
+    echo -e "${C_GRAY}─────────────────────┼─────────────────┼─────────────${C_RESET}"
     
     local created=0
     for ((i=1; i<=count; i++)); do
         local username="${prefix}${i}"
         if id "$username" &>/dev/null || grep -q "^$username:" "$DB_FILE"; then
-            echo -e "${C_RED}  ⚠️ Skipping '$username' — already exists${C_RESET}"
+            echo -e "${C_RED}  [WARNING] Skipping '$username' — already exists${C_RESET}"
             continue
         fi
         local password=$(head /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 8)
         useradd -m -s /usr/sbin/nologin "$username"
         usermod -aG "$TDZ_USERS_GROUP" "$username" 2>/dev/null
         echo "$username:$password" | chpasswd
-        chage -E "$expire_date" "$username"
-        echo "$username:$password:$expire_date:$limit:$bandwidth_gb" >> "$DB_FILE"
-        printf "  ${C_GREEN}%-20s${C_RESET} | ${C_YELLOW}%-15s${C_RESET} | ${C_CYAN}%-12s${C_RESET}\n" "$username" "$password" "$expire_date"
+        if $first_use_activation; then
+            chage -E -1 "$username"
+        else
+            chage -E "$expire_date" "$username"
+        fi
+        echo "$username:$password:$stored_expiry:$limit:$bandwidth_gb$metadata_suffix" >> "$DB_FILE"
+        printf "  ${C_GREEN}%-20s${C_RESET} | ${C_YELLOW}%-15s${C_RESET} | ${C_CYAN}%-12s${C_RESET}\n" "$username" "$password" "$table_expiry"
         created=$((created + 1))
     done
     
-    echo -e "${C_YELLOW}================================================================${C_RESET}"
-    echo -e "\n${C_GREEN}✅ Created $created users. Conn Limit: ${limit} | BW: ${bw_display}${C_RESET}"
+    tdz_message OK "Created $created account(s). Connections: ${limit}; bandwidth: ${bw_display}; activation: ${activation_display}."
     
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
@@ -6783,69 +6978,80 @@ bulk_create_users() {
 generate_client_config() {
     local user=$1
     local pass=$2
-    
-    local host_ip=$(curl -s -4 icanhazip.com)
+
+    local host_ip
+    host_ip=$(curl -fsS -4 --max-time 5 icanhazip.com 2>/dev/null | tr -d '[:space:]')
+    if [[ -z "$host_ip" ]]; then
+        host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+    [[ -z "$host_ip" ]] && host_ip="Not detected"
     local host_domain
     host_domain=$(detect_preferred_host)
     [[ -z "$host_domain" ]] && host_domain="$host_ip"
 
-    echo -e "\n${C_BOLD}${C_PURPLE}--- 📱 Client Connection Configuration ---${C_RESET}"
-    echo -e "${C_CYAN}Copy the details below to your clipboard:${C_RESET}\n"
+    clear; show_banner
+    echo
+    tdz_section "CLIENT CONNECTION CONFIGURATION"
+    echo -e "  ${C_DIM}Copy the required values for your client application.${C_RESET}"
 
-    echo -e "${C_YELLOW}========================================${C_RESET}"
-    echo -e "👤 ${C_BOLD}User Details${C_RESET}"
-    echo -e "   • Username: ${C_WHITE}$user${C_RESET}"
-    echo -e "   • Password: ${C_WHITE}$pass${C_RESET}"
-    echo -e "   • Host/IP : ${C_WHITE}$host_domain${C_RESET}"
-    echo -e "${C_YELLOW}========================================${C_RESET}"
-    
+    echo
+    tdz_section "ACCOUNT"
+    tdz_detail "Username" "$user" "$C_YELLOW"
+    tdz_detail "Password" "$pass" "$C_YELLOW"
+    tdz_detail "Host / IP" "$host_domain"
+
     # 1. SSH Direct
-    echo -e "\n🔹 ${C_BOLD}SSH Direct${C_RESET}:"
-    echo -e "   • Host: $host_domain"
-    echo -e "   • Port: 22"
-    echo -e "   • payload: (Standard SSH)"
+    echo
+    tdz_section "SSH DIRECT"
+    tdz_detail "Host" "$host_domain"
+    tdz_detail "Port" "22"
+    tdz_detail "Payload" "Standard SSH"
 
     # 2. HAProxy edge stack
     if systemctl is-active --quiet haproxy; then
-        echo -e "\n🔹 ${C_BOLD}HAProxy Edge Stack${C_RESET}:"
-        echo -e "   • Host: $host_domain"
-        echo -e "   • Port ${EDGE_PUBLIC_HTTP_PORT}: HTTP payloads / raw SSH"
-        echo -e "   • Port ${EDGE_PUBLIC_TLS_PORT}: TLS / SNI / SSL payloads"
-        echo -e "   • Internal handoff: Nginx ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
-        echo -e "   • SNI (BugHost): $host_domain (or your preferred SNI)"
+        echo
+        tdz_section "HAPROXY EDGE STACK"
+        tdz_detail "Host" "$host_domain"
+        tdz_detail "HTTP / Raw SSH" "$EDGE_PUBLIC_HTTP_PORT"
+        tdz_detail "TLS / SNI / SSL" "$EDGE_PUBLIC_TLS_PORT"
+        tdz_detail "Internal Backend" "Nginx ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
+        tdz_detail "SNI / Bug Host" "$host_domain"
     elif systemctl is-active --quiet nginx; then
-        echo -e "\n🔹 ${C_BOLD}Internal Nginx Proxy${C_RESET}:"
-        echo -e "   • Internal only: ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
-        echo -e "   • Public clients should connect through HAProxy on ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}"
+        echo
+        tdz_section "INTERNAL NGINX PROXY"
+        tdz_detail "Internal Ports" "${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
+        tdz_detail "Public Edge" "HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}"
     fi
 
     # 3. UDP Custom
     if systemctl is-active --quiet udp-custom; then
-        echo -e "\n🔹 ${C_BOLD}UDP Custom${C_RESET}:"
-        echo -e "   • IP: $host_ip (Must use numeric IP)"
-        echo -e "   • Port: 1-65535 (Exclude 53, 5300)"
-        echo -e "   • Obfs: (None/Plain)"
+        echo
+        tdz_section "UDP CUSTOM"
+        tdz_detail "Numeric IP" "$host_ip"
+        tdz_detail "Port Range" "1-65535 (except 53 and 5300)"
+        tdz_detail "Obfuscation" "None / Plain"
     fi
 
     # 4. DNSTT
     if systemctl is-active --quiet dnstt; then
         if [ -f "$DNSTT_CONFIG_FILE" ]; then
             source "$DNSTT_CONFIG_FILE"
-            echo -e "\n🔹 ${C_BOLD}DNSTT (SlowDNS)${C_RESET}:"
-            echo -e "   • Nameserver: $TUNNEL_DOMAIN"
-            echo -e "   • PubKey: $PUBLIC_KEY"
-            echo -e "   • DNS IP: 1.1.1.1 / 8.8.8.8"
+            echo
+            tdz_section "DNSTT / SLOWDNS"
+            tdz_detail "Nameserver" "$TUNNEL_DOMAIN"
+            tdz_detail "Public Key" "$PUBLIC_KEY"
+            tdz_detail "DNS Resolver" "1.1.1.1 / 8.8.8.8"
         fi
     fi
-    
+
     # 5. ZiVPN
     if systemctl is-active --quiet zivpn; then
-        echo -e "\n🔹 ${C_BOLD}ZiVPN${C_RESET}:"
-        echo -e "   • UDP Port: 5667"
-        echo -e "   • Forwarded Ports: 6000-19999"
+        echo
+        tdz_section "ZIVPN"
+        tdz_detail "UDP Port" "5667"
+        tdz_detail "Forwarded Ports" "6000-19999"
     fi
-    
-    echo -e "${C_YELLOW}========================================${C_RESET}"
+
     press_enter
 }
 
@@ -6878,18 +7084,18 @@ simple_live_monitor() {
     local rx1 tx1 rx2 tx2 rx_diff tx_diff rx_kbs tx_kbs rx_fmt tx_fmt
 
     if [[ -z "$iface" || ! -r "$rx_file" || ! -r "$tx_file" ]]; then
-        echo -e "\n${C_RED}❌ Could not read interface statistics for '${iface:-unknown}'.${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] Could not read interface statistics for '${iface:-unknown}'.${C_RESET}"
         return
     fi
 
-    echo -e "\n${C_BLUE}⚡ Starting Lightweight Traffic Monitor for $iface...${C_RESET}"
+    echo -e "\n${C_BLUE}Starting Lightweight Traffic Monitor for $iface...${C_RESET}"
     echo -e "${C_DIM}Press [Ctrl+C] to stop.${C_RESET}\n"
 
     read -r rx1 < "$rx_file"
     read -r tx1 < "$tx_file"
 
-    printf "%-15s | %-15s\n" "⬇️ Download" "⬆️ Upload"
-    echo "-----------------------------------"
+    tdz_section "LIVE TRANSFER RATE"
+    printf "  %-15s | %-15s\n" "DOWNLOAD" "UPLOAD"
 
     trap 'stop_monitor=1' INT TERM
     while (( ! stop_monitor )); do
@@ -6951,22 +7157,22 @@ traffic_monitor_menu() {
             local tx_total=$(cat /sys/class/net/$iface/statistics/tx_bytes)
             local rx_mb=$((rx_total / 1024 / 1024))
             local tx_mb=$((tx_total / 1024 / 1024))
-            echo -e "\n${C_BLUE}📊 Total Traffic (Since Boot):${C_RESET}"
-            echo -e "   ⬇️ Download: ${C_WHITE}${rx_mb} MB${C_RESET}"
-            echo -e "   ⬆️ Upload:   ${C_WHITE}${tx_mb} MB${C_RESET}"
+            echo -e "\n${C_BLUE}Total Traffic (Since Boot):${C_RESET}"
+            echo -e "   Download: ${C_WHITE}${rx_mb} MB${C_RESET}"
+            echo -e "   Upload:   ${C_WHITE}${tx_mb} MB${C_RESET}"
             press_enter
             ;;
         3) 
            # vnStat Logic
            if ! command -v vnstat &> /dev/null; then
-               echo -e "\n${C_YELLOW}⚠️ vnStat is not installed.${C_RESET}"
+               echo -e "\n${C_YELLOW}[WARNING] vnStat is not installed.${C_RESET}"
                echo -e "   This tool provides persistent history (Daily/Monthly reports)."
                echo -e "   It is lightweight but requires installation."
-               read -p "👉 Install vnStat now? (y/n): " confirm
+               read -p "  Install vnStat now? (y/n): " confirm
                 if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                     echo -e "\n${C_BLUE}📦 Installing vnStat...${C_RESET}"
+                     echo -e "\n${C_BLUE}Installing vnStat...${C_RESET}"
                      tdz_apt_install vnstat >/dev/null 2>&1 || {
-                         echo -e "${C_RED}❌ Failed to install vnStat.${C_RESET}"
+                         echo -e "${C_RED}[ERROR] Failed to install vnStat.${C_RESET}"
                          sleep 1
                          return
                      }
@@ -6974,7 +7180,7 @@ traffic_monitor_menu() {
                      systemctl restart vnstat >/dev/null 2>&1
                     local default_iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
                     vnstat --add -i "$default_iface" >/dev/null 2>&1
-                    echo -e "${C_GREEN}✅ Installed.${C_RESET}"
+                    echo -e "${C_GREEN}[OK] Installed.${C_RESET}"
                     sleep 1
                else
                     return
@@ -7016,7 +7222,7 @@ torrent_block_menu() {
     
     case $b_choice in
         1)
-            echo -e "\n${C_BLUE}🛡️ Applying Anti-Torrent rules...${C_RESET}"
+            echo -e "\n${C_BLUE}Applying Anti-Torrent rules...${C_RESET}"
             # Clean old rules first to avoid duplicates
             _flush_torrent_rules
             
@@ -7048,16 +7254,16 @@ torrent_block_menu() {
                 netfilter-persistent save &>/dev/null
             fi
             
-            echo -e "${C_GREEN}✅ Torrent Blocking Enabled.${C_RESET}"
+            echo -e "${C_GREEN}[OK] Torrent Blocking Enabled.${C_RESET}"
             press_enter
             ;;
         2)
-            echo -e "\n${C_BLUE}🔓 Removing Anti-Torrent rules...${C_RESET}"
+            echo -e "\n${C_BLUE}Removing Anti-Torrent rules...${C_RESET}"
             _flush_torrent_rules
             if dpkg -s iptables-persistent &>/dev/null; then
                 netfilter-persistent save &>/dev/null
             fi
-            echo -e "${C_GREEN}✅ Torrent Blocking Disabled.${C_RESET}"
+            echo -e "${C_GREEN}[OK] Torrent Blocking Disabled.${C_RESET}"
             press_enter
             ;;
         *) return ;;
@@ -7123,7 +7329,7 @@ ssh_banner_menu() {
         case $choice in
             1)
                 if setup_ssh_login_info; then
-                    echo -e "\n${C_GREEN}✅ Dynamic account banner enabled.${C_RESET}"
+                    echo -e "\n${C_GREEN}[OK] Dynamic account banner enabled.${C_RESET}"
                     echo -e "${C_DIM}Users will now see their account info banner instead of the static banner.${C_RESET}"
                 fi
                 press_enter
@@ -7134,7 +7340,7 @@ ssh_banner_menu() {
             5) edit_dynamic_banner_contacts ;;
             6) remove_ssh_banner ;;
             0) return ;;
-            *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" && sleep 1 ;;
+            *) echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}" && sleep 1 ;;
         esac
     done
 }
@@ -7170,12 +7376,12 @@ auto_reboot_menu() {
             (crontab -l 2>/dev/null | grep -v "systemctl reboot") | crontab -
             # Add new job
             (crontab -l 2>/dev/null; echo "0 0 * * * systemctl reboot") | crontab -
-            echo -e "\n${C_GREEN}✅ Auto-reboot scheduled for every day at 00:00.${C_RESET}"
+            echo -e "\n${C_GREEN}[OK] Auto-reboot scheduled for every day at 00:00.${C_RESET}"
             press_enter
             ;;
         2)
             (crontab -l 2>/dev/null | grep -v "systemctl reboot") | crontab -
-            echo -e "\n${C_GREEN}✅ Auto-reboot disabled.${C_RESET}"
+            echo -e "\n${C_GREEN}[OK] Auto-reboot disabled.${C_RESET}"
             press_enter
             ;;
         *) return ;;
@@ -7187,7 +7393,7 @@ press_enter() {
     echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return to the menu..." && read -r || true
 }
 invalid_option() {
-    echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" && sleep 1
+    echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}" && sleep 1
 }
 
 main_menu() {

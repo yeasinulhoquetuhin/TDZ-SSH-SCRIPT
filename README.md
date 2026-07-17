@@ -34,6 +34,7 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 ### User Management
 - **Create / Delete / Edit users** — full CRUD operations with safe username changes, password, expiry, session limit, and bandwidth controls
 - **Bulk user creation** — generate multiple accounts at once with shared or individual settings
+- **First-Use Activation** — optionally keep a new or bulk-created account's expiry paused until its first successful SSH connection; disabled by default
 - **Trial accounts** — create 1h-to-72h auto-expiring demo users with automatic cleanup and a dedicated list for remaining time, usage, connections, and status
 - **Account locking / unlocking** — manually lock or unlock any user account instantly
 - **Account renewal** — extend expiry, adjust limits, or reset passwords for existing users
