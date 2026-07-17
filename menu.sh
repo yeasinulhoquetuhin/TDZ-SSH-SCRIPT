@@ -220,7 +220,7 @@ compute_cpu_pct() {
     echo "$pct"
 }
 
-# ── TDZ Dashboard Box-Layout Helpers (width 60) ─────────────────────────────
+# ── TDZ Dashboard Box-Layout Helpers (64-column interior) ──────────────────
 TDZ_BOX_WIDTH=64
 
 _tdz_strip_ansi() {
@@ -232,6 +232,25 @@ _tdz_w() {
     local s
     s=$(_tdz_strip_ansi "$1")
     printf '%s' "$s" | wc -m | tr -d ' '
+}
+
+# Keep every box row inside its fixed width. ANSI colors are preserved while
+# the text fits; overlong text is safely shortened to plain text.
+_tdz_fit() {
+    local text="$1" max_width="$2"
+    local width plain keep
+    width=$(_tdz_w "$text")
+    if (( width <= max_width )); then
+        printf '%s' "$text"
+        return
+    fi
+    plain=$(_tdz_strip_ansi "$text")
+    if (( max_width <= 3 )); then
+        printf '%s' "${plain:0:max_width}"
+        return
+    fi
+    keep=$((max_width - 3))
+    printf '%s...' "${plain:0:keep}"
 }
 
 tdz_box_top() {
@@ -261,6 +280,7 @@ tdz_box_header() {
     local color="${2:-$C_TITLE}"
     local tcolor="$C_GREEN"
     [[ "$color" == "$C_DANGER" ]] && tcolor="$C_RED"
+    text=$(_tdz_fit "$text" $((TDZ_BOX_WIDTH - 4)))
     local content=" ${C_BOLD}${tcolor}▶ ${text}${C_RESET} "
     local w
     w=$(_tdz_w "$content")
@@ -275,6 +295,7 @@ tdz_box_header() {
 tdz_row() {
     local text="$1"
     local color="${2:-$C_TITLE}"
+    text=$(_tdz_fit "$text" $((TDZ_BOX_WIDTH - 2)))
     local content=" $text "
     local w
     w=$(_tdz_w "$content")
@@ -290,6 +311,8 @@ tdz_row2() {
     local left="$1" right="$2"
     local color="${3:-$C_TITLE}"
     local half=$(( (TDZ_BOX_WIDTH - 1) / 2 ))
+    left=$(_tdz_fit "$left" $((half - 1)))
+    right=$(_tdz_fit "$right" $((half - 1)))
     local lw rw
     lw=$(_tdz_w "$left")
     rw=$(_tdz_w "$right")
@@ -368,6 +391,25 @@ tdz_menu1() {
     local color="${3:-$C_TITLE}"
     local content="${C_CHOICE}${num}${C_RESET} ${C_WHITE}${text}${C_RESET}"
     tdz_row "$content" "$color"
+}
+
+# Menu option with a compact, aligned status column.
+tdz_menu_status() {
+    local num="$1" text="$2" status="$3"
+    local status_color="${4:-$C_GREEN}"
+    local color="${5:-$C_TITLE}"
+    local left="${C_CHOICE}${num}${C_RESET} ${C_WHITE}${text}${C_RESET}"
+    local right="${status_color}${C_BOLD}${status}${C_RESET}"
+    local available=$((TDZ_BOX_WIDTH - 2))
+    local right_width left_width gap gap_text=""
+    right=$(_tdz_fit "$right" 18)
+    right_width=$(_tdz_w "$right")
+    left=$(_tdz_fit "$left" $((available - right_width - 1)))
+    left_width=$(_tdz_w "$left")
+    gap=$((available - left_width - right_width))
+    (( gap < 1 )) && gap=1
+    printf -v gap_text "%${gap}s" ""
+    tdz_row "${left}${gap_text}${right}" "$color"
 }
 
 SSH_SESSION_CACHE_DB_MTIME=0
@@ -979,7 +1021,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-17.1
+# TDZ SSH TUNNEL limiter version 2026-07-17.2
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1145,18 +1187,18 @@ while true; do
             fi
         fi
 
-        # --- Compute bandwidth info ---
-        bw_display="Unlimited"
+        # --- Compute bandwidth info for every account, including unlimited ---
+        usagefile="$BW_DIR/${user}.usage"
+        accum_disp=0
+        if [[ -f "$usagefile" ]]; then
+            read -r accum_disp < "$usagefile"
+            [[ "$accum_disp" =~ ^[0-9]+$ ]] || accum_disp=0
+        fi
+        bw_gb_used=$(awk "BEGIN {printf \"%.2f\", $accum_disp / 1073741824}")
+        bw_display="${bw_gb_used} GB / Unlimited"
         traffic_exceeded=false
         if [[ "$bandwidth_gb" != "0" && -n "$bandwidth_gb" ]]; then
-            usagefile="$BW_DIR/${user}.usage"
-            accum_disp=0
-            if [[ -f "$usagefile" ]]; then
-                read -r accum_disp < "$usagefile"
-                [[ "$accum_disp" =~ ^[0-9]+$ ]] || accum_disp=0
-            fi
-            bw_gb_used=$(awk "BEGIN {printf \"%.2f\", $accum_disp / 1073741824}")
-            bw_display="${bw_gb_used}/${bandwidth_gb} GB"
+            bw_display="${bw_gb_used} GB / ${bandwidth_gb} GB"
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$accum_disp" =~ ^[0-9]+$ ]] && (( accum_disp >= quota_bytes )); then
                 traffic_exceeded=true
@@ -1231,8 +1273,6 @@ while true; do
             fi
         fi
 
-        [[ -z "$bandwidth_gb" || "$bandwidth_gb" == "0" ]] && continue
-
         usagefile="$BW_DIR/${user}.usage"
         accumulated=0
         if [[ -f "$usagefile" ]]; then
@@ -1285,12 +1325,14 @@ while true; do
         new_total=$((accumulated + delta_total))
         printf "%s\n" "$new_total" > "$usagefile"
 
-        quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
-        if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( new_total >= quota_bytes )); then
-            if ! $user_locked; then
-                usermod -L "$user" &>/dev/null
-                killall -u "$user" -9 &>/dev/null
-                locked_users["$user"]=1
+        if [[ -n "$bandwidth_gb" && "$bandwidth_gb" != "0" ]]; then
+            quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
+            if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( new_total >= quota_bytes )); then
+                if ! $user_locked; then
+                    usermod -L "$user" &>/dev/null
+                    killall -u "$user" -9 &>/dev/null
+                    locked_users["$user"]=1
+                fi
             fi
         fi
     done < "$DB_FILE"
@@ -1335,7 +1377,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.1"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.2"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -1512,29 +1554,27 @@ setup_ssh_login_info() {
 
 domain_cert_menu() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_NAVY}--- 🌐 Domain & SSL Certificate Management ---${C_RESET}"
-    echo -e "${C_DIM}Manage your own domain + Let's Encrypt certificate.${C_RESET}"
-
     load_edge_cert_info
 
-    if [[ -n "$EDGE_DOMAIN" ]]; then
-        echo -e "\n${C_GREEN}ℹ️ Current certificate:${C_RESET}"
-        echo -e "  - ${C_CYAN}Domain:${C_RESET} ${C_YELLOW}$EDGE_DOMAIN${C_RESET}"
-        echo -e "  - ${C_CYAN}Mode:${C_RESET}   ${C_YELLOW}$EDGE_CERT_MODE${C_RESET}"
-        if [[ -n "$EDGE_EMAIL" ]]; then
-            echo -e "  - ${C_CYAN}Email:${C_RESET}  ${C_YELLOW}$EDGE_EMAIL${C_RESET}"
-        fi
-    else
-        echo -e "\n${C_YELLOW}ℹ️ No domain/certificate configured yet.${C_RESET}"
-    fi
-
-    echo -e "\n${C_BOLD}Select an action:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-50s\n" "🔐 Configure domain + Let's Encrypt cert"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-50s\n" "📜 Generate self-signed cert (no domain needed)"
-    printf "  ${C_CHOICE}[ 3]${C_RESET} %-50s\n" "🗑️ Remove current certificate"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
+    local cert_domain="${EDGE_DOMAIN:-Not configured}"
+    local cert_mode="${EDGE_CERT_MODE:-None}"
     echo
-    read -p "👉 Enter choice: " dc_choice
+    tdz_box_top
+    tdz_box_header "DOMAIN & SSL"
+    tdz_box_divider
+    tdz_kv2 "DOMAIN" "$cert_domain" "MODE" "$cert_mode"
+    if [[ -n "$EDGE_EMAIL" ]]; then
+        tdz_row "${C_GRAY}EMAIL${C_RESET} ${C_WHITE}$EDGE_EMAIL${C_RESET}"
+    fi
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "Configure Let's Encrypt Certificate"
+    tdz_menu1 "[ 2]" "Generate Self-Signed Certificate"
+    tdz_menu1 "[ 3]" "Remove Current Certificate"
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Return"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" dc_choice
 
     case "$dc_choice" in
         1)
@@ -1587,21 +1627,26 @@ domain_cert_menu() {
 _select_user_interface() {
     local title="$1"
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}${title}${C_RESET}\n"
     if [[ ! -s $DB_FILE ]]; then
-        echo -e "${C_YELLOW}ℹ️ No users found in the database.${C_RESET}"
+        echo
+        tdz_box_top
+        tdz_box_header "$title"
+        tdz_box_divider
+        tdz_row "${C_YELLOW}No users found in the database.${C_RESET}"
+        tdz_box_bot
         SELECTED_USER="NO_USERS"; return
     fi
-    
+
+    local -a all_users=() users=()
     mapfile -t all_users < <(cut -d: -f1 "$DB_FILE" | sort)
     local -A all_user_lookup=()
-    local username
+    local username search_term user_number
     for username in "${all_users[@]}"; do
         all_user_lookup["$username"]=1
     done
     
     if [ ${#all_users[@]} -ge 15 ]; then
-        read -p "👉 Enter a search term (or press Enter to list all): " search_term
+        read -r -p "$(echo -e "${C_PROMPT}  Search username (Enter = all): ${C_RESET}")" search_term
         if [[ -n "$search_term" ]]; then
             mapfile -t users < <(printf "%s\n" "${all_users[@]}" | grep -i "$search_term")
         else
@@ -1612,19 +1657,26 @@ _select_user_interface() {
     fi
 
     if [ ${#users[@]} -eq 0 ]; then
-        echo -e "\n${C_YELLOW}ℹ️ No users found matching your criteria.${C_RESET}"
+        echo -e "\n${C_YELLOW}No users found matching your search.${C_RESET}"
         SELECTED_USER="NO_USERS"; return
     fi
-    echo -e "\nPlease select a user:\n"
+
+    echo
+    tdz_box_top
+    tdz_box_header "$title"
+    tdz_box_divider
     for i in "${!users[@]}"; do
-        printf "  ${C_GREEN}[%2d]${C_RESET} %s\n" "$((i+1))" "${users[$i]}"
+        printf -v user_number "[%2d]" "$((i+1))"
+        tdz_menu1 "$user_number" "${users[$i]}"
     done
-    echo -e "\n  ${C_RED} [ 0]${C_RESET} ↩️ Cancel and return to main menu"
-    echo -e "${C_CYAN}💡 Tip: you can also type the exact username directly.${C_RESET}"
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Cancel"
+    tdz_row "${C_GRAY}Number or exact username is accepted.${C_RESET}"
+    tdz_box_bot
     echo
     local choice
     while true; do
-        if ! read -r -p "👉 Enter the number or exact username: " choice; then
+        if ! read -r -p "$(echo -e "${C_PROMPT}  Select a user: ${C_RESET}")" choice; then
             echo
             SELECTED_USER=""
             return
@@ -1647,13 +1699,12 @@ _select_multi_user_interface() {
     local title="$1"
     local include_orphan_users="${2:-false}"
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}${title}${C_RESET}\n"
     SELECTED_USERS=()
-    local -a all_users=()
+    local -a all_users=() users=()
     local -a orphan_users=()
     local -A all_user_lookup=()
     local -A orphan_user_lookup=()
-    local username
+    local username search_term user_number
 
     if [[ -s $DB_FILE ]]; then
         mapfile -t all_users < <(cut -d: -f1 "$DB_FILE" | sort)
@@ -1673,10 +1724,15 @@ _select_multi_user_interface() {
     fi
 
     if [[ ${#all_users[@]} -eq 0 ]]; then
-        echo -e "${C_YELLOW}ℹ️ No users found in the manager database.${C_RESET}"
+        echo
+        tdz_box_top
+        tdz_box_header "$title"
+        tdz_box_divider
+        tdz_row "${C_YELLOW}No managed users were found.${C_RESET}"
         if [[ "$include_orphan_users" == "true" ]]; then
-            echo -e "${C_DIM}No orphan TDZ SSH TUNNEL system users were found either.${C_RESET}"
+            tdz_row "${C_GRAY}No system-only accounts were found.${C_RESET}"
         fi
+        tdz_box_bot
         SELECTED_USERS=("NO_USERS"); return
     fi
 
@@ -1685,7 +1741,7 @@ _select_multi_user_interface() {
     done
     
     if [ ${#all_users[@]} -ge 15 ]; then
-        read -p "👉 Enter a search term (or press Enter to list all): " search_term
+        read -r -p "$(echo -e "${C_PROMPT}  Search username (Enter = all): ${C_RESET}")" search_term
         if [[ -n "$search_term" ]]; then
             mapfile -t users < <(printf "%s\n" "${all_users[@]}" | grep -i "$search_term")
         else
@@ -1696,28 +1752,34 @@ _select_multi_user_interface() {
     fi
 
     if [ ${#users[@]} -eq 0 ]; then
-        echo -e "\n${C_YELLOW}ℹ️ No users found matching your criteria.${C_RESET}"
+        echo -e "\n${C_YELLOW}No users found matching your search.${C_RESET}"
         SELECTED_USERS=("NO_USERS"); return
     fi
-    echo -e "\nPlease select users:\n"
+
+    echo
+    tdz_box_top
+    tdz_box_header "$title"
+    tdz_box_divider
     for i in "${!users[@]}"; do
         local display_user="${users[$i]}"
         if [[ "$include_orphan_users" == "true" && -n "${orphan_user_lookup[${users[$i]}]+x}" ]]; then
-            display_user="${display_user} ${C_DIM}(system-only)${C_RESET}"
+            display_user="${display_user} (system-only)"
         fi
-        printf "  ${C_GREEN}[%2d]${C_RESET} %s\n" "$((i+1))" "$display_user"
+        printf -v user_number "[%2d]" "$((i+1))"
+        tdz_menu1 "$user_number" "$display_user"
     done
-    echo -e "\n  ${C_GREEN}[all]${C_RESET} Select ALL listed users"
-    echo -e "  ${C_RED}  [0]${C_RESET} ↩️ Cancel and return to main menu"
-    echo -e "\n${C_CYAN}💡 You can select multiple by number, range, or exact username.${C_RESET}"
-    echo -e "${C_CYAN}   Examples: '1 3 5' or '1,3' or '1-4' or 'alice bob'${C_RESET}"
+    tdz_box_divider
+    tdz_menu1 "[all]" "Select All Listed Users"
+    tdz_menu1 "[ 0]" "Cancel"
+    tdz_row "${C_GRAY}Examples: 1 3 5 | 1,3 | 1-4 | alice bob${C_RESET}"
     if [[ "$include_orphan_users" == "true" ]]; then
-        echo -e "${C_CYAN}   Users marked '(system-only)' are old accounts still on the VPS but missing from users.db${C_RESET}"
+        tdz_row "${C_GRAY}(system-only) = account missing from users.db${C_RESET}"
     fi
+    tdz_box_bot
     echo
     local choice
     while true; do
-        if ! read -r -p "👉 Enter user numbers or usernames: " choice; then
+        if ! read -r -p "$(echo -e "${C_PROMPT}  Select users: ${C_RESET}")" choice; then
             echo
             SELECTED_USERS=()
             return
@@ -2177,7 +2239,7 @@ create_user() {
 }
 
 delete_user() {
-    _select_multi_user_interface "--- 🗑️ Delete TDZ SSH TUNNEL Users ---" "true"
+    _select_multi_user_interface "DELETE USERS" "true"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
     echo -e "\n${C_RED}⚠️ You selected ${#SELECTED_USERS[@]} user(s) to delete: ${C_YELLOW}${SELECTED_USERS[*]}${C_RESET}"
@@ -2189,11 +2251,11 @@ delete_user() {
 }
 
 edit_user() {
-    _select_user_interface "--- ✏️ Edit a User ---"
+    _select_user_interface "EDIT USER"
     local username=$SELECTED_USER
     if [[ "$username" == "NO_USERS" ]] || [[ -z "$username" ]]; then return; fi
     while true; do
-        clear; show_banner; echo -e "${C_BOLD}${C_PURPLE}--- Editing User: ${C_YELLOW}$username${C_PURPLE} ---${C_RESET}"
+        clear; show_banner
         
         # Show current user details
         local current_line; current_line=$(grep "^$username:" "$DB_FILE")
@@ -2217,17 +2279,25 @@ edit_user() {
             fi
         fi
         
-        echo -e "\n  ${C_DIM}Current: Pass=${C_YELLOW}$cur_pass${C_RESET}${C_DIM} Exp=${C_YELLOW}$cur_expiry${C_RESET}${C_DIM} Conn=${C_YELLOW}$cur_limit${C_RESET}${C_DIM} BW=${C_YELLOW}$cur_bw_display${C_RESET}${C_DIM} Used=${C_CYAN}$bw_used_display${C_RESET}"
-        echo -e "\nSelect a detail to edit:\n"
-        printf "  ${C_GREEN}[ 1]${C_RESET} %-35s\n" "👤 Change Username"
-        printf "  ${C_GREEN}[ 2]${C_RESET} %-35s\n" "🔑 Change Password"
-        printf "  ${C_GREEN}[ 3]${C_RESET} %-35s\n" "🗓️ Change Expiration Date"
-        printf "  ${C_GREEN}[ 4]${C_RESET} %-35s\n" "📶 Change Connection Limit"
-        printf "  ${C_GREEN}[ 5]${C_RESET} %-35s\n" "📦 Change Bandwidth Limit"
-        printf "  ${C_GREEN}[ 6]${C_RESET} %-35s\n" "🔄 Reset Bandwidth Counter"
-        echo -e "\n  ${C_RED}[ 0]${C_RESET} ✅ Finish Editing"
         echo
-        if ! read -r -p "👉 Enter your choice: " edit_choice; then
+        tdz_box_top
+        tdz_box_header "EDIT USER"
+        tdz_box_divider
+        tdz_kv2 "USER" "$username" "EXPIRES" "$cur_expiry"
+        tdz_kv2 "PASS" "$cur_pass" "CONNS" "$cur_limit"
+        tdz_kv2 "USED" "$bw_used_display" "LIMIT" "$cur_bw_display"
+        tdz_box_divider
+        tdz_menu1 "[ 1]" "Change Username"
+        tdz_menu1 "[ 2]" "Change Password"
+        tdz_menu1 "[ 3]" "Change Expiration Date"
+        tdz_menu1 "[ 4]" "Change Connection Limit"
+        tdz_menu1 "[ 5]" "Change Bandwidth Limit"
+        tdz_menu1 "[ 6]" "Reset Bandwidth Counter"
+        tdz_box_divider
+        tdz_menu1 "[ 0]" "Finish Editing"
+        tdz_box_bot
+        echo
+        if ! read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" edit_choice; then
             echo
             return
         fi
@@ -2289,7 +2359,7 @@ edit_user() {
 }
 
 lock_user() {
-    _select_multi_user_interface "--- 🔒 Lock Users (from DB) ---"
+    _select_multi_user_interface "LOCK ACCOUNTS"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
     echo -e "\n${C_BLUE}🔒 Locking selected users...${C_RESET}"
@@ -2310,7 +2380,7 @@ lock_user() {
 }
 
 unlock_user() {
-    _select_multi_user_interface "--- 🔓 Unlock Users (from DB) ---"
+    _select_multi_user_interface "UNLOCK ACCOUNTS"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
     echo -e "\n${C_BLUE}🔓 Unlocking selected users...${C_RESET}"
@@ -2374,8 +2444,8 @@ list_users() {
         local connection_string="$online_count / ${limit:-1}"
         local plain_status="ACTIVE" status_color="$C_GREEN"
         local quota_exceeded=false
-        local used_bytes=0 used_gb used_display limit_display
-        local expiry_display expiry_check=0
+        local used_bytes=0 used_gb data_display
+        local expiry_display expiry_check=0 time_left="Unknown"
         local account_number display_user
 
         if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then
@@ -2386,10 +2456,9 @@ list_users() {
             [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
         fi
         used_gb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1073741824}")
-        used_display="${used_gb} GB"
-        limit_display="Unlimited"
+        data_display="${used_gb} GB / Unlimited"
         if [[ "$bandwidth_gb" != "0" ]]; then
-            limit_display="${bandwidth_gb} GB"
+            data_display="${used_gb} GB / ${bandwidth_gb} GB"
             local quota_bytes
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( used_bytes >= quota_bytes )); then
@@ -2406,6 +2475,12 @@ list_users() {
             expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
         else
             expiry_display="${expiry:-Unknown}"
+        fi
+
+        if [[ "$expiry" == "Never" || -z "$expiry" ]]; then
+            time_left="Never"
+        elif [[ "$expiry_check" =~ ^[0-9]+$ ]] && (( expiry_check > 0 )); then
+            time_left=$(format_trial_time_left "$expiry_check")
         fi
 
         if [[ -z "${system_user_lookup[$user]+x}" ]]; then
@@ -2445,23 +2520,15 @@ list_users() {
         if (( ${#display_user} > 22 )); then
             display_user="${display_user:0:19}..."
         fi
-        if (( ${#expiry_display} > 20 )); then
-            expiry_display="${expiry_display:0:17}..."
-        fi
-        if (( ${#connection_string} > 20 )); then
-            connection_string="${connection_string:0:17}..."
-        fi
-        if (( ${#used_display} > 20 )); then
-            used_display="${used_display:0:17}..."
-        fi
-        if (( ${#limit_display} > 20 )); then
-            limit_display="${limit_display:0:17}..."
-        fi
+        expiry_display=$(_tdz_fit "$expiry_display" 20)
+        time_left=$(_tdz_fit "$time_left" 20)
+        connection_string=$(_tdz_fit "$connection_string" 20)
+        data_display=$(_tdz_fit "$data_display" 20)
 
         tdz_row2 "${C_CHOICE}[${account_number}]${C_RESET} ${C_BOLD}${C_WHITE}${display_user}${C_RESET}" \
             "${status_color}${C_BOLD}[ ${plain_status} ]${C_RESET}"
-        tdz_kv2 "EXPIRES" "$expiry_display" "CONNS" "$connection_string"
-        tdz_kv2 "USED" "$used_display" "LIMIT" "$limit_display"
+        tdz_kv2 "EXPIRES" "$expiry_display" "LEFT" "$time_left"
+        tdz_kv2 "CONNS" "$connection_string" "DATA" "$data_display"
     done < <(sort "$DB_FILE")
 
     tdz_box_divider
@@ -2471,7 +2538,7 @@ list_users() {
 }
 
 renew_user() {
-    _select_multi_user_interface "--- 🔄 Renew Users ---"
+    _select_multi_user_interface "RENEW ACCOUNTS"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     read -p "👉 Enter number of days to extend the account(s): " days; if ! [[ "$days" =~ ^[0-9]+$ ]]; then echo -e "\n${C_RED}❌ Invalid number.${C_RESET}"; return; fi
     local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d)
@@ -3173,16 +3240,22 @@ auto_backup_choose_interval() {
     AUTO_BACKUP_SELECTED_SECONDS=""
     AUTO_BACKUP_SELECTED_LABEL=""
 
-    echo -e "\n${C_BOLD}Auto Backup Interval:${C_RESET}"
-    echo -e "  ${C_CHOICE}[1]${C_RESET} Every 10 minutes"
-    echo -e "  ${C_CHOICE}[2]${C_RESET} Every 30 minutes"
-    echo -e "  ${C_CHOICE}[3]${C_RESET} Every 1 hour"
-    echo -e "  ${C_CHOICE}[4]${C_RESET} Every 6 hours"
-    echo -e "  ${C_CHOICE}[5]${C_RESET} Every 12 hours"
-    echo -e "  ${C_CHOICE}[6]${C_RESET} Every 1 day"
-    echo -e "  ${C_CHOICE}[7]${C_RESET} Custom (minutes)"
-    echo -e "  ${C_WARN}[0]${C_RESET} Cancel\n"
-    read -r -p "Select interval [0-7]: " int_choice
+    echo
+    tdz_box_top
+    tdz_box_header "BACKUP INTERVAL"
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "Every 10 Minutes"
+    tdz_menu1 "[ 2]" "Every 30 Minutes"
+    tdz_menu1 "[ 3]" "Every 1 Hour"
+    tdz_menu1 "[ 4]" "Every 6 Hours"
+    tdz_menu1 "[ 5]" "Every 12 Hours"
+    tdz_menu1 "[ 6]" "Every 1 Day"
+    tdz_menu1 "[ 7]" "Custom Interval (Minutes)"
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Cancel"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select an interval: ${C_RESET}")" int_choice
     case "$int_choice" in
         1) AUTO_BACKUP_SELECTED_SECONDS=600; AUTO_BACKUP_SELECTED_LABEL="10 minutes" ;;
         2) AUTO_BACKUP_SELECTED_SECONDS=1800; AUTO_BACKUP_SELECTED_LABEL="30 minutes" ;;
@@ -3410,29 +3483,32 @@ auto_backup_status() {
 backup_data_menu() {
     while true; do
         clear; show_banner
-        echo -e "${C_BOLD}${C_PURPLE}--- Backup Data ---${C_RESET}\n"
-
-        local pill_bot="${C_STATUS_I}Stopped${C_RESET}"
+        local pill_bot="Stopped" pill_color="$C_RED"
         if pm2 list 2>/dev/null | grep -q "$AUTO_BACKUP_PM2_NAME"; then
-            pill_bot="${C_STATUS_A}Active${C_RESET}"
+            pill_bot="Active"
+            pill_color="$C_GREEN"
         fi
-        echo -e "${C_WHITE}Auto Backup Bot:${C_RESET} $pill_bot\n"
 
-        echo -e "${C_BOLD}Manual Backup:${C_RESET}"
-        printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "Backup User Data"
         echo
-        echo -e "${C_BOLD}Auto Backup Bot:${C_RESET}"
-        printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "Connect Bot"
-        printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "Start Bot"
-        printf "  ${C_CHOICE}[ 4]${C_RESET} %-40s\n" "Stop Bot"
-        printf "  ${C_CHOICE}[ 5]${C_RESET} %-40s\n" "Restart Bot"
-        printf "  ${C_CHOICE}[ 6]${C_RESET} %-40s\n" "Send Backup Now"
-        printf "  ${C_CHOICE}[ 7]${C_RESET} %-40s\n" "Bot Status"
-        printf "  ${C_CHOICE}[ 8]${C_RESET} %-40s\n" "Edit Backup Interval"
-        printf "  ${C_CHOICE}[ 9]${C_RESET} %-40s\n" "Reset Bot"
-        echo -e "\n  ${C_WARN}[ 0]${C_RESET} Return to Main Menu"
+        tdz_box_top
+        tdz_box_header "BACKUP & RESTORE"
+        tdz_box_divider
+        tdz_row2 "${C_GRAY}AUTO BACKUP BOT${C_RESET}" "${pill_color}${C_BOLD}${pill_bot}${C_RESET}"
+        tdz_box_divider
+        tdz_menu1 "[ 1]" "Backup User Data"
+        tdz_menu1 "[ 2]" "Connect Telegram Bot"
+        tdz_menu1 "[ 3]" "Start Backup Bot"
+        tdz_menu1 "[ 4]" "Stop Backup Bot"
+        tdz_menu1 "[ 5]" "Restart Backup Bot"
+        tdz_menu1 "[ 6]" "Send Backup Now"
+        tdz_menu1 "[ 7]" "View Bot Status"
+        tdz_menu1 "[ 8]" "Edit Backup Interval"
+        tdz_menu1 "[ 9]" "Reset Backup Bot"
+        tdz_box_divider
+        tdz_menu1 "[ 0]" "Return to Main Menu"
+        tdz_box_bot
         echo
-        read -r -p "$(echo -e ${C_PROMPT}"  Select an option: "${C_RESET})" b_choice
+        read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" b_choice
         case $b_choice in
             1) backup_user_data ;;
             2) auto_backup_connect_bot ;;
@@ -3617,7 +3693,7 @@ preview_dynamic_ssh_banner() {
 
     echo -e "${C_DIM}Refreshing dynamic banner worker...${C_RESET}"
     setup_limiter_service >/dev/null 2>&1
-    _select_user_interface "--- 📝 Preview Dynamic Banner ---"
+    _select_user_interface "PREVIEW DYNAMIC BANNER"
     local u=$SELECTED_USER
     if [[ -z "$u" || "$u" == "NO_USERS" ]]; then
         return
@@ -3637,34 +3713,6 @@ preview_dynamic_ssh_banner() {
         fi
     fi
     press_enter
-}
-
-ssh_banner_menu() {
-    while true; do
-        show_banner
-        local banner_status
-        if grep -q -E "^\s*Banner\s+$SSH_BANNER_FILE" /etc/ssh/sshd_config && [ -f "$SSH_BANNER_FILE" ]; then
-            banner_status="${C_STATUS_A}(Active)${C_RESET}"
-        else
-            banner_status="${C_STATUS_I}(Inactive)${C_RESET}"
-        fi
-        
-        echo -e "\n   ${C_TITLE}═════════════════[ ${C_BOLD}🎨 SSH Banner Management ${banner_status} ${C_RESET}${C_TITLE}]═════════════════${C_RESET}"
-        printf "     ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "📋 Paste or Edit Banner"
-        printf "     ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "👁️ View Current Banner"
-        printf "     ${C_DANGER}[ 3]${C_RESET} %-40s\n" "🗑️ Disable and Remove Banner"
-        echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
-        echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return to Main Menu"
-        echo
-        read -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice
-        case $choice in
-            1) set_ssh_banner_paste ;;
-            2) view_ssh_banner ;;
-            3) remove_ssh_banner ;;
-            0) return ;;
-            *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" && sleep 2 ;;
-        esac
-    done
 }
 
 install_udp_custom() {
@@ -4082,25 +4130,32 @@ select_edge_certificate() {
 
     load_edge_cert_info
 
-    echo -e "\n${C_BOLD}${C_PURPLE}--- 🔐 Shared TLS Certificate ---${C_RESET}"
-    echo -e "${C_DIM}The same certificate will be used by HAProxy and the internal Nginx proxy.${C_RESET}"
-
+    echo
+    tdz_box_top
+    tdz_box_header "SHARED TLS CERTIFICATE"
+    tdz_box_divider
     if $has_existing_cert; then
         local existing_label="${EDGE_CERT_MODE:-existing}"
         if [[ -n "$EDGE_DOMAIN" ]]; then
             existing_label="$existing_label - $EDGE_DOMAIN"
         fi
-        printf "  ${C_CHOICE}[ 1]${C_RESET} %-52s\n" "Reuse existing certificate (${existing_label})"
-        printf "  ${C_CHOICE}[ 2]${C_RESET} %-52s\n" "Replace with a new self-signed certificate"
-        printf "  ${C_CHOICE}[ 3]${C_RESET} %-52s\n" "Replace with a Certbot certificate"
+        tdz_row "${C_GRAY}CURRENT${C_RESET} ${C_WHITE}${existing_label}${C_RESET}"
+        tdz_box_divider
+        tdz_menu1 "[ 1]" "Reuse Existing Certificate"
+        tdz_menu1 "[ 2]" "Replace with Self-Signed Certificate"
+        tdz_menu1 "[ 3]" "Replace with Certbot Certificate"
+        tdz_box_bot
         echo
-        read -p "👉 Enter choice [1]: " cert_choice
+        read -r -p "$(echo -e "${C_PROMPT}  Select an option [1]: ${C_RESET}")" cert_choice
         cert_choice=${cert_choice:-1}
     else
-        printf "  ${C_CHOICE}[ 1]${C_RESET} %-52s\n" "Generate a self-signed certificate"
-        printf "  ${C_CHOICE}[ 2]${C_RESET} %-52s\n" "Use a Certbot certificate"
+        tdz_row "${C_GRAY}No shared certificate is currently configured.${C_RESET}"
+        tdz_box_divider
+        tdz_menu1 "[ 1]" "Generate Self-Signed Certificate"
+        tdz_menu1 "[ 2]" "Use Certbot Certificate"
+        tdz_box_bot
         echo
-        read -p "👉 Enter choice [1]: " cert_choice
+        read -r -p "$(echo -e "${C_PROMPT}  Select an option [1]: ${C_RESET}")" cert_choice
         cert_choice=${cert_choice:-1}
     fi
 
@@ -4901,18 +4956,23 @@ apply_edge_public_ports() {
 edge_public_port_menu() {
     while true; do
         clear; show_banner
-        echo -e "${C_BOLD}${C_PURPLE}--- 🔧 Public Edge Port Management ---${C_RESET}\n"
-        echo -e "${C_WHITE}Current HTTP/WS:${C_RESET} ${C_GREEN}${EDGE_PUBLIC_HTTP_PORT}${C_RESET}"
-        echo -e "${C_WHITE}Current TLS/SSL:${C_RESET} ${C_GREEN}${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
-        echo -e "${C_DIM}Defaults: ${DEFAULT_EDGE_PUBLIC_HTTP_PORT}/${DEFAULT_EDGE_PUBLIC_TLS_PORT} • Internal backend: ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}\n"
-        printf "  ${C_CHOICE}[ 1]${C_RESET} %-45s\n" "Change HTTP/WS Port"
-        printf "  ${C_CHOICE}[ 2]${C_RESET} %-45s\n" "Change TLS/SSL Port"
-        printf "  ${C_CHOICE}[ 3]${C_RESET} %-45s\n" "Change Both Public Ports"
-        printf "  ${C_CHOICE}[ 4]${C_RESET} %-45s\n" "Restore Default Public Ports"
-        printf "  ${C_CHOICE}[ 5]${C_RESET} %-45s\n" "Apply/Repair Current Edge Port Layout"
-        echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
         echo
-        read -r -p "👉 Select an option: " port_choice
+        tdz_box_top
+        tdz_box_header "PUBLIC PORT MANAGEMENT"
+        tdz_box_divider
+        tdz_kv2 "HTTP/WS" "$EDGE_PUBLIC_HTTP_PORT" "TLS/SSL" "$EDGE_PUBLIC_TLS_PORT"
+        tdz_kv2 "DEFAULT" "${DEFAULT_EDGE_PUBLIC_HTTP_PORT}/${DEFAULT_EDGE_PUBLIC_TLS_PORT}" "BACKEND" "${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
+        tdz_box_divider
+        tdz_menu1 "[ 1]" "Change HTTP/WS Port"
+        tdz_menu1 "[ 2]" "Change TLS/SSL Port"
+        tdz_menu1 "[ 3]" "Change Both Public Ports"
+        tdz_menu1 "[ 4]" "Restore Default Public Ports"
+        tdz_menu1 "[ 5]" "Apply or Repair Current Port Layout"
+        tdz_box_divider
+        tdz_menu1 "[ 0]" "Return"
+        tdz_box_bot
+        echo
+        read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" port_choice
 
         local new_http="$EDGE_PUBLIC_HTTP_PORT" new_tls="$EDGE_PUBLIC_TLS_PORT" force_apply=false
         case "$port_choice" in
@@ -5131,10 +5191,15 @@ install_dnstt() {
 
     local forward_port=""
     local forward_desc=""
-    echo -e "\n${C_BLUE}Please choose where DNSTT should forward traffic:${C_RESET}"
-    echo -e "  ${C_GREEN}[ 1]${C_RESET} ➡️ Forward to local SSH service (port 22)"
-    echo -e "  ${C_GREEN}[ 2]${C_RESET} ➡️ Forward to local V2Ray backend (port 8787)"
-    read -p "👉 Enter your choice [2]: " fwd_choice
+    echo
+    tdz_box_top
+    tdz_box_header "DNSTT FORWARD TARGET"
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "Local SSH Service (Port 22)"
+    tdz_menu1 "[ 2]" "Local V2Ray Backend (Port 8787)"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select a target [2]: ${C_RESET}")" fwd_choice
     fwd_choice=${fwd_choice:-2}
     if [[ "$fwd_choice" == "1" ]]; then
         forward_port="22"
@@ -5311,15 +5376,22 @@ install_tdz_proxy() {
         return
     fi
 
-    echo -e "\n${C_CYAN}Select a version to install:${C_RESET}"
+    local choice version_number
+    echo
+    tdz_box_top
+    tdz_box_header "TDZ PROXY VERSION"
+    tdz_box_divider
     for i in "${!versions[@]}"; do
-        printf "  ${C_GREEN}[%2d]${C_RESET} %s\n" "$((i+1))" "${versions[$i]}"
+        printf -v version_number "[%2d]" "$((i+1))"
+        tdz_menu1 "$version_number" "${versions[$i]}"
     done
-    echo -e "  ${C_RED} [ 0]${C_RESET} ↩️ Cancel"
-    
-    local choice
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Cancel"
+    tdz_box_bot
+    echo
+
     while true; do
-        if ! read -r -p "👉 Enter version number [1]: " choice; then
+        if ! read -r -p "$(echo -e "${C_PROMPT}  Select a version [1]: ${C_RESET}")" choice; then
             echo
             return
         fi
@@ -5747,15 +5819,15 @@ request_certbot_ssl() {
 
 nginx_proxy_menu() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🌐 Internal Nginx Proxy Management ---${C_RESET}"
-
-    local nginx_status="${C_STATUS_I}Inactive${C_RESET}"
-    local haproxy_status="${C_STATUS_I}Inactive${C_RESET}"
+    local nginx_status="Inactive" nginx_color="$C_RED"
+    local haproxy_status="Inactive" haproxy_color="$C_RED"
     if systemctl is-active --quiet nginx; then
-        nginx_status="${C_STATUS_A}Active${C_RESET}"
+        nginx_status="Active"
+        nginx_color="$C_GREEN"
     fi
     if systemctl is-active --quiet haproxy; then
-        haproxy_status="${C_STATUS_A}Active${C_RESET}"
+        haproxy_status="Active"
+        haproxy_color="$C_GREEN"
     fi
 
     load_edge_cert_info
@@ -5764,29 +5836,32 @@ nginx_proxy_menu() {
         cert_info="${cert_info} - ${EDGE_DOMAIN}"
     fi
 
-    echo -e "\n${C_WHITE}Nginx:${C_RESET} ${nginx_status}"
-    echo -e "${C_WHITE}HAProxy:${C_RESET} ${haproxy_status}"
-    echo -e "${C_DIM}Public Edge: ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} | Internal Nginx: ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
-    echo -e "${C_DIM}Shared Certificate: ${cert_info}${C_RESET}"
-
-    echo -e "\n${C_BOLD}Select an action:${C_RESET}\n"
-    
-    if systemctl is-active --quiet nginx; then
-         printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "🛑 Stop Nginx Service"
-         printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "🔄 Restart HAProxy + Nginx Stack"
-         printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "⚙️ Re-install/Re-configure Edge Stack"
-         printf "  ${C_CHOICE}[ 4]${C_RESET} %-40s\n" "🔒 Switch/Renew Shared SSL (Certbot)"
-         printf "  ${C_CHOICE}[ 5]${C_RESET} %-40s\n" "🔥 Uninstall/Purge Nginx"
-    else
-         printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "▶️ Start Nginx Service"
-         printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "⚙️ Install/Configure Edge Stack"
-         printf "  ${C_CHOICE}[ 4]${C_RESET} %-40s\n" "🔒 Switch/Renew Shared SSL (Certbot)"
-         printf "  ${C_CHOICE}[ 5]${C_RESET} %-40s\n" "🔥 Uninstall/Purge Nginx"
-    fi
-
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return to previous menu"
     echo
-    read -p "👉 Enter your choice: " choice
+    tdz_box_top
+    tdz_box_header "INTERNAL NGINX PROXY"
+    tdz_box_divider
+    tdz_row2 "${C_GRAY}NGINX${C_RESET} ${nginx_color}${nginx_status}${C_RESET}" \
+        "${C_GRAY}HAPROXY${C_RESET} ${haproxy_color}${haproxy_status}${C_RESET}"
+    tdz_kv2 "PUBLIC" "${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}" "INTERNAL" "${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
+    tdz_row "${C_GRAY}CERTIFICATE${C_RESET} ${C_WHITE}${cert_info}${C_RESET}"
+    tdz_box_divider
+    if systemctl is-active --quiet nginx; then
+         tdz_menu1 "[ 1]" "Stop Nginx Service"
+         tdz_menu1 "[ 2]" "Restart HAProxy and Nginx Stack"
+         tdz_menu1 "[ 3]" "Reinstall or Reconfigure Edge Stack"
+         tdz_menu1 "[ 4]" "Switch or Renew Shared SSL"
+         tdz_menu1 "[ 5]" "Uninstall and Purge Nginx"
+    else
+         tdz_menu1 "[ 1]" "Start Nginx Service"
+         tdz_menu1 "[ 3]" "Install or Configure Edge Stack"
+         tdz_menu1 "[ 4]" "Switch or Renew Shared SSL"
+         tdz_menu1 "[ 5]" "Uninstall and Purge Nginx"
+    fi
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Return to Previous Menu"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" choice
     
     case $choice in
         1) 
@@ -5840,13 +5915,17 @@ nginx_proxy_menu() {
 
 install_xui_panel() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Install X-UI Panel ---${C_RESET}"
-    echo -e "\nThis installs your fixed patched X-UI release."
-    echo -e "Choose an installation option:\n"
-    printf "  ${C_GREEN}[ 1]${C_RESET} %-40s\n" "Install ${XUI_PATCHED_LABEL}"
-    echo -e "\n  ${C_RED}[ 0]${C_RESET} ❌ Cancel Installation"
     echo
-    read -p "👉 Select an option: " choice
+    tdz_box_top
+    tdz_box_header "INSTALL X-UI PANEL"
+    tdz_box_divider
+    tdz_row "${C_GRAY}VERSION${C_RESET} ${C_WHITE}${XUI_PATCHED_LABEL}${C_RESET}"
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "Install Patched X-UI"
+    tdz_menu1 "[ 0]" "Cancel Installation"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" choice
     case $choice in
         1)
             local installer_file installer_hash installer_url
@@ -6191,49 +6270,45 @@ show_banner() {
 protocol_menu() {
     while true; do
         show_banner
-        local badvpn_status; if systemctl is-active --quiet badvpn; then badvpn_status="${C_STATUS_A}(Active)${C_RESET}"; else badvpn_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local udp_custom_status; if systemctl is-active --quiet udp-custom; then udp_custom_status="${C_STATUS_A}(Active)${C_RESET}"; else udp_custom_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local zivpn_status; if systemctl is-active --quiet zivpn.service; then zivpn_status="${C_STATUS_A}(Active)${C_RESET}"; else zivpn_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        
-        local ssl_tunnel_text="HAProxy Edge Stack (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})"
-        local ssl_tunnel_status="${C_STATUS_I}(Inactive)${C_RESET}"
+        local badvpn_status="Inactive" badvpn_color="$C_RED"
+        local zivpn_status="Inactive" zivpn_color="$C_RED"
+        local ssl_tunnel_status="Inactive" ssl_tunnel_color="$C_RED"
+        local dnstt_status="Inactive" dnstt_color="$C_RED"
+        local nginx_status="Inactive" nginx_color="$C_RED"
+        local xui_status="Not Installed" xui_color="$C_RED"
+        if systemctl is-active --quiet badvpn; then badvpn_status="Active"; badvpn_color="$C_GREEN"; fi
+        if systemctl is-active --quiet zivpn.service; then zivpn_status="Active"; zivpn_color="$C_GREEN"; fi
         if systemctl is-active --quiet haproxy; then
-            ssl_tunnel_status="${C_STATUS_A}(Active)${C_RESET}"
+            ssl_tunnel_status="Active"
+            ssl_tunnel_color="$C_GREEN"
         fi
-        
-        local dnstt_status; if systemctl is-active --quiet dnstt.service; then dnstt_status="${C_STATUS_A}(Active)${C_RESET}"; else dnstt_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        
-        local tdzproxy_status="${C_STATUS_I}(Inactive)${C_RESET}"
-        local tdzproxy_ports=""
-        if systemctl is-active --quiet tdzproxy; then
-            if [ -f "$TDZPROXY_CONFIG_FILE" ]; then source "$TDZPROXY_CONFIG_FILE"; fi
-            tdzproxy_ports=" ($PORTS)"
-            tdzproxy_status="${C_STATUS_A}(Active - ${INSTALLED_VERSION:-latest})${C_RESET}"
-        fi
+        if systemctl is-active --quiet dnstt.service; then dnstt_status="Active"; dnstt_color="$C_GREEN"; fi
+        if systemctl is-active --quiet nginx; then nginx_status="Active"; nginx_color="$C_GREEN"; fi
+        if command -v x-ui &> /dev/null; then xui_status="Installed"; xui_color="$C_GREEN"; fi
 
-        local nginx_status; if systemctl is-active --quiet nginx; then nginx_status="${C_STATUS_A}(Active)${C_RESET}"; else nginx_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local xui_status; if command -v x-ui &> /dev/null; then xui_status="${C_STATUS_A}(Installed)${C_RESET}"; else xui_status="${C_STATUS_I}(Not Installed)${C_RESET}"; fi
-        
-        echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}🔌 PROTOCOL & PANEL MANAGEMENT ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
-        echo -e "     ${C_ACCENT}--- TUNNELLING PROTOCOLS---${C_RESET}"
-        printf "     ${C_CHOICE}[ 1]${C_RESET} %-45s %s\n" "⚡ Install badvpn (UDP 7300)" "$badvpn_status"
-        printf "     ${C_CHOICE}[ 2]${C_RESET} %-45s\n" "🗑️ Uninstall badvpn"
-        printf "     ${C_CHOICE}[ 3]${C_RESET} %-45s %s\n" "🔒 Install ${ssl_tunnel_text}" "$ssl_tunnel_status"
-        printf "     ${C_CHOICE}[ 4]${C_RESET} %-45s\n" "🗑️ Uninstall HAProxy Edge Stack"
-        printf "     ${C_CHOICE}[ 5]${C_RESET} %-45s %s\n" "📡 Install/View DNSTT (Port 53)" "$dnstt_status"
-        printf "     ${C_CHOICE}[ 6]${C_RESET} %-45s\n" "🗑️ Uninstall DNSTT"
-        printf "     ${C_CHOICE}[ 7]${C_RESET} %-45s %s\n" "🌐 Install/Manage Internal Nginx (${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT})" "$nginx_status"
-        printf "     ${C_CHOICE}[ 8]${C_RESET} %-45s %s\n" "🛡️ Install ZiVPN (UDP 5667)" "$zivpn_status"
-        printf "     ${C_CHOICE}[ 9]${C_RESET} %-45s\n" "🗑️ Uninstall ZiVPN"
-        
-        echo -e "     ${C_ACCENT}--- 💻 MANAGEMENT PANELS ---${C_RESET}"
-        printf "     ${C_CHOICE}[10]${C_RESET} %-45s %s\n" "💻 Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status"
-        printf "     ${C_CHOICE}[11]${C_RESET} %-45s\n" "🗑️ Uninstall X-UI Panel"
-        
-        echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
-        echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return to Main Menu"
         echo
-        if ! read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice; then
+        tdz_box_top
+        tdz_box_header "PROTOCOL & PANEL MANAGEMENT"
+        tdz_box_divider
+        tdz_row "${C_GRAY}TUNNELLING PROTOCOLS${C_RESET}"
+        tdz_menu_status "[ 1]" "Install badvpn (UDP 7300)" "$badvpn_status" "$badvpn_color"
+        tdz_menu1 "[ 2]" "Uninstall badvpn"
+        tdz_menu_status "[ 3]" "Install HAProxy (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})" "$ssl_tunnel_status" "$ssl_tunnel_color"
+        tdz_menu1 "[ 4]" "Uninstall HAProxy Edge Stack"
+        tdz_menu_status "[ 5]" "Install or View DNSTT (Port 53)" "$dnstt_status" "$dnstt_color"
+        tdz_menu1 "[ 6]" "Uninstall DNSTT"
+        tdz_menu_status "[ 7]" "Manage Nginx (${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT})" "$nginx_status" "$nginx_color"
+        tdz_menu_status "[ 8]" "Install ZiVPN (UDP 5667)" "$zivpn_status" "$zivpn_color"
+        tdz_menu1 "[ 9]" "Uninstall ZiVPN"
+        tdz_box_divider
+        tdz_row "${C_GRAY}MANAGEMENT PANELS${C_RESET}"
+        tdz_menu_status "[10]" "Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status" "$xui_color"
+        tdz_menu1 "[11]" "Uninstall X-UI Panel"
+        tdz_box_divider
+        tdz_menu1 "[ 0]" "Return to Main Menu"
+        tdz_box_bot
+        echo
+        if ! read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" choice; then
             echo
             return
         fi
@@ -6336,7 +6411,6 @@ uninstall_script() {
 
 create_trial_account() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⏱️ Create Trial Account ---${C_RESET}"
     
     # Ensure 'at' daemon is available
     if ! command -v at &>/dev/null; then
@@ -6354,18 +6428,23 @@ create_trial_account() {
         systemctl start atd &>/dev/null
     fi
     
-    echo -e "\n${C_CYAN}Select trial duration:${C_RESET}\n"
-    printf "  ${C_GREEN}[ 1]${C_RESET} ⏱️  1 Hour\n"
-    printf "  ${C_GREEN}[ 2]${C_RESET} ⏱️  2 Hours\n"
-    printf "  ${C_GREEN}[ 3]${C_RESET} ⏱️  3 Hours\n"
-    printf "  ${C_GREEN}[ 4]${C_RESET} ⏱️  6 Hours\n"
-    printf "  ${C_GREEN}[ 5]${C_RESET} ⏱️  12 Hours\n"
-    printf "  ${C_GREEN}[ 6]${C_RESET} 📅  1 Day\n"
-    printf "  ${C_GREEN}[ 7]${C_RESET} 📅  3 Days\n"
-    printf "  ${C_GREEN}[ 8]${C_RESET} ⚙️  Custom (enter hours)\n"
-    echo -e "\n  ${C_RED}[ 0]${C_RESET} ↩️ Cancel"
     echo
-    read -p "👉 Select duration: " dur_choice
+    tdz_box_top
+    tdz_box_header "CREATE TRIAL"
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "1 Hour"
+    tdz_menu1 "[ 2]" "2 Hours"
+    tdz_menu1 "[ 3]" "3 Hours"
+    tdz_menu1 "[ 4]" "6 Hours"
+    tdz_menu1 "[ 5]" "12 Hours"
+    tdz_menu1 "[ 6]" "1 Day"
+    tdz_menu1 "[ 7]" "3 Days"
+    tdz_menu1 "[ 8]" "Custom Duration (Hours)"
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Cancel"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select a duration: ${C_RESET}")" dur_choice
     
     local duration_hours=0
     local duration_label=""
@@ -6546,7 +6625,7 @@ list_trial_accounts() {
         if [[ -z "$bandwidth_gb" || "$bandwidth_gb" == "0" ]]; then
             bandwidth_display="${used_gb} GB / Unlimited"
         else
-            bandwidth_display="${used_gb} / ${bandwidth_gb} GB"
+            bandwidth_display="${used_gb} GB / ${bandwidth_gb} GB"
         fi
 
         passwd_state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
@@ -6587,7 +6666,7 @@ list_trial_accounts() {
 }
 
 view_user_bandwidth() {
-    _select_user_interface "--- 📊 View User Bandwidth ---"
+    _select_user_interface "VIEW USER BANDWIDTH"
     local u=$SELECTED_USER
     if [[ "$u" == "NO_USERS" || -z "$u" ]]; then return; fi
     
@@ -6771,7 +6850,7 @@ generate_client_config() {
 }
 
 client_config_menu() {
-    _select_user_interface "--- 📱 Generate Client Config ---"
+    _select_user_interface "CLIENT CONFIG"
     local u=$SELECTED_USER
     if [[ "$u" == "NO_USERS" || -z "$u" ]]; then return; fi
     
@@ -6839,21 +6918,30 @@ simple_live_monitor() {
 
 traffic_monitor_menu() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📈 Network Traffic Monitor ---${C_RESET}"
-    
     # Find active interface
-    local iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
-    
-    echo -e "\nInterface: ${C_CYAN}${iface}${C_RESET}"
-    
-    echo -e "\n${C_BOLD}Select a monitoring option:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "⚡ Live Monitor ${C_DIM}(Lightweight, No Install)${C_RESET}"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "📊 View Total Traffic Since Boot"
-    printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "📅 Daily/Monthly Logs ${C_DIM}(Requires vnStat)${C_RESET}"
-    
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
+    local iface
+    iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+
     echo
-    read -p "👉 Enter choice: " t_choice
+    tdz_box_top
+    tdz_box_header "NETWORK TRAFFIC MONITOR"
+    tdz_box_divider
+    tdz_row "${C_GRAY}INTERFACE${C_RESET} ${C_WHITE}${iface:-Not detected}${C_RESET}"
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "Live Monitor (No Installation)"
+    tdz_menu1 "[ 2]" "Total Traffic Since Boot"
+    tdz_menu1 "[ 3]" "Daily and Monthly Logs (vnStat)"
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Return"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" t_choice
+
+    if [[ "$t_choice" != "0" && -z "$iface" ]]; then
+        echo -e "\n${C_RED}No active default network interface was detected.${C_RESET}"
+        press_enter
+        return
+    fi
     case $t_choice in
         1) 
            simple_live_monitor "$iface"
@@ -6903,26 +6991,28 @@ traffic_monitor_menu() {
 
 torrent_block_menu() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚫 Torrent Blocking (Anti-Torrent) ---${C_RESET}"
-    
     # Check status
-    local torrent_status="${C_STATUS_I}Disabled${C_RESET}"
+    local torrent_status="Disabled" torrent_color="$C_RED"
     if iptables -L FORWARD | grep -q "ipp2p"; then
-         torrent_status="${C_STATUS_A}Enabled${C_RESET}"
+         torrent_status="Enabled"; torrent_color="$C_GREEN"
     elif iptables -L OUTPUT | grep -q "BitTorrent"; then
          # Fallback check for string matching
-         torrent_status="${C_STATUS_A}Enabled${C_RESET}"
+         torrent_status="Enabled"; torrent_color="$C_GREEN"
     fi
-    
-    echo -e "\n${C_WHITE}Current Status: ${torrent_status}${C_RESET}"
-    echo -e "${C_DIM}This feature uses iptables string matching to block common torrent keywords.${C_RESET}"
-    
-    echo -e "\n${C_BOLD}Select an action:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "🔒 Enable Torrent Blocking"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "🔓 Disable Torrent Blocking"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
+
     echo
-    read -p "👉 Enter choice: " b_choice
+    tdz_box_top
+    tdz_box_header "TORRENT BLOCKING"
+    tdz_box_divider
+    tdz_row2 "${C_GRAY}STATUS${C_RESET}" "${torrent_color}${C_BOLD}${torrent_status}${C_RESET}"
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "Enable Torrent Blocking"
+    tdz_menu1 "[ 2]" "Disable Torrent Blocking"
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Return"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" b_choice
     
     case $b_choice in
         1)
@@ -7002,25 +7092,31 @@ ssh_banner_menu() {
     while true; do
         show_banner
         local banner_mode
-        local banner_status
+        local banner_status banner_color
         banner_mode=$(get_ssh_banner_mode)
         case "$banner_mode" in
-            dynamic) banner_status="${C_STATUS_A}Dynamic${C_RESET}" ;;
-            static) banner_status="${C_STATUS_A}Static${C_RESET}" ;;
-            *) banner_status="${C_STATUS_I}Disabled${C_RESET}" ;;
+            dynamic) banner_status="Dynamic"; banner_color="$C_GREEN" ;;
+            static) banner_status="Static"; banner_color="$C_GREEN" ;;
+            *) banner_status="Disabled"; banner_color="$C_RED" ;;
         esac
 
-        echo -e "\n   ${C_TITLE}═════════════════[ ${C_BOLD}🎨 SSH BANNER MODE: ${banner_status} ${C_RESET}${C_TITLE}]═════════════════${C_RESET}"
-        printf "     ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "✨ Enable Dynamic Account Banner"
-        printf "     ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "📋 Paste or Replace Static Banner"
-        printf "     ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "👁️ View Current Static Banner"
-        printf "     ${C_CHOICE}[ 4]${C_RESET} %-40s\n" "📝 Preview Dynamic Banner"
-        printf "     ${C_CHOICE}[ 5]${C_RESET} %-40s\n" "👤 Edit Dynamic Banner Contacts"
-        printf "     ${C_DANGER}[ 6]${C_RESET} %-40s\n" "🗑️ Disable All SSH Banners"
-        echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
-        echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return to Main Menu"
         echo
-        if ! read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice; then
+        tdz_box_top
+        tdz_box_header "SSH BANNER MANAGEMENT"
+        tdz_box_divider
+        tdz_row2 "${C_GRAY}CURRENT MODE${C_RESET}" "${banner_color}${C_BOLD}${banner_status}${C_RESET}"
+        tdz_box_divider
+        tdz_menu1 "[ 1]" "Enable Dynamic Account Banner"
+        tdz_menu1 "[ 2]" "Paste or Replace Static Banner"
+        tdz_menu1 "[ 3]" "View Current Static Banner"
+        tdz_menu1 "[ 4]" "Preview Dynamic Banner"
+        tdz_menu1 "[ 5]" "Edit Dynamic Banner Contacts"
+        tdz_menu1 "[ 6]" "Disable All SSH Banners"
+        tdz_box_divider
+        tdz_menu1 "[ 0]" "Return to Main Menu"
+        tdz_box_bot
+        echo
+        if ! read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" choice; then
             echo
             return
         fi
@@ -7045,23 +7141,28 @@ ssh_banner_menu() {
 
 auto_reboot_menu() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🔄 Auto-Reboot Management ---${C_RESET}"
-    
     # Check status
-    local cron_check=$(crontab -l 2>/dev/null | grep "systemctl reboot")
-    local status="${C_STATUS_I}Disabled${C_RESET}"
+    local cron_check
+    cron_check=$(crontab -l 2>/dev/null | grep "systemctl reboot")
+    local status="Disabled" status_color="$C_RED"
     if [[ -n "$cron_check" ]]; then
-        status="${C_STATUS_A}Active (Midnight)${C_RESET}"
+        status="Active (Midnight)"
+        status_color="$C_GREEN"
     fi
-    
-    echo -e "\n${C_WHITE}Current Status: ${status}${C_RESET}"
-    
-    echo -e "\n${C_BOLD}Select an action:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "🕐 Enable Daily Reboot (00:00 midnight)"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "❌ Disable Auto-Reboot"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
+
     echo
-    read -p "👉 Enter choice: " r_choice
+    tdz_box_top
+    tdz_box_header "AUTO-REBOOT MANAGEMENT"
+    tdz_box_divider
+    tdz_row2 "${C_GRAY}STATUS${C_RESET}" "${status_color}${C_BOLD}${status}${C_RESET}"
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "Enable Daily Reboot (00:00)"
+    tdz_menu1 "[ 2]" "Disable Auto-Reboot"
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Return"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" r_choice
     
     case $r_choice in
         1)
