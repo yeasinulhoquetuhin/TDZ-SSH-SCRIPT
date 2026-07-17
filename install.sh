@@ -116,7 +116,7 @@ show_header() {
     [[ -t 1 ]] && clear || true
     echo
     echo -e "  ${C_CYAN}╔════════════════════════════════════════════════════════════════╗${C_RESET}"
-    print_centered_line "TDZ SSH TUNNEL   •   SETUP" "${C_BOLD}${C_CYAN}TDZ SSH TUNNEL   •   SETUP${C_RESET}"
+    print_centered_line "TDZ SSH TUNNEL   •   SETUP" "${C_CYAN}TDZ SSH TUNNEL   •   SETUP${C_RESET}"
     print_centered_line "Powered By: t.me/TuhinBroh" "${C_GRAY}Powered By: t.me/TuhinBroh${C_RESET}"
     echo -e "  ${C_CYAN}╚════════════════════════════════════════════════════════════════╝${C_RESET}"
     echo
