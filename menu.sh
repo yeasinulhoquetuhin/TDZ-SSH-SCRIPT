@@ -1001,6 +1001,41 @@ initial_setup() {
     echo -e "${C_GREEN}[OK] Setup finished.${C_RESET}"
 }
 
+update_setup() {
+    # Refresh generated runtime components without resetting operator data or
+    # feature state. In particular, an enabled dynamic banner must remain
+    # enabled after the one-line installer is re-run as an updater.
+    local dynamic_banner_was_enabled=false
+    local dynamic_banner_flag="$DB_DIR/banners_enabled"
+    [[ -f "$dynamic_banner_flag" ]] && dynamic_banner_was_enabled=true
+
+    check_environment
+    ensure_tdztunnel_dirs
+    ensure_tdztunnel_system_group
+    harden_sshd_for_tunnel_stability
+    setup_limiter_service
+    setup_bandwidth_service
+    setup_trial_cleanup_script
+
+    if $dynamic_banner_was_enabled; then
+        touch "$dynamic_banner_flag"
+        update_ssh_banners_config
+    fi
+
+    # Refresh the Telegram worker code without changing its saved bot settings
+    # or turning a deliberately stopped bot back on.
+    if [[ -f "$AUTO_BACKUP_CONF" ]]; then
+        auto_backup_write_worker
+        if command -v pm2 >/dev/null 2>&1 &&
+           pm2 describe "$AUTO_BACKUP_PM2_NAME" 2>/dev/null | grep -qE 'status.*online'; then
+            pm2 restart "$AUTO_BACKUP_PM2_NAME" --update-env >/dev/null 2>&1 || true
+        fi
+    fi
+
+    [[ -f "$INSTALL_FLAG_FILE" ]] || touch "$INSTALL_FLAG_FILE"
+    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
+}
+
 _is_valid_ipv4() {
     local ip=$1
     if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
@@ -1802,9 +1837,11 @@ domain_cert_menu() {
         tdz_row "${C_GRAY}EMAIL${C_RESET} ${C_WHITE}$EDGE_EMAIL${C_RESET}"
     fi
     tdz_box_divider
-    tdz_menu1 "[ 1]" "Configure Let's Encrypt Certificate"
+    tdz_menu1 "[ 1]" "Issue / Renew Let's Encrypt"
     tdz_menu1 "[ 2]" "Generate Self-Signed Certificate"
-    tdz_menu1 "[ 3]" "Remove Current Certificate"
+    tdz_menu1 "[ 3]" "Use / Renew Existing Certificate"
+    tdz_menu1 "[ 4]" "Import Fullchain and Private Key"
+    tdz_menu1 "[ 5]" "Remove Current Certificate"
     tdz_box_divider
     tdz_menu1 "[ 0]" "Return"
     tdz_box_bot
@@ -1842,6 +1879,12 @@ domain_cert_menu() {
             generate_self_signed_edge_cert "$common_name"
             ;;
         3)
+            manage_existing_certbot_certificates
+            ;;
+        4)
+            import_custom_certificate
+            ;;
+        5)
             if [[ -z "$EDGE_DOMAIN" && ! -f "$TDZ_SSL_CERT_FILE" ]]; then
                 echo -e "\n${C_YELLOW}[INFO] No certificate to remove.${C_RESET}"
                 return
@@ -3117,6 +3160,7 @@ LAST_FILE="$BACKUP_DIR/last-backup.tar.gz"
 LOG_FILE="/var/log/tdztunnel-auto-backup.log"
 DOWNLOAD_DIR="/tmp/tdz-restore-downloads"
 USERS_GROUP="tdzusers"
+TRIAL_CLEANUP_SCRIPT="/usr/local/bin/tdztunnel-trial-cleanup.sh"
 API="https://api.telegram.org/bot"
 OFFSET=0
 RESTORE_STATE="IDLE"
@@ -3289,7 +3333,7 @@ do_restore() {
     [ -d "$restore_root/bandwidth" ] && cp "$restore_root/bandwidth"/*.usage "$BW_DIR/" 2>/dev/null || true
     getent group "$USERS_GROUP" >/dev/null 2>&1 || groupadd "$USERS_GROUP"
     local uc=0
-    while IFS=: read -r user pass expiry limit bandwidth_gb _extra; do
+    while IFS=: read -r user pass expiry limit bandwidth_gb account_type metadata_value _extra; do
         [ -z "$user" ] && continue
         uc=$((uc + 1))
         if ! id "$user" &>/dev/null; then
@@ -3303,6 +3347,19 @@ do_restore() {
         else
             chage -E "$expiry" "$user" 2>/dev/null
         fi
+        if [[ "$account_type" == "trial" && "$metadata_value" =~ ^[0-9]+$ ]] &&
+           command -v at >/dev/null 2>&1 && [[ -x "$TRIAL_CLEANUP_SCRIPT" ]]; then
+            local restored_uid run_at
+            restored_uid=$(id -u "$user" 2>/dev/null || true)
+            run_at=$(date -d "@$metadata_value" '+%Y%m%d%H%M.%S' 2>/dev/null || true)
+            if [[ "$restored_uid" =~ ^[0-9]+$ && -n "$run_at" ]]; then
+                if (( metadata_value <= $(date +%s) )); then
+                    echo "$TRIAL_CLEANUP_SCRIPT --uid $restored_uid $metadata_value" | at now >/dev/null 2>&1 || true
+                else
+                    echo "$TRIAL_CLEANUP_SCRIPT --uid $restored_uid $metadata_value" | at -t "$run_at" >/dev/null 2>&1 || true
+                fi
+            fi
+        fi
         log_msg "Restored user: $user"
     done < "$DB_FILE"
     if [ -f "$restore_root/locks.db" ]; then
@@ -3315,6 +3372,7 @@ do_restore() {
             esac
         done < "$restore_root/locks.db"
     fi
+    systemctl restart tdztunnel-limiter >/dev/null 2>&1 || true
     rm -rf "$temp_dir"
     rm -f /etc/tdztunnel/.banner_cache 2>/dev/null
     tg_send "Restore complete! $uc users restored.
@@ -4301,11 +4359,8 @@ save_edge_cert_info() {
     local cert_domain="$2"
     local cert_email="$3"
     mkdir -p "$DB_DIR"
-    cat > "$EDGE_CERT_INFO_FILE" <<EOF
-EDGE_CERT_MODE="$cert_mode"
-EDGE_DOMAIN="$cert_domain"
-EDGE_EMAIL="$cert_email"
-EOF
+    printf 'EDGE_CERT_MODE=%q\nEDGE_DOMAIN=%q\nEDGE_EMAIL=%q\n' \
+        "$cert_mode" "$cert_domain" "$cert_email" > "$EDGE_CERT_INFO_FILE"
 }
 
 detect_preferred_host() {
@@ -4362,6 +4417,219 @@ build_shared_tls_bundle() {
     chmod 644 "$SSL_CERT_CHAIN_FILE"
     chmod 600 "$SSL_CERT_KEY_FILE" "$TDZ_SSL_CERT_FILE"
     return 0
+}
+
+certificate_primary_name() {
+    local certificate_file="$1"
+    local cert_name=""
+    cert_name=$(openssl x509 -in "$certificate_file" -noout -ext subjectAltName 2>/dev/null |
+        sed -n 's/.*DNS:\([^,[:space:]]*\).*/\1/p' | head -n 1)
+    if [[ -z "$cert_name" ]]; then
+        cert_name=$(openssl x509 -in "$certificate_file" -noout -subject -nameopt RFC2253 2>/dev/null |
+            sed -n 's/^subject=.*CN=\([^,]*\).*/\1/p' | head -n 1)
+    fi
+    printf '%s' "${cert_name:-Unknown}"
+}
+
+certificate_expiry_label() {
+    local certificate_file="$1"
+    local end_date end_epoch now_epoch days_left
+    end_date=$(openssl x509 -in "$certificate_file" -noout -enddate 2>/dev/null | cut -d= -f2-)
+    end_epoch=$(date -d "$end_date" +%s 2>/dev/null || echo 0)
+    now_epoch=$(date +%s)
+    if [[ "$end_epoch" =~ ^[0-9]+$ ]] && (( end_epoch > 0 )); then
+        days_left=$(( (end_epoch - now_epoch) / 86400 ))
+        if (( days_left < 0 )); then
+            printf 'Expired'
+        else
+            printf '%sd left' "$days_left"
+        fi
+    else
+        printf 'Unknown expiry'
+    fi
+}
+
+validate_certificate_pair() {
+    local certificate_file="$1"
+    local private_key_file="$2"
+    local cert_pub key_pub
+
+    [[ -s "$certificate_file" && -s "$private_key_file" ]] || {
+        echo -e "${C_RED}[ERROR] Certificate or private key file is empty.${C_RESET}"
+        return 1
+    }
+    openssl x509 -in "$certificate_file" -noout >/dev/null 2>&1 || {
+        echo -e "${C_RED}[ERROR] The selected fullchain is not a valid certificate.${C_RESET}"
+        return 1
+    }
+    openssl pkey -in "$private_key_file" -noout >/dev/null 2>&1 || {
+        echo -e "${C_RED}[ERROR] The selected private key is not valid.${C_RESET}"
+        return 1
+    }
+    cert_pub=$(openssl x509 -in "$certificate_file" -pubkey -noout 2>/dev/null |
+        openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+    key_pub=$(openssl pkey -in "$private_key_file" -pubout -outform DER 2>/dev/null |
+        sha256sum | awk '{print $1}')
+    if [[ -z "$cert_pub" || "$cert_pub" != "$key_pub" ]]; then
+        echo -e "${C_RED}[ERROR] The fullchain and private key do not match.${C_RESET}"
+        return 1
+    fi
+    return 0
+}
+
+apply_existing_certificate_files() {
+    local source_chain="$1"
+    local source_key="$2"
+    local cert_mode="$3"
+    local cert_domain="$4"
+    local cert_email="${5:-}"
+    local rollback_dir had_chain=false had_key=false had_bundle=false had_info=false
+    local nginx_was_active=false haproxy_was_active=false
+
+    validate_certificate_pair "$source_chain" "$source_key" || return 1
+    rollback_dir=$(mktemp -d) || return 1
+    [[ -f "$SSL_CERT_CHAIN_FILE" ]] && cp "$SSL_CERT_CHAIN_FILE" "$rollback_dir/chain" && had_chain=true
+    [[ -f "$SSL_CERT_KEY_FILE" ]] && cp "$SSL_CERT_KEY_FILE" "$rollback_dir/key" && had_key=true
+    [[ -f "$TDZ_SSL_CERT_FILE" ]] && cp "$TDZ_SSL_CERT_FILE" "$rollback_dir/bundle" && had_bundle=true
+    [[ -f "$EDGE_CERT_INFO_FILE" ]] && cp "$EDGE_CERT_INFO_FILE" "$rollback_dir/info" && had_info=true
+    systemctl is-active --quiet nginx >/dev/null 2>&1 && nginx_was_active=true
+    systemctl is-active --quiet haproxy >/dev/null 2>&1 && haproxy_was_active=true
+
+    mkdir -p "$SSL_CERT_DIR"
+    if ! install -m 644 "$source_chain" "$SSL_CERT_CHAIN_FILE" ||
+       ! install -m 600 "$source_key" "$SSL_CERT_KEY_FILE" ||
+       ! build_shared_tls_bundle ||
+       ! save_edge_cert_info "$cert_mode" "$cert_domain" "$cert_email"; then
+        $had_chain && cp "$rollback_dir/chain" "$SSL_CERT_CHAIN_FILE" || rm -f "$SSL_CERT_CHAIN_FILE"
+        $had_key && cp "$rollback_dir/key" "$SSL_CERT_KEY_FILE" || rm -f "$SSL_CERT_KEY_FILE"
+        $had_bundle && cp "$rollback_dir/bundle" "$TDZ_SSL_CERT_FILE" || rm -f "$TDZ_SSL_CERT_FILE"
+        $had_info && cp "$rollback_dir/info" "$EDGE_CERT_INFO_FILE" || rm -f "$EDGE_CERT_INFO_FILE"
+        echo -e "${C_RED}[ERROR] Certificate could not be prepared.${C_RESET}"
+        rm -rf "$rollback_dir"
+        return 1
+    fi
+
+    local validation_ok=true
+    if command -v nginx >/dev/null 2>&1 && [[ -f "$NGINX_CONFIG_FILE" ]]; then
+        nginx -t >/dev/null 2>&1 || validation_ok=false
+    fi
+    if command -v haproxy >/dev/null 2>&1 && [[ -f "$HAPROXY_CONFIG" ]]; then
+        haproxy -c -f "$HAPROXY_CONFIG" >/dev/null 2>&1 || validation_ok=false
+    fi
+    if $validation_ok && $nginx_was_active; then
+        systemctl restart nginx >/dev/null 2>&1 || validation_ok=false
+    fi
+    if $validation_ok && $haproxy_was_active; then
+        systemctl restart haproxy >/dev/null 2>&1 || validation_ok=false
+    fi
+
+    if ! $validation_ok; then
+        $had_chain && cp "$rollback_dir/chain" "$SSL_CERT_CHAIN_FILE" || rm -f "$SSL_CERT_CHAIN_FILE"
+        $had_key && cp "$rollback_dir/key" "$SSL_CERT_KEY_FILE" || rm -f "$SSL_CERT_KEY_FILE"
+        $had_bundle && cp "$rollback_dir/bundle" "$TDZ_SSL_CERT_FILE" || rm -f "$TDZ_SSL_CERT_FILE"
+        $had_info && cp "$rollback_dir/info" "$EDGE_CERT_INFO_FILE" || rm -f "$EDGE_CERT_INFO_FILE"
+        $nginx_was_active && systemctl restart nginx >/dev/null 2>&1 || true
+        $haproxy_was_active && systemctl restart haproxy >/dev/null 2>&1 || true
+        rm -rf "$rollback_dir"
+        echo -e "${C_RED}[ERROR] Service validation failed. The previous certificate was restored.${C_RESET}"
+        return 1
+    fi
+
+    rm -rf "$rollback_dir"
+    echo -e "${C_GREEN}[OK] Certificate applied successfully for ${C_YELLOW}$cert_domain${C_RESET}."
+    return 0
+}
+
+manage_existing_certbot_certificates() {
+    local -a cert_names=() cert_chains=() cert_keys=()
+    local cert_dir cert_name cert_domain expiry index=0
+
+    for cert_dir in /etc/letsencrypt/live/*; do
+        [[ -d "$cert_dir" && -s "$cert_dir/fullchain.pem" && -s "$cert_dir/privkey.pem" ]] || continue
+        cert_names+=("$(basename "$cert_dir")")
+        cert_chains+=("$cert_dir/fullchain.pem")
+        cert_keys+=("$cert_dir/privkey.pem")
+    done
+    if (( ${#cert_names[@]} == 0 )); then
+        echo -e "\n${C_YELLOW}[INFO] No existing Certbot certificates were found.${C_RESET}"
+        return 1
+    fi
+
+    echo
+    tdz_box_top
+    tdz_box_header "EXISTING CERTIFICATES"
+    tdz_box_divider
+    for ((index=0; index<${#cert_names[@]}; index++)); do
+        expiry=$(certificate_expiry_label "${cert_chains[$index]}")
+        tdz_menu1 "[$((index + 1))]" "${cert_names[$index]} • ${expiry}"
+    done
+    tdz_box_divider
+    tdz_menu1 "[ 0]" "Return"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select a certificate: ${C_RESET}")" cert_choice
+    [[ "$cert_choice" == "0" || -z "$cert_choice" ]] && return 0
+    [[ "$cert_choice" =~ ^[0-9]+$ ]] || { echo -e "${C_RED}[ERROR] Invalid option.${C_RESET}"; return 1; }
+    index=$((cert_choice - 1))
+    (( index >= 0 && index < ${#cert_names[@]} )) || { echo -e "${C_RED}[ERROR] Invalid option.${C_RESET}"; return 1; }
+
+    cert_name="${cert_names[$index]}"
+    cert_domain=$(certificate_primary_name "${cert_chains[$index]}")
+    echo
+    tdz_box_top
+    tdz_box_header "$cert_name"
+    tdz_box_divider
+    tdz_menu1 "[ 1]" "Apply Existing Certificate"
+    tdz_menu1 "[ 2]" "Renew Now and Apply"
+    tdz_menu1 "[ 0]" "Cancel"
+    tdz_box_bot
+    echo
+    read -r -p "$(echo -e "${C_PROMPT}  Select an action: ${C_RESET}")" cert_action
+    case "$cert_action" in
+        1)
+            apply_existing_certificate_files "${cert_chains[$index]}" "${cert_keys[$index]}" \
+                "certbot" "$cert_domain" "${EDGE_EMAIL:-}"
+            ;;
+        2)
+            _install_certbot || return 1
+            local nginx_was_active=false haproxy_was_active=false
+            systemctl is-active --quiet nginx >/dev/null 2>&1 && nginx_was_active=true
+            systemctl is-active --quiet haproxy >/dev/null 2>&1 && haproxy_was_active=true
+            $nginx_was_active && systemctl stop nginx >/dev/null 2>&1
+            $haproxy_was_active && systemctl stop haproxy >/dev/null 2>&1
+            echo -e "\n${C_BLUE}Renewing ${C_YELLOW}$cert_name${C_RESET}..."
+            if ! certbot renew --cert-name "$cert_name" --force-renewal; then
+                $nginx_was_active && systemctl start nginx >/dev/null 2>&1 || true
+                $haproxy_was_active && systemctl start haproxy >/dev/null 2>&1 || true
+                echo -e "${C_RED}[ERROR] Certificate renewal failed. The active certificate was not changed.${C_RESET}"
+                return 1
+            fi
+            apply_existing_certificate_files "${cert_chains[$index]}" "${cert_keys[$index]}" \
+                "certbot" "$cert_domain" "${EDGE_EMAIL:-}"
+            local apply_rc=$?
+            $nginx_was_active && systemctl start nginx >/dev/null 2>&1 || true
+            $haproxy_was_active && systemctl start haproxy >/dev/null 2>&1 || true
+            return "$apply_rc"
+            ;;
+        0|"") return 0 ;;
+        *) echo -e "${C_RED}[ERROR] Invalid option.${C_RESET}"; return 1 ;;
+    esac
+}
+
+import_custom_certificate() {
+    local chain_path key_path cert_domain custom_domain
+    echo -e "\n${C_DIM}Provide the fullchain certificate and its matching private key.${C_RESET}"
+    read -r -p "  Fullchain file path: " chain_path
+    read -r -p "  Private key file path: " key_path
+    [[ -f "$chain_path" && -f "$key_path" ]] || {
+        echo -e "${C_RED}[ERROR] One or both selected files were not found.${C_RESET}"
+        return 1
+    }
+    validate_certificate_pair "$chain_path" "$key_path" || return 1
+    cert_domain=$(certificate_primary_name "$chain_path")
+    read -r -p "  Domain / SNI label [$cert_domain]: " custom_domain
+    cert_domain=${custom_domain:-$cert_domain}
+    apply_existing_certificate_files "$chain_path" "$key_path" "custom" "$cert_domain" ""
 }
 
 generate_self_signed_edge_cert() {
@@ -4438,15 +4706,15 @@ obtain_certbot_edge_cert() {
         return 1
     fi
 
-    cp "$certbot_chain" "$SSL_CERT_CHAIN_FILE"
-    cp "$certbot_key" "$SSL_CERT_KEY_FILE"
-    build_shared_tls_bundle || {
+    apply_existing_certificate_files "$certbot_chain" "$certbot_key" \
+        "certbot" "$domain_name" "$email" || {
         [[ "$restart_nginx" -eq 1 ]] && systemctl start nginx >/dev/null 2>&1
         [[ "$restart_haproxy" -eq 1 ]] && systemctl start haproxy >/dev/null 2>&1
         return 1
     }
-    save_edge_cert_info "certbot" "$domain_name" "$email"
-    echo -e "${C_GREEN}[OK] Certbot certificate copied into ${C_YELLOW}$SSL_CERT_DIR${C_RESET}"
+    [[ "$restart_nginx" -eq 1 ]] && systemctl start nginx >/dev/null 2>&1
+    [[ "$restart_haproxy" -eq 1 ]] && systemctl start haproxy >/dev/null 2>&1
+    echo -e "${C_GREEN}[OK] Certbot certificate is ready for ${C_YELLOW}$domain_name${C_RESET}."
     return 0
 }
 
@@ -6592,8 +6860,8 @@ show_banner() {
     [[ $title_rpad_len -gt 0 ]] && printf -v title_rpad "%${title_rpad_len}s" ""
     printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$title_lpad" "$title_content" "$title_rpad"
     # Subtitle line — centered
-    local sub_content="${C_GRAY}Powered By: @TuhinBroh${C_RESET}"
-    local sub_clean="Powered By: @TuhinBroh"
+    local sub_content="${C_GRAY}Powered By: T.me/TuhinBroh${C_RESET}"
+    local sub_clean="Powered By: T.me/TuhinBroh"
     local sub_pad=$(( (64 - ${#sub_clean}) / 2 ))
     [[ $sub_pad -lt 0 ]] && sub_pad=0
     local sub_lpad="" sub_rpad=""
@@ -6667,11 +6935,8 @@ uninstall_script() {
     clear; show_banner
     tdz_screen_title "UNINSTALL TDZ SSH TUNNEL" \
         "Permanently remove the script, services, and configuration." "$C_DANGER"
-    tdz_section "ITEMS TO REMOVE"
-    tdz_detail "Main Command" "$(command -v menu)"
-    tdz_detail "Configuration" "$DB_DIR"
-    tdz_detail "Limiter Service" "$LIMITER_SERVICE"
-    tdz_detail "Components" "HAProxy, Nginx, DNSTT, badvpn, udp-custom"
+    echo
+    tdz_message WARNING "This removes the installed TDZ components, services, and configuration."
     tdz_message WARNING "This action cannot be undone."
     read -p "  Type 'yes' to confirm and proceed with uninstallation: " confirm
     if [[ "$confirm" != "yes" ]]; then
@@ -7687,6 +7952,11 @@ main_menu() {
 
 if [[ "$1" == "--install-setup" ]]; then
     initial_setup
+    exit 0
+fi
+
+if [[ "$1" == "--update-setup" ]]; then
+    update_setup
     exit 0
 fi
 
