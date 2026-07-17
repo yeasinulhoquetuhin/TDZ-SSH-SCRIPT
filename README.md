@@ -51,39 +51,33 @@ Account status, expiration, remaining validity, active connections, and compact 
 
 <table>
   <tr>
-    <td align="center" width="50%">
-      <img src="screenshot/public-port-management.png" alt="Public port management"><br>
-      <b>Public Port Management</b><br>
-      Configure, restore, apply, or repair the public HTTP/WS and TLS/SSL layout.
+    <td align="center" valign="top" width="50%">
+      <img src="screenshot/public-port-management.png" alt="Public port management" height="170"><br>
+      <b>Public Ports</b>
     </td>
-    <td align="center" width="50%">
-      <img src="screenshot/edit-user.png" alt="Edit SSH user"><br>
-      <b>Edit User</b><br>
-      Update credentials, validity, connections, bandwidth limits, and usage counters.
+    <td align="center" valign="top" width="50%">
+      <img src="screenshot/edit-user.png" alt="Edit SSH user" height="170"><br>
+      <b>Edit User</b>
     </td>
   </tr>
   <tr>
-    <td align="center" width="50%">
-      <img src="screenshot/domain-ssl.png" alt="Domain and SSL certificate management"><br>
-      <b>Domain &amp; SSL</b><br>
-      Issue, renew, reuse, import, or remove shared TLS certificates.
+    <td align="center" valign="top" width="50%">
+      <img src="screenshot/domain-ssl.png" alt="Domain and SSL certificate management" height="170"><br>
+      <b>Domain &amp; SSL</b>
     </td>
-    <td align="center" width="50%">
-      <img src="screenshot/backup-restore.png" alt="Telegram backup and restore"><br>
-      <b>Backup &amp; Restore</b><br>
-      Manage local backups and automated Telegram backup controls.
+    <td align="center" valign="top" width="50%">
+      <img src="screenshot/backup-restore.png" alt="Telegram backup and restore" height="170"><br>
+      <b>Backup &amp; Restore</b>
     </td>
   </tr>
   <tr>
-    <td align="center" width="50%">
-      <img src="screenshot/protocol-panel-management.png" alt="Protocol and panel management"><br>
-      <b>Protocol &amp; Panel Management</b><br>
-      Install and manage tunnel protocols, HAProxy, Nginx, ZiVPN, DNSTT, and X-UI.
+    <td align="center" valign="top" width="50%">
+      <img src="screenshot/protocol-panel-management.png" alt="Protocol and panel management" height="170"><br>
+      <b>Protocols &amp; Panels</b>
     </td>
-    <td align="center" width="50%">
-      <img src="screenshot/ssh-banner-management.png" alt="SSH banner management"><br>
-      <b>SSH Banner Management</b><br>
-      Enable, preview, customize, replace, or disable account banners.
+    <td align="center" valign="top" width="50%">
+      <img src="screenshot/ssh-banner-management.png" alt="SSH banner management" height="170"><br>
+      <b>SSH Banners</b>
     </td>
   </tr>
 </table>
