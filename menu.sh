@@ -458,6 +458,57 @@ tdz_message() {
     printf "\n  %s[%s]%s %s\n" "$color" "$label" "$C_RESET" "$message"
 }
 
+# Bandwidth values are stored as bytes for usage and GB for account limits.
+# Keep every screen consistent and promote values to TB at 1024GB.
+tdz_quota_is_unlimited() {
+    local quota_gb="${1:-0}"
+    [[ "$quota_gb" =~ ^[0-9]+\.?[0-9]*$ ]] || return 0
+    awk -v value="$quota_gb" 'BEGIN { exit !(value == 0) }'
+}
+
+tdz_format_used_bytes() {
+    local bytes="${1:-0}" unit="GB" divisor=1073741824 value
+    [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+
+    if (( bytes >= 1099511627776 )); then
+        unit="TB"
+        divisor=1099511627776
+    fi
+
+    value=$(awk -v bytes="$bytes" -v divisor="$divisor" \
+        'BEGIN { printf "%.2f", bytes / divisor }')
+    if [[ "$value" != "0.00" ]]; then
+        value=${value%.00}
+    fi
+    printf '%s%s' "$value" "$unit"
+}
+
+tdz_format_quota_gb() {
+    local quota_gb="${1:-0}" unit="GB" divisor=1 value
+    if tdz_quota_is_unlimited "$quota_gb"; then
+        printf 'Unlimited'
+        return
+    fi
+
+    if awk -v value="$quota_gb" 'BEGIN { exit !(value >= 1024) }'; then
+        unit="TB"
+        divisor=1024
+    fi
+
+    value=$(awk -v quota="$quota_gb" -v divisor="$divisor" \
+        'BEGIN { printf "%.2f", quota / divisor }')
+    while [[ "$value" == *.* && "$value" == *0 ]]; do value=${value%0}; done
+    value=${value%.}
+    printf '%s%s' "$value" "$unit"
+}
+
+tdz_format_bandwidth_usage() {
+    local used_display quota_display
+    used_display=$(tdz_format_used_bytes "${1:-0}")
+    quota_display=$(tdz_format_quota_gb "${2:-0}")
+    printf '%s/%s' "$used_display" "$quota_display"
+}
+
 SSH_SESSION_CACHE_DB_MTIME=0
 SSH_SESSION_TOTAL=0
 APT_CACHE_READY=0
@@ -1067,7 +1118,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-17.3
+# TDZ SSH TUNNEL limiter version 2026-07-17.4
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1113,6 +1164,51 @@ load_banner_identity() {
 
     [[ "$ADMIN_USERNAME" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]] || ADMIN_USERNAME="TUSTDZ"
     [[ "$CHANNEL_USERNAME" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]] || CHANNEL_USERNAME="TuhinBroh"
+}
+
+quota_is_unlimited() {
+    local quota_gb="${1:-0}"
+    [[ "$quota_gb" =~ ^[0-9]+\.?[0-9]*$ ]] || return 0
+    awk -v value="$quota_gb" 'BEGIN { exit !(value == 0) }'
+}
+
+format_used_bytes() {
+    local bytes="${1:-0}" unit="GB" divisor=1073741824 value
+    [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+    if (( bytes >= 1099511627776 )); then
+        unit="TB"
+        divisor=1099511627776
+    fi
+    value=$(awk -v bytes="$bytes" -v divisor="$divisor" \
+        'BEGIN { printf "%.2f", bytes / divisor }')
+    if [[ "$value" != "0.00" ]]; then
+        value=${value%.00}
+    fi
+    printf '%s%s' "$value" "$unit"
+}
+
+format_quota_gb() {
+    local quota_gb="${1:-0}" unit="GB" divisor=1 value
+    if quota_is_unlimited "$quota_gb"; then
+        printf 'Unlimited'
+        return
+    fi
+    if awk -v value="$quota_gb" 'BEGIN { exit !(value >= 1024) }'; then
+        unit="TB"
+        divisor=1024
+    fi
+    value=$(awk -v quota="$quota_gb" -v divisor="$divisor" \
+        'BEGIN { printf "%.2f", quota / divisor }')
+    while [[ "$value" == *.* && "$value" == *0 ]]; do value=${value%0}; done
+    value=${value%.}
+    printf '%s%s' "$value" "$unit"
+}
+
+format_bandwidth_usage() {
+    local used_display quota_display
+    used_display=$(format_used_bytes "${1:-0}")
+    quota_display=$(format_quota_gb "${2:-0}")
+    printf '%s/%s' "$used_display" "$quota_display"
 }
 
 activate_pending_account() {
@@ -1293,11 +1389,9 @@ while true; do
             read -r accum_disp < "$usagefile"
             [[ "$accum_disp" =~ ^[0-9]+$ ]] || accum_disp=0
         fi
-        bw_gb_used=$(awk "BEGIN {printf \"%.2f\", $accum_disp / 1073741824}")
-        bw_display="${bw_gb_used}GB/Unlimited"
+        bw_display=$(format_bandwidth_usage "$accum_disp" "$bandwidth_gb")
         traffic_exceeded=false
-        if [[ "$bandwidth_gb" != "0" && -n "$bandwidth_gb" ]]; then
-            bw_display="${bw_gb_used}/${bandwidth_gb}GB"
+        if ! quota_is_unlimited "$bandwidth_gb"; then
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$accum_disp" =~ ^[0-9]+$ ]] && (( accum_disp >= quota_bytes )); then
                 traffic_exceeded=true
@@ -1318,7 +1412,7 @@ while true; do
             SEP="---------------------------------"
 
             if $pending_activation; then
-                STATUS_TEXT="Pending Activation"
+                STATUS_TEXT="Waiting for First Use"
                 MSG_BLOCK=""
             elif $is_expired; then
                 STATUS_TEXT="Expired"
@@ -1429,7 +1523,7 @@ while true; do
         new_total=$((accumulated + delta_total))
         printf "%s\n" "$new_total" > "$usagefile"
 
-        if [[ -n "$bandwidth_gb" && "$bandwidth_gb" != "0" ]]; then
+        if ! quota_is_unlimited "$bandwidth_gb"; then
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( new_total >= quota_bytes )); then
                 if ! $user_locked; then
@@ -1481,7 +1575,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.3"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.4"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -1966,7 +2060,7 @@ get_user_status() {
     expiry_date=$(echo "$user_line" | cut -d: -f3)
     account_type=$(echo "$user_line" | cut -d: -f6)
     if passwd -S "$username" 2>/dev/null | grep -q " L "; then echo -e "${C_YELLOW}Locked${C_RESET}"; return; fi
-    if [[ "$account_type" == "pending" ]]; then echo -e "${C_CYAN}Pending Activation${C_RESET}"; return; fi
+    if [[ "$account_type" == "pending" ]]; then echo -e "${C_CYAN}Waiting for First Use${C_RESET}"; return; fi
     if [[ "$expiry_date" == "Never" || -z "$expiry_date" ]]; then echo -e "${C_GREEN}Active${C_RESET}"; return; fi
     local expiry_ts=$(date -d "$expiry_date" +%s 2>/dev/null || echo 0)
     local current_ts=$(date +%s)
@@ -2310,18 +2404,18 @@ create_user() {
     if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then tdz_message ERROR "Bandwidth must be a valid number."; return; fi
     local first_use_activation=false
     local first_use_choice
-    read -r -p "$(echo -e "${C_PROMPT}  First-Use Activation (start expiry on first connection)? [y/N]: ${C_RESET}")" first_use_choice
+    read -r -p "$(echo -e "${C_PROMPT}  Start After First Use? [y/N]: ${C_RESET}")" first_use_choice
     [[ "$first_use_choice" == "y" || "$first_use_choice" == "Y" ]] && first_use_activation=true
 
-    local expire_date stored_expiry metadata_suffix="" expiry_display activation_display="Immediate"
+    local expire_date stored_expiry metadata_suffix="" expiry_display activation_display="Immediately"
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
     stored_expiry="$expire_date"
     expiry_display="$expire_date"
     if $first_use_activation; then
         stored_expiry="Never"
         metadata_suffix=":pending:${days}"
-        expiry_display="${days} days after first connection"
-        activation_display="First-Use"
+        expiry_display="${days} days after first use"
+        activation_display="After First Use"
     fi
     ensure_tdztunnel_system_group
     if [[ "$adopt_existing" == "true" ]]; then
@@ -2338,8 +2432,8 @@ create_user() {
     fi
     echo "$username:$password:$stored_expiry:$limit:$bandwidth_gb$metadata_suffix" >> "$DB_FILE"
     
-    local bw_display="Unlimited"
-    if [[ "$bandwidth_gb" != "0" ]]; then bw_display="${bandwidth_gb}GB"; fi
+    local bw_display
+    bw_display=$(tdz_format_quota_gb "$bandwidth_gb")
     
     clear; show_banner
     if [[ "$adopt_existing" == "true" ]]; then
@@ -2352,7 +2446,7 @@ create_user() {
     tdz_detail "Username" "$username" "$C_YELLOW"
     tdz_detail "Password" "$password" "$C_YELLOW"
     tdz_detail "Expires" "$expiry_display" "$C_YELLOW"
-    tdz_detail "Activation" "$activation_display"
+    tdz_detail "Expiry Starts" "$activation_display"
     tdz_detail "Connections" "$limit"
     tdz_detail "Bandwidth" "$bw_display"
     echo -e "  ${C_DIM}Limits are enforced automatically by the account worker.${C_RESET}"
@@ -2397,7 +2491,8 @@ edit_user() {
         local cur_metadata_suffix=""; [[ -n "$cur_metadata" ]] && cur_metadata_suffix=":$cur_metadata"
         [[ "$cur_limit" =~ ^[0-9]+$ ]] || cur_limit="1"
         [[ "$cur_bw" =~ ^[0-9]+\.?[0-9]*$ ]] || cur_bw="0"
-        local cur_bw_display="Unlimited"; [[ "$cur_bw" != "0" ]] && cur_bw_display="${cur_bw}GB"
+        local cur_bw_display
+        cur_bw_display=$(tdz_format_quota_gb "$cur_bw")
         local cur_expiry_display="$cur_expiry"
         local pending_first_use=false
         if [[ "$cur_metadata" =~ ^pending:([1-9][0-9]*) ]]; then
@@ -2416,11 +2511,7 @@ edit_user() {
         if [[ -f "$BANDWIDTH_DIR/${username}.usage" ]]; then
             local used_bytes; used_bytes=$(cat "$BANDWIDTH_DIR/${username}.usage" 2>/dev/null)
             [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes="0"
-            if [[ "$used_bytes" != "0" ]]; then
-                bw_used_display=$(awk "BEGIN {printf \"%.2fGB\", $used_bytes / 1073741824}")
-            else
-                bw_used_display="0.00GB"
-            fi
+            bw_used_display=$(tdz_format_used_bytes "$used_bytes")
         fi
         
         echo
@@ -2480,13 +2571,13 @@ edit_user() {
             5) read -p "  Enter new bandwidth limit in GB (0 = unlimited): " new_bw
                if [[ "$new_bw" =~ ^[0-9]+\.?[0-9]*$ ]]; then
                     sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$cur_limit:$new_bw$cur_metadata_suffix/" "$DB_FILE"
-                   local bw_msg="Unlimited"; [[ "$new_bw" != "0" ]] && bw_msg="${new_bw}GB"
+                   local bw_msg; bw_msg=$(tdz_format_quota_gb "$new_bw")
                    echo -e "\n${C_GREEN}[OK] Bandwidth limit for '$username' set to ${C_YELLOW}$bw_msg${C_RESET}."
                    # Unlock user if they were locked due to bandwidth
-                   if [[ "$new_bw" == "0" ]] || [[ -f "$BANDWIDTH_DIR/${username}.usage" ]]; then
+                   if tdz_quota_is_unlimited "$new_bw" || [[ -f "$BANDWIDTH_DIR/${username}.usage" ]]; then
                        local used_bytes; used_bytes=$(cat "$BANDWIDTH_DIR/${username}.usage" 2>/dev/null || echo 0)
                        local new_quota_bytes; new_quota_bytes=$(awk "BEGIN {printf \"%.0f\", $new_bw * 1073741824}")
-                       if [[ "$new_bw" == "0" ]] || [[ "$used_bytes" -lt "$new_quota_bytes" ]]; then
+                       if tdz_quota_is_unlimited "$new_bw" || [[ "$used_bytes" -lt "$new_quota_bytes" ]]; then
                            usermod -U "$username" &>/dev/null
                        fi
                    fi
@@ -2591,7 +2682,7 @@ list_users() {
         local plain_status="ACTIVE" status_color="$C_GREEN"
         local quota_exceeded=false
         local pending_activation=false
-        local used_bytes=0 used_gb data_display
+        local used_bytes=0 data_display
         local expiry_display expiry_check=0 time_left="Unknown"
         local account_number display_user
 
@@ -2602,10 +2693,8 @@ list_users() {
             used_bytes=$(cat "$BANDWIDTH_DIR/${user}.usage" 2>/dev/null)
             [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
         fi
-        used_gb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1073741824}")
-        data_display="${used_gb}GB/Unlimited"
-        if [[ "$bandwidth_gb" != "0" ]]; then
-            data_display="${used_gb}/${bandwidth_gb}GB"
+        data_display=$(tdz_format_bandwidth_usage "$used_bytes" "$bandwidth_gb")
+        if ! tdz_quota_is_unlimited "$bandwidth_gb"; then
             local quota_bytes
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( used_bytes >= quota_bytes )); then
@@ -2615,7 +2704,7 @@ list_users() {
 
         if [[ "$account_type" == "pending" && "$metadata_value" =~ ^[1-9][0-9]*$ ]]; then
             pending_activation=true
-            expiry_display="First connection"
+            expiry_display="First use"
             time_left="${metadata_value}d after use"
         elif [[ "$account_type" == "trial" && "$metadata_value" =~ ^[0-9]+$ ]] &&
            (( metadata_value > 0 )); then
@@ -2714,7 +2803,7 @@ renew_user() {
             local extended_pending_days=$((metadata_value + days))
             chage -E -1 "$u"
             sed -i "s/^$u:.*/$u:$pass:Never:$limit:$bw:pending:$extended_pending_days/" "$DB_FILE"
-            echo -e " [OK] ${C_YELLOW}$u${C_RESET} will remain valid for ${C_GREEN}${extended_pending_days} days${C_RESET} after first connection."
+            echo -e " [OK] ${C_YELLOW}$u${C_RESET} will remain valid for ${C_GREEN}${extended_pending_days} days${C_RESET} after first use."
         else
             local metadata_suffix=""
             [[ -n "$account_type" ]] && metadata_suffix=":$account_type"
@@ -6701,8 +6790,8 @@ create_trial_account() {
     trial_uid=$(id -u "$username")
     echo "$TRIAL_CLEANUP_SCRIPT --uid $trial_uid $expiry_epoch" | at now + ${duration_hours} hours 2>/dev/null
     
-    local bw_display="Unlimited"
-    if [[ "$bandwidth_gb" != "0" ]]; then bw_display="${bandwidth_gb}GB"; fi
+    local bw_display
+    bw_display=$(tdz_format_quota_gb "$bandwidth_gb")
     
     clear; show_banner
     tdz_message OK "Trial account created successfully."
@@ -6780,7 +6869,7 @@ list_trial_accounts() {
         trial_count=$((trial_count + 1))
 
         local expiry_display time_left online_count connection_string
-        local used_bytes=0 used_gb bandwidth_display status status_color
+        local used_bytes=0 bandwidth_display status status_color
         local expiry_check=0 passwd_state account_number display_user
 
         online_count="${SSH_SESSION_COUNTS[$user]:-0}"
@@ -6800,12 +6889,7 @@ list_trial_accounts() {
             read -r used_bytes < "$BANDWIDTH_DIR/${user}.usage" || used_bytes=0
             [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
         fi
-        used_gb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1073741824}")
-        if [[ -z "$bandwidth_gb" || "$bandwidth_gb" == "0" ]]; then
-            bandwidth_display="${used_gb}GB/Unlimited"
-        else
-            bandwidth_display="${used_gb}/${bandwidth_gb}GB"
-        fi
+        bandwidth_display=$(tdz_format_bandwidth_usage "$used_bytes" "$bandwidth_gb")
 
         passwd_state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
         if ! id "$user" >/dev/null 2>&1; then
@@ -6862,13 +6946,14 @@ view_user_bandwidth() {
         [[ -z "$used_bytes" ]] && used_bytes=0
     fi
     
-    local used_mb; used_mb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1048576}")
-    local used_gb; used_gb=$(awk "BEGIN {printf \"%.3f\", $used_bytes / 1073741824}")
+    [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
+    local used_display
+    used_display=$(tdz_format_used_bytes "$used_bytes")
     
     tdz_section "USAGE SUMMARY"
-    tdz_detail "Data Used" "${used_gb}GB (${used_mb}MB)"
+    tdz_detail "Data Used" "$used_display"
     
-    if [[ "$bandwidth_gb" == "0" ]]; then
+    if tdz_quota_is_unlimited "$bandwidth_gb"; then
         tdz_detail "Bandwidth Limit" "Unlimited" "$C_GREEN"
         tdz_detail "Status" "No quota restriction" "$C_GREEN"
     else
@@ -6876,10 +6961,12 @@ view_user_bandwidth() {
         local percentage; percentage=$(awk "BEGIN {printf \"%.1f\", ($used_bytes / $quota_bytes) * 100}")
         local remaining_bytes; remaining_bytes=$((quota_bytes - used_bytes))
         if [[ "$remaining_bytes" -lt 0 ]]; then remaining_bytes=0; fi
-        local remaining_gb; remaining_gb=$(awk "BEGIN {printf \"%.3f\", $remaining_bytes / 1073741824}")
+        local remaining_display quota_display
+        remaining_display=$(tdz_format_used_bytes "$remaining_bytes")
+        quota_display=$(tdz_format_quota_gb "$bandwidth_gb")
         
-        tdz_detail "Bandwidth Limit" "${bandwidth_gb}GB" "$C_YELLOW"
-        tdz_detail "Remaining" "${remaining_gb}GB"
+        tdz_detail "Bandwidth Limit" "$quota_display" "$C_YELLOW"
+        tdz_detail "Remaining" "$remaining_display"
         tdz_detail "Usage" "${percentage}%"
         
         # Progress bar
@@ -6927,10 +7014,10 @@ bulk_create_users() {
     if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then echo -e "\n${C_RED}[ERROR] Invalid number.${C_RESET}"; return; fi
 
     local first_use_activation=false first_use_choice
-    read -p "  First-Use Activation (start expiry on first connection)? [y/N]: " first_use_choice
+    read -p "  Start After First Use? [y/N]: " first_use_choice
     [[ "$first_use_choice" == "y" || "$first_use_choice" == "Y" ]] && first_use_activation=true
 
-    local expire_date stored_expiry metadata_suffix="" table_expiry activation_display="Immediate"
+    local expire_date stored_expiry metadata_suffix="" table_expiry activation_display="Immediately"
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
     stored_expiry="$expire_date"
     table_expiry="$expire_date"
@@ -6938,9 +7025,10 @@ bulk_create_users() {
         stored_expiry="Never"
         metadata_suffix=":pending:${days}"
         table_expiry="FIRST USE"
-        activation_display="First-Use"
+        activation_display="After First Use"
     fi
-    local bw_display="Unlimited"; [[ "$bandwidth_gb" != "0" ]] && bw_display="${bandwidth_gb}GB"
+    local bw_display
+    bw_display=$(tdz_format_quota_gb "$bandwidth_gb")
     ensure_tdztunnel_system_group
     
     echo
@@ -6969,7 +7057,7 @@ bulk_create_users() {
         created=$((created + 1))
     done
     
-    tdz_message OK "Created $created account(s). Connections: ${limit}; bandwidth: ${bw_display}; activation: ${activation_display}."
+    tdz_message OK "Created $created account(s). Connections: ${limit}; bandwidth: ${bw_display}; expiry starts: ${activation_display}."
     
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
