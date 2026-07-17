@@ -11,9 +11,9 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 if [[ -t 1 ]]; then
-    C_RESET='\033[0m'; C_BOLD='\033[1m'; C_DIM='\033[2m'
-    C_CYAN='\033[38;2;0;212;255m'; C_GREEN='\033[38;5;46m'
-    C_YELLOW='\033[38;5;226m'; C_RED='\033[38;5;196m'; C_GRAY='\033[38;5;245m'
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+    C_CYAN=$'\033[38;2;0;212;255m'; C_GREEN=$'\033[38;5;46m'
+    C_YELLOW=$'\033[38;5;226m'; C_RED=$'\033[38;5;196m'; C_GRAY=$'\033[38;5;245m'
 else
     C_RESET=''; C_BOLD=''; C_DIM=''; C_CYAN=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_GRAY=''
 fi
@@ -46,6 +46,8 @@ if [[ -x "$TARGET_MENU" || -f "$INSTALL_FLAG" || -f "$DATA_DIR/users.db" ||
       -f "$DATA_DIR/banners_enabled" ]]; then
     MODE="update"
 fi
+[[ -f "$TARGET_MENU" ]] && HAD_OLD_MENU=true
+[[ -f "$SSHD_DROPIN" ]] && HAD_OLD_DROPIN=true
 
 cleanup() {
     rm -rf "$WORK_DIR"
@@ -119,10 +121,10 @@ show_header() {
     echo -e "  ${C_CYAN}╚════════════════════════════════════════════════════════════════╝${C_RESET}"
     echo
     if [[ "$MODE" == "update" ]]; then
-        echo -e "  ${C_YELLOW}● Existing installation detected${C_RESET}"
-        echo -e "  ${C_DIM}  Safe update mode • accounts and settings will be preserved${C_RESET}"
+        echo -e "  ${C_YELLOW}${C_BOLD}● UPDATE MODE${C_RESET}"
+        echo -e "  ${C_DIM}  Existing setup found • saved data will be preserved${C_RESET}"
     else
-        echo -e "  ${C_GREEN}● New installation${C_RESET}"
+        echo -e "  ${C_GREEN}${C_BOLD}● INSTALL MODE${C_RESET}"
         echo -e "  ${C_DIM}  Preparing a clean TDZ SSH TUNNEL setup${C_RESET}"
     fi
     echo
@@ -130,33 +132,63 @@ show_header() {
 
 TOTAL_STEPS=5
 CURRENT_STEP=0
+CURRENT_PERCENT=0
+ANIMATION_TICKS="${TDZ_INSTALL_ANIMATION_TICKS:-30}"
+[[ "$ANIMATION_TICKS" =~ ^[1-9][0-9]*$ ]] || ANIMATION_TICKS=30
 
-draw_progress() {
-    local done_count=$1 width=36 filled empty percent bar=""
-    percent=$((done_count * 100 / TOTAL_STEPS))
-    filled=$((done_count * width / TOTAL_STEPS))
+draw_live_progress() {
+    local percent=$1 label=$2 spinner=${3:-} width=28 filled empty fill_bar="" empty_bar=""
+    filled=$((percent * width / 100))
     empty=$((width - filled))
-    (( filled > 0 )) && printf -v bar '%*s' "$filled" '' && bar=${bar// /■}
+    (( filled > 0 )) && printf -v fill_bar '%*s' "$filled" '' && fill_bar=${fill_bar// /█}
     if (( empty > 0 )); then
-        local rest
-        printf -v rest '%*s' "$empty" ''
-        rest=${rest// /·}
-        bar+="$rest"
+        printf -v empty_bar '%*s' "$empty" ''
+        empty_bar=${empty_bar// /░}
     fi
-    echo -e "  ${C_CYAN}[${bar}]${C_RESET} ${C_BOLD}${percent}%${C_RESET}"
+    printf '\r\033[2K  %s[%s%s%s%s]%s %s%3d%%%s  %s%s%s' \
+        "$C_CYAN" "$fill_bar" "$C_GRAY" "$empty_bar" "$C_CYAN" "$C_RESET" \
+        "$C_BOLD" "$percent" "$C_RESET" "$label" "$spinner" "$C_RESET"
 }
 
 run_step() {
-    local label=$1
-    shift
+    local label=$1 target_percent=$2
+    shift 2
+    local job_pid tick percent spinner_index=0
+    local -a spinners=(' ◐' ' ◓' ' ◑' ' ◒')
     CURRENT_STEP=$((CURRENT_STEP + 1))
-    printf "  %s[%d/%d]%s %-40s" "$C_CYAN" "$CURRENT_STEP" "$TOTAL_STEPS" "$C_RESET" "$label"
-    if "$@" >>"$LOG_FILE" 2>&1; then
-        echo -e " ${C_GREEN}DONE${C_RESET}"
-        draw_progress "$CURRENT_STEP"
+
+    if [[ ! -t 1 ]]; then
+        printf '  [%d/%d] %-28s' "$CURRENT_STEP" "$TOTAL_STEPS" "$label"
+        if "$@" >>"$LOG_FILE" 2>&1; then
+            echo " DONE"
+            CURRENT_PERCENT=$target_percent
+            return 0
+        fi
+        echo " FAILED"
+        return 1
+    fi
+
+    "$@" >>"$LOG_FILE" 2>&1 &
+    job_pid=$!
+    for ((tick=1; tick<=ANIMATION_TICKS; tick++)); do
+        percent=$((CURRENT_PERCENT + (target_percent - CURRENT_PERCENT) * tick / ANIMATION_TICKS))
+        (( percent >= target_percent )) && percent=$((target_percent - 1))
+        draw_live_progress "$percent" "$label" "${spinners[$spinner_index]}"
+        spinner_index=$(((spinner_index + 1) % ${#spinners[@]}))
+        sleep 0.1
+    done
+    while kill -0 "$job_pid" 2>/dev/null; do
+        draw_live_progress "$((target_percent - 1))" "$label" "${spinners[$spinner_index]}"
+        spinner_index=$(((spinner_index + 1) % ${#spinners[@]}))
+        sleep 0.1
+    done
+
+    if wait "$job_pid"; then
+        printf '\r\033[2K  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$label"
+        CURRENT_PERCENT=$target_percent
         return 0
     fi
-    echo -e " ${C_RED}FAILED${C_RESET}"
+    printf '\r\033[2K  %s✗%s %s\n' "$C_RED" "$C_RESET" "$label"
     return 1
 }
 
@@ -189,13 +221,11 @@ prepare_payload() {
 backup_current_state() {
     if [[ -f "$TARGET_MENU" ]]; then
         cp "$TARGET_MENU" "$OLD_MENU"
-        HAD_OLD_MENU=true
     fi
     [[ -f "$SSHD_CONFIG" ]] || return 1
     cp "$SSHD_CONFIG" "$OLD_SSHD_CONFIG"
     if [[ -f "$SSHD_DROPIN" ]]; then
         cp "$SSHD_DROPIN" "$OLD_SSHD_DROPIN"
-        HAD_OLD_DROPIN=true
     fi
 }
 
@@ -212,7 +242,6 @@ configure_ssh() {
     [[ -n "$sshd_bin" ]] || sshd_bin="/usr/sbin/sshd"
     [[ -x "$sshd_bin" ]] || return 1
 
-    SSH_CHANGED=true
     mkdir -p "$SSHD_DROPIN_DIR"
     sed -i \
         -e 's/^[[:space:]]*AddressFamily[[:space:]]\+any[[:space:]]*$/# TDZ disabled: AddressFamily any/' \
@@ -266,23 +295,29 @@ finish_setup() {
     touch "$INSTALL_FLAG"
 }
 
+refresh_and_finish() {
+    sync_runtime
+    finish_setup
+}
+
 show_header
-draw_progress 0
-echo
-run_step "Downloading and validating release" prepare_payload
-run_step "Protecting current installation" backup_current_state
-run_step "Installing application components" install_core
-run_step "Applying validated SSH configuration" configure_ssh
-run_step "Synchronizing services and saved state" sync_runtime
-finish_setup
+run_step "Checking latest release" 20 prepare_payload
+run_step "Saving current setup" 40 backup_current_state
+run_step "Updating core files" 60 install_core
+SSH_CHANGED=true
+run_step "Validating SSH setup" 80 configure_ssh
+run_step "Refreshing services" 100 refresh_and_finish
 
 FINISHED=true
 echo
+draw_live_progress 100 "Complete" ""
+echo
+echo
 if [[ "$MODE" == "update" ]]; then
-    echo -e "  ${C_GREEN}${C_BOLD}✓ TDZ SSH TUNNEL updated successfully${C_RESET}"
-    echo -e "  ${C_GRAY}Accounts, usage, certificates, Telegram settings, and banner state were preserved.${C_RESET}"
+    echo -e "  ${C_GREEN}${C_BOLD}✓ UPDATE COMPLETE${C_RESET}"
+    echo -e "  ${C_GRAY}  All accounts and settings were preserved.${C_RESET}"
 else
-    echo -e "  ${C_GREEN}${C_BOLD}✓ TDZ SSH TUNNEL installed successfully${C_RESET}"
+    echo -e "  ${C_GREEN}${C_BOLD}✓ INSTALLATION COMPLETE${C_RESET}"
 fi
-echo -e "  ${C_CYAN}Run ${C_BOLD}menu${C_RESET}${C_CYAN} to open the dashboard.${C_RESET}"
+echo -e "  ${C_CYAN}  Run: ${C_BOLD}menu${C_RESET}"
 echo
