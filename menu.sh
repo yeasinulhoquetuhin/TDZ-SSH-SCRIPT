@@ -506,6 +506,14 @@ tdz_format_bandwidth_usage() {
     local used_display quota_display
     used_display=$(tdz_format_used_bytes "${1:-0}")
     quota_display=$(tdz_format_quota_gb "${2:-0}")
+
+    # When both values share a unit, show it once at the end:
+    # 0.21/1GB or 1.13/11TB. Mixed units stay explicit:
+    # 35.91GB/11TB. Unlimited also keeps the used unit.
+    case "${used_display}:${quota_display}" in
+        *GB:*GB) used_display=${used_display%GB} ;;
+        *TB:*TB) used_display=${used_display%TB} ;;
+    esac
     printf '%s/%s' "$used_display" "$quota_display"
 }
 
@@ -1142,7 +1150,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-17.4
+# TDZ SSH TUNNEL limiter version 2026-07-18.1
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1232,6 +1240,11 @@ format_bandwidth_usage() {
     local used_display quota_display
     used_display=$(format_used_bytes "${1:-0}")
     quota_display=$(format_quota_gb "${2:-0}")
+
+    case "${used_display}:${quota_display}" in
+        *GB:*GB) used_display=${used_display%GB} ;;
+        *TB:*TB) used_display=${used_display%TB} ;;
+    esac
     printf '%s/%s' "$used_display" "$quota_display"
 }
 
@@ -1599,7 +1612,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.4"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-18.1"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
