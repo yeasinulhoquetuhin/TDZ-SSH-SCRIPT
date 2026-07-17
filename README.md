@@ -73,7 +73,6 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 ### Branding & Customization
 - **Rainbow ANSI banners** — colorful SSH login banners with per-character coloring
 - **Premium CLI theme** — professional color-coded terminal interface with Navy + Cyan theme
-- **Dynamic DarkTunnel credit** — the HTTP 101 connection message follows the Channel username configured in the SSH Banner menu
 
 ### Backup & Recovery
 - **Full user data backup** — archive all user configurations and data
