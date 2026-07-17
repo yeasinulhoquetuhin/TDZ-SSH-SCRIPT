@@ -69,7 +69,7 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 - **HAProxy** — reverse-proxy edge server on configurable public ports (defaults: 2080 HTTP, 442 HTTPS)
 - **Nginx SSL termination** — internal proxy with shared TLS certificates
 - **WS-to-SSH bridge** — DarkTunnel-compatible WebSocket bridge that accepts non-standard payloads and bridges to SSH
-- **SSL/TLS certificates** — Let's Encrypt (certbot) and self-signed certificate management
+- **SSL/TLS certificates** — issue or renew Let's Encrypt certificates, generate self-signed certificates, reuse existing Certbot certificates, or import a custom fullchain and private key
 - **Customizable public ports** — change the public HTTP/WS and TLS/SSL ports from the menu with validation and automatic rollback
 
 ### Branding & Customization
@@ -107,6 +107,29 @@ chmod +x install.sh
 ```
 
 After installation, type **`menu`** to launch the management interface.
+
+---
+
+## Domain & SSL Certificate — Menu 17
+
+Open **`menu → 17) Domain & SSL Cert`** to manage the shared certificate used by the TDZ edge stack.
+
+| Option | Action |
+|---|---|
+| **1** | Issue a new Let's Encrypt certificate or renew one for a domain |
+| **2** | Generate a self-signed certificate |
+| **3** | List existing Certbot certificates with remaining validity, then apply an existing certificate or renew and apply it |
+| **4** | Import a custom certificate by entering the paths to its `fullchain.pem` and matching `privkey.pem` |
+| **5** | Remove the currently selected shared certificate |
+
+For custom import, provide both files when prompted:
+
+```text
+Fullchain file path: /path/to/fullchain.pem
+Private key file path: /path/to/privkey.pem
+```
+
+Before applying a certificate, TDZ verifies that the fullchain is valid and that its public key matches the private key. It then validates the active Nginx and HAProxy configuration. If validation or service restart fails, the previous working certificate is restored automatically.
 
 ---
 
