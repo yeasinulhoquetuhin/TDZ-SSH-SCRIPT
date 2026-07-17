@@ -72,12 +72,12 @@ Account status, expiration, remaining validity, active connections, and compact 
   </tr>
   <tr>
     <td align="center" valign="top" width="50%">
-      <img src="screenshot/protocol-panel-management.png" alt="Protocol and panel management" height="170"><br>
-      <b>Protocols &amp; Panels</b>
-    </td>
-    <td align="center" valign="top" width="50%">
       <img src="screenshot/ssh-banner-management.png" alt="SSH banner management" height="170"><br>
       <b>SSH Banners</b>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="screenshot/protocol-panel-management.png" alt="Protocol and panel management" height="170"><br>
+      <b>Protocols &amp; Panels</b>
     </td>
   </tr>
 </table>
