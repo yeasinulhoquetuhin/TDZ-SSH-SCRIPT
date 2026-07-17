@@ -34,7 +34,7 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 ### Main Dashboard
 
 <p align="center">
-  <img src="screenshot/main-dashboard.png" alt="TDZ SSH TUNNEL main dashboard" width="430">
+  <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/main-dashboard.png" alt="TDZ SSH TUNNEL main dashboard" width="430">
 </p>
 
 The live dashboard brings server information, service health, user management, protocols, maintenance tools, and the danger zone into one organized terminal interface.
@@ -42,7 +42,7 @@ The live dashboard brings server information, service health, user management, p
 ### Managed Accounts
 
 <p align="center">
-  <img src="screenshot/managed-users.png" alt="TDZ SSH TUNNEL managed user list" width="760">
+  <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/managed-users.png" alt="TDZ SSH TUNNEL managed user list" width="760">
 </p>
 
 Account status, expiration, remaining validity, active connections, and compact GB/TB traffic usage are displayed together for quick monitoring.
@@ -52,31 +52,31 @@ Account status, expiration, remaining validity, active connections, and compact 
 <table>
   <tr>
     <td align="center" valign="top" width="50%">
-      <img src="screenshot/public-port-management.png" alt="Public port management" height="170"><br>
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/public-port-management.png" alt="Public port management" height="170"><br>
       <b>Public Ports</b>
     </td>
     <td align="center" valign="top" width="50%">
-      <img src="screenshot/edit-user.png" alt="Edit SSH user" height="170"><br>
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/edit-user.png" alt="Edit SSH user" height="170"><br>
       <b>Edit User</b>
     </td>
   </tr>
   <tr>
     <td align="center" valign="top" width="50%">
-      <img src="screenshot/domain-ssl.png" alt="Domain and SSL certificate management" height="170"><br>
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/domain-ssl.png" alt="Domain and SSL certificate management" height="170"><br>
       <b>Domain &amp; SSL</b>
     </td>
     <td align="center" valign="top" width="50%">
-      <img src="screenshot/backup-restore.png" alt="Telegram backup and restore" height="170"><br>
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/backup-restore.png" alt="Telegram backup and restore" height="170"><br>
       <b>Backup &amp; Restore</b>
     </td>
   </tr>
   <tr>
     <td align="center" valign="top" width="50%">
-      <img src="screenshot/protocol-panel-management.png" alt="Protocol and panel management" height="170"><br>
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/protocol-panel-management.png" alt="Protocol and panel management" height="170"><br>
       <b>Protocols &amp; Panels</b>
     </td>
     <td align="center" valign="top" width="50%">
-      <img src="screenshot/ssh-banner-management.png" alt="SSH banner management" height="170"><br>
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/ssh-banner-management.png" alt="SSH banner management" height="170"><br>
       <b>SSH Banners</b>
     </td>
   </tr>
