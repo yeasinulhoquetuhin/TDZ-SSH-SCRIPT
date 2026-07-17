@@ -54,6 +54,7 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
   - **Locked** — unlock request message with contact link
 - **DarkTunnel optimized** — HTML banners render perfectly in DarkTunnel and similar SSH client apps
 - **Auto-updating** — banners refresh every second to reflect current session counts and bandwidth
+- **Custom Admin & Channel usernames** — replace the default Telegram usernames with your own in the Dynamic Banner; matching `t.me/` links are generated automatically
 
 ### Tunnel Protocols
 - **SSH (Direct)** — standard SSH tunnel on port 22
@@ -68,7 +69,7 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 - **Nginx SSL termination** — internal proxy with shared TLS certificates
 - **WS-to-SSH bridge** — DarkTunnel-compatible WebSocket bridge that accepts non-standard payloads and bridges to SSH
 - **SSL/TLS certificates** — Let's Encrypt (certbot) and self-signed certificate management
-- **Public port manager** — safely changes HTTP/WS and TLS/SSL ports with validation and automatic rollback
+- **Customizable public ports** — change the public HTTP/WS and TLS/SSL ports from the menu with validation and automatic rollback
 
 ### Branding & Customization
 - **Rainbow ANSI banners** — colorful SSH login banners with per-character coloring
