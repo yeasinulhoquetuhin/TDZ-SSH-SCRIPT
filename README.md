@@ -140,7 +140,7 @@ After installation, type **`menu`** to launch the management interface.
 ## Uninstall
 
 ```
-menu → 0) Uninstall
+menu → 99) Uninstall
 ```
 
 Or directly:
