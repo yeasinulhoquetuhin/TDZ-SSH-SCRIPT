@@ -6849,7 +6849,7 @@ show_banner() {
     # ╔══ Top double-border banner ══╗  (inner width 64)
     echo -e "  ${C_CYAN}╔════════════════════════════════════════════════════════════════╗${C_RESET}"
     # Title line — centered, 64 visible chars
-    local title_content="${C_BOLD}${C_CYAN}TDZ SSH TUNNEL v0.0.1 BETA${C_RESET}"
+    local title_content="${C_CYAN}TDZ SSH TUNNEL v0.0.1 BETA${C_RESET}"
     local title_clean="TDZ SSH TUNNEL v0.0.1 BETA"
     local title_pad=$(( (64 - ${#title_clean}) / 2 ))
     [[ $title_pad -lt 0 ]] && title_pad=0
