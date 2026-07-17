@@ -1947,10 +1947,6 @@ rename_tdztunnel_user() {
 
     echo -e "\n${C_YELLOW}The account will be renamed:${C_RESET}"
     echo -e "  • Username: ${C_WHITE}${old_username}${C_RESET} → ${C_GREEN}${new_username}${C_RESET}"
-    if [[ "$move_home" == true ]]; then
-        echo -e "  • Home:     ${C_WHITE}${old_home}${C_RESET} → ${C_GREEN}${new_home}${C_RESET}"
-    fi
-    echo -e "${C_DIM}Password, expiry, limits, lock state and bandwidth usage will be preserved.${C_RESET}"
     read -r -p "Type RENAME to confirm: " confirm
     if [[ "$confirm" != "RENAME" ]]; then
         rm -f "$banner_tmp" "$db_tmp" "$db_backup"
@@ -2335,25 +2331,34 @@ unlock_user() {
 
 list_users() {
     clear; show_banner
-    if [[ ! -s "$DB_FILE" ]]; then
-        echo -e "\n${C_YELLOW}ℹ️ No users are currently being managed.${C_RESET}"
+    local user_total=0
+    if [[ -s "$DB_FILE" ]]; then
+        user_total=$(awk -F: 'NF && $1 !~ /^#/ { count++ } END { print count + 0 }' "$DB_FILE")
+    fi
+
+    echo
+    tdz_box_top
+    tdz_box_header "MANAGED USERS"
+    tdz_box_divider
+
+    if (( user_total == 0 )); then
+        tdz_row "${C_YELLOW}ℹ No users are currently being managed.${C_RESET}"
+        tdz_box_bot
         return
     fi
-    echo -e "${C_BOLD}${C_PURPLE}--- 📋 Managed Users ---${C_RESET}"
-    echo -e "${C_CYAN}=========================================================================================${C_RESET}"
-    printf "${C_BOLD}${C_WHITE}%-18s | %-12s | %-10s | %-15s | %-20s${C_RESET}\n" "USERNAME" "EXPIRES" "CONNS" "BANDWIDTH" "STATUS"
-    echo -e "${C_CYAN}-----------------------------------------------------------------------------------------${C_RESET}"
 
     local current_ts
     current_ts=$(date +%s)
     local -A system_user_lookup=()
     local -A locked_user_lookup=()
+    local user_count=0 active_count=0 attention_count=0
+    local first_account=true
 
     while IFS=: read -r system_user _rest; do
         [[ -n "$system_user" ]] && system_user_lookup["$system_user"]=1
     done < /etc/passwd
 
-    while read -r passwd_user _ passwd_status _rest; do
+    while read -r passwd_user passwd_status _rest; do
         [[ -z "$passwd_user" ]] && continue
         if [[ "$passwd_status" == "L" ]]; then
             locked_user_lookup["$passwd_user"]=1
@@ -2361,24 +2366,30 @@ list_users() {
     done < <(passwd -Sa 2>/dev/null)
     refresh_ssh_session_cache
 
-    while IFS=: read -r user pass expiry limit bandwidth_gb _extra; do
-        local online_count="${SSH_SESSION_COUNTS[$user]:-0}"
-        local connection_string="$online_count / $limit"
-        local plain_status="Active"
-        local status="${C_GREEN}🟢 Active${C_RESET}"
-        local quota_exceeded=false
+    while IFS=: read -r user _password expiry limit bandwidth_gb account_type trial_expiry_epoch _rest; do
+        [[ -n "$user" && "$user" != \#* ]] || continue
+        user_count=$((user_count + 1))
 
-        [[ -z "$bandwidth_gb" ]] && bandwidth_gb="0"
-        local bw_string="Unlimited"
+        local online_count="${SSH_SESSION_COUNTS[$user]:-0}"
+        local connection_string="$online_count / ${limit:-1}"
+        local plain_status="ACTIVE" status_color="$C_GREEN"
+        local quota_exceeded=false
+        local used_bytes=0 used_gb used_display limit_display
+        local expiry_display expiry_check=0
+        local account_number display_user
+
+        if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+            bandwidth_gb="0"
+        fi
+        if [[ -f "$BANDWIDTH_DIR/${user}.usage" ]]; then
+            used_bytes=$(cat "$BANDWIDTH_DIR/${user}.usage" 2>/dev/null)
+            [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
+        fi
+        used_gb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1073741824}")
+        used_display="${used_gb} GB"
+        limit_display="Unlimited"
         if [[ "$bandwidth_gb" != "0" ]]; then
-            local used_bytes=0
-            if [[ -f "$BANDWIDTH_DIR/${user}.usage" ]]; then
-                used_bytes=$(cat "$BANDWIDTH_DIR/${user}.usage" 2>/dev/null)
-                [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
-            fi
-            local used_gb
-            used_gb=$(awk "BEGIN {printf \"%.1f\", $used_bytes / 1073741824}")
-            bw_string="${used_gb}/${bandwidth_gb}GB"
+            limit_display="${bandwidth_gb} GB"
             local quota_bytes
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( used_bytes >= quota_bytes )); then
@@ -2386,44 +2397,77 @@ list_users() {
             fi
         fi
 
-        if [[ -z "${system_user_lookup[$user]+x}" ]]; then
-            plain_status="Not Found"
-            status="${C_RED}Not Found${C_RESET}"
+        if [[ "$account_type" == "trial" && "$trial_expiry_epoch" =~ ^[0-9]+$ ]] &&
+           (( trial_expiry_epoch > 0 )); then
+            expiry_display=$(LC_TIME=C date -d "@${trial_expiry_epoch}" '+%d %b %Y • %H:%M' 2>/dev/null || echo "$expiry")
+            expiry_check=$trial_expiry_epoch
         elif [[ -n "$expiry" && "$expiry" != "Never" ]]; then
-            local expiry_ts
-            expiry_ts=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
-            if [[ "$expiry_ts" =~ ^[0-9]+$ ]] && (( expiry_ts > 0 && expiry_ts < current_ts )); then
-                plain_status="Expired"
-                status="${C_RED}🗓️ Expired${C_RESET}"
-            fi
+            expiry_display=$(LC_TIME=C date -d "$expiry" '+%d %b %Y' 2>/dev/null || echo "$expiry")
+            expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+        else
+            expiry_display="${expiry:-Unknown}"
         fi
 
-        if [[ "$plain_status" == "Active" && "$quota_exceeded" == true ]]; then
+        if [[ -z "${system_user_lookup[$user]+x}" ]]; then
+            plain_status="MISSING"
+            status_color="$C_RED"
+        elif [[ "$expiry_check" =~ ^[0-9]+$ ]] &&
+             (( expiry_check > 0 && expiry_check < current_ts )); then
+            plain_status="EXPIRED"
+            status_color="$C_RED"
+        fi
+
+        if [[ "$plain_status" == "ACTIVE" && "$quota_exceeded" == true ]]; then
             if [[ -n "${locked_user_lookup[$user]+x}" ]]; then
-                plain_status="BW Locked"
-                status="${C_RED}🔒 BW Locked${C_RESET}"
+                plain_status="BW LOCKED"
             else
-                plain_status="Quota Exceeded"
-                status="${C_RED}📦 Quota Exceeded${C_RESET}"
+                plain_status="QUOTA EXCEEDED"
             fi
-        elif [[ "$plain_status" == "Active" && -n "${locked_user_lookup[$user]+x}" ]]; then
-            plain_status="Locked"
-            status="${C_YELLOW}🔒 Locked${C_RESET}"
+            status_color="$C_RED"
+        elif [[ "$plain_status" == "ACTIVE" && -n "${locked_user_lookup[$user]+x}" ]]; then
+            plain_status="LOCKED"
+            status_color="$C_YELLOW"
         fi
 
-        local line_color="$C_WHITE"
-        case "$plain_status" in
-            "Active") line_color="$C_GREEN" ;;
-            "Locked") line_color="$C_YELLOW" ;;
-            "Expired") line_color="$C_RED" ;;
-            "BW Locked") line_color="$C_RED" ;;
-            "Quota Exceeded") line_color="$C_RED" ;;
-            "Not Found") line_color="$C_DIM" ;;
-        esac
+        if [[ "$plain_status" == "ACTIVE" ]]; then
+            active_count=$((active_count + 1))
+        else
+            attention_count=$((attention_count + 1))
+        fi
 
-        printf "${line_color}%-18s ${C_RESET}| ${C_YELLOW}%-12s ${C_RESET}| ${C_CYAN}%-10s ${C_RESET}| ${C_ORANGE}%-15s ${C_RESET}| %-20s\n" "$user" "$expiry" "$connection_string" "$bw_string" "$status"
+        if [[ "$first_account" != true ]]; then
+            tdz_box_divider
+        fi
+        first_account=false
+
+        printf -v account_number "%02d" "$user_count"
+        display_user="$user"
+        if (( ${#display_user} > 22 )); then
+            display_user="${display_user:0:19}..."
+        fi
+        if (( ${#expiry_display} > 20 )); then
+            expiry_display="${expiry_display:0:17}..."
+        fi
+        if (( ${#connection_string} > 20 )); then
+            connection_string="${connection_string:0:17}..."
+        fi
+        if (( ${#used_display} > 20 )); then
+            used_display="${used_display:0:17}..."
+        fi
+        if (( ${#limit_display} > 20 )); then
+            limit_display="${limit_display:0:17}..."
+        fi
+
+        tdz_row2 "${C_CHOICE}[${account_number}]${C_RESET} ${C_BOLD}${C_WHITE}${display_user}${C_RESET}" \
+            "${status_color}${C_BOLD}[ ${plain_status} ]${C_RESET}"
+        tdz_kv2 "EXPIRES" "$expiry_display" "CONNS" "$connection_string"
+        tdz_kv2 "USED" "$used_display" "LIMIT" "$limit_display"
     done < <(sort "$DB_FILE")
-    echo -e "${C_CYAN}=========================================================================================${C_RESET}\n"
+
+    tdz_box_divider
+    tdz_row2 "${C_GRAY}TOTAL${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
+        "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_YELLOW}ATTENTION ${attention_count}${C_RESET}"
+    tdz_box_bot
 }
 
 renew_user() {
