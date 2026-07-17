@@ -64,10 +64,11 @@ Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a comple
 - **ZiVPN** — additional tunnel protocol support
 
 ### Network & Proxy
-- **HAProxy** — reverse-proxy edge server on ports 2080 (HTTP) and 442 (HTTPS)
+- **HAProxy** — reverse-proxy edge server on configurable public ports (defaults: 2080 HTTP, 442 HTTPS)
 - **Nginx SSL termination** — internal proxy with shared TLS certificates
 - **WS-to-SSH bridge** — DarkTunnel-compatible WebSocket bridge that accepts non-standard payloads and bridges to SSH
 - **SSL/TLS certificates** — Let's Encrypt (certbot) and self-signed certificate management
+- **Public port manager** — safely changes HTTP/WS and TLS/SSL ports with validation and automatic rollback
 
 ### Branding & Customization
 - **Rainbow ANSI banners** — colorful SSH login banners with per-character coloring
@@ -118,9 +119,9 @@ After installation, type **`menu`** to launch the management interface.
 | 2289 | WS | WebSocket NTLS payload |
 | 7300 | UDP | BadVPN / UDPGW |
 | 5300 | DNS | DNSTT tunnel |
-| 2080 | HTTP | HAProxy edge (HTTP) |
-| 442 | HTTPS | HAProxy edge (TLS) |
-| 8880 | HTTP | Nginx internal proxy |
+| 2080 | HTTP | HAProxy edge (HTTP, configurable default) |
+| 442 | HTTPS | HAProxy edge (TLS, configurable default) |
+| 8770 | HTTP | Nginx internal proxy |
 | 8442 | HTTPS | Nginx internal TLS proxy |
 | 8890 | TCP | WS-to-SSH bridge |
 

@@ -36,14 +36,17 @@ BADVPN_BUILD_DIR="/root/badvpn-build"
 HAPROXY_CONFIG="/etc/haproxy/haproxy.cfg"
 NGINX_CONFIG_FILE="/etc/nginx/sites-available/default"
 SSL_CERT_DIR="/etc/tdztunnel/ssl"
-SSL_CERT_FILE="$SSL_CERT_DIR/tdztunnel.pem"
+TDZ_SSL_CERT_FILE="$SSL_CERT_DIR/tdztunnel.pem"
 SSL_CERT_CHAIN_FILE="$SSL_CERT_DIR/tdztunnel.crt"
 SSL_CERT_KEY_FILE="$SSL_CERT_DIR/tdztunnel.key"
 EDGE_CERT_INFO_FILE="$DB_DIR/edge_cert.conf"
 NGINX_PORTS_FILE="$DB_DIR/nginx_ports.conf"
-EDGE_PUBLIC_HTTP_PORT="2080"
-EDGE_PUBLIC_TLS_PORT="442"
-NGINX_INTERNAL_HTTP_PORT="8880"
+EDGE_PORT_SETTINGS_FILE="$DB_DIR/edge_ports.conf"
+DEFAULT_EDGE_PUBLIC_HTTP_PORT="2080"
+DEFAULT_EDGE_PUBLIC_TLS_PORT="442"
+EDGE_PUBLIC_HTTP_PORT="$DEFAULT_EDGE_PUBLIC_HTTP_PORT"
+EDGE_PUBLIC_TLS_PORT="$DEFAULT_EDGE_PUBLIC_TLS_PORT"
+NGINX_INTERNAL_HTTP_PORT="8770"
 NGINX_INTERNAL_TLS_PORT="8442"
 HAPROXY_INTERNAL_DECRYPT_PORT="10443"
 # WebSocket-to-SSH bridge (DarkTunnel / HTTP Custom / NPV payload support)
@@ -51,6 +54,9 @@ WS_SSH_BRIDGE_SCRIPT="/usr/local/bin/tdz-ws-ssh-bridge.py"
 WS_SSH_BRIDGE_SERVICE="/etc/systemd/system/tdz-ws-ssh-bridge.service"
 WS_SSH_BRIDGE_PORT="8890"
 SSH_BANNER_FILE="/etc/tdztunnel/bannerssh"
+BANNER_IDENTITY_CONF="$DB_DIR/banner_identity.conf"
+DEFAULT_BANNER_ADMIN_USERNAME="TUSTDZ"
+DEFAULT_BANNER_CHANNEL_USERNAME="TuhinBroh"
 DNSTT_SERVICE_FILE="/etc/systemd/system/dnstt.service"
 DNSTT_BINARY="/usr/local/bin/dnstt-server"
 DNSTT_KEYS_DIR="/etc/tdztunnel/dnstt"
@@ -77,6 +83,52 @@ AUTO_BACKUP_DIR="/root/tdztunnel-auto-backups"
 AUTO_BACKUP_LOG="/var/log/tdztunnel-auto-backup.log"
 AUTO_BACKUP_LAST_FILE="$AUTO_BACKUP_DIR/last-backup.tar.gz"
 AUTO_BACKUP_PM2_NAME="tdz-auto-backup-bot"
+XUI_PATCHED_TAG="v2.9.3-patched"
+XUI_PATCHED_LABEL="v2.9.3 • Patched"
+XUI_INSTALLER_COMMIT="89fb75da778db776e6ec0a7f735c2a55626229aa"
+XUI_INSTALLER_SHA256="e3ae8c4d42e3f249ea5cad47d9d6b0e98daa675829daab57ffa214efce118186"
+
+tdz_is_valid_port_number() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+}
+
+tdz_is_reserved_edge_port() {
+    local port="$1"
+    case "$port" in
+        22|"$NGINX_INTERNAL_HTTP_PORT"|"$NGINX_INTERNAL_TLS_PORT"|"$HAPROXY_INTERNAL_DECRYPT_PORT"|"$WS_SSH_BRIDGE_PORT") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+load_edge_port_settings() {
+    local saved_http="" saved_tls=""
+
+    [[ -r "$EDGE_PORT_SETTINGS_FILE" ]] || return 0
+    saved_http=$(awk -F= '$1 == "EDGE_PUBLIC_HTTP_PORT" {print $2}' "$EDGE_PORT_SETTINGS_FILE" 2>/dev/null | tail -n 1 | tr -d '\r')
+    saved_tls=$(awk -F= '$1 == "EDGE_PUBLIC_TLS_PORT" {print $2}' "$EDGE_PORT_SETTINGS_FILE" 2>/dev/null | tail -n 1 | tr -d '\r')
+
+    if tdz_is_valid_port_number "$saved_http" &&
+       tdz_is_valid_port_number "$saved_tls" &&
+       ! tdz_is_reserved_edge_port "$saved_http" &&
+       ! tdz_is_reserved_edge_port "$saved_tls" &&
+       [[ "$saved_http" != "$saved_tls" ]]; then
+        EDGE_PUBLIC_HTTP_PORT="$saved_http"
+        EDGE_PUBLIC_TLS_PORT="$saved_tls"
+    fi
+}
+
+save_edge_port_settings() {
+    local tmp_file
+    mkdir -p "$DB_DIR" || return 1
+    tmp_file="${EDGE_PORT_SETTINGS_FILE}.tmp"
+    printf 'EDGE_PUBLIC_HTTP_PORT=%s\nEDGE_PUBLIC_TLS_PORT=%s\n' \
+        "$EDGE_PUBLIC_HTTP_PORT" "$EDGE_PUBLIC_TLS_PORT" > "$tmp_file" || return 1
+    chmod 600 "$tmp_file"
+    mv -f "$tmp_file" "$EDGE_PORT_SETTINGS_FILE"
+}
+
+load_edge_port_settings
 
 # --- ZiVPN Variables ---
 ZIVPN_DIR="/etc/zivpn"
@@ -927,13 +979,16 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-06-28.2
+# TDZ SSH TUNNEL limiter version 2026-07-17.1
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
 PID_DIR="$BW_DIR/pidtrack"
 BANNER_DIR="/etc/tdztunnel/banners"
+BANNER_IDENTITY_CONF="/etc/tdztunnel/banner_identity.conf"
+ADMIN_USERNAME="TUSTDZ"
+CHANNEL_USERNAME="TuhinBroh"
 SCAN_INTERVAL=1
 
 mkdir -p "$BW_DIR" "$PID_DIR"
@@ -952,6 +1007,27 @@ write_banner_if_changed() {
         rm -f "$tmp_file"
     fi
 }
+
+load_banner_identity() {
+    local key value
+    ADMIN_USERNAME="TUSTDZ"
+    CHANNEL_USERNAME="TuhinBroh"
+
+    if [[ -r "$BANNER_IDENTITY_CONF" ]]; then
+        while IFS='=' read -r key value; do
+            value=${value%$'\r'}
+            case "$key" in
+                ADMIN_USERNAME) ADMIN_USERNAME="$value" ;;
+                CHANNEL_USERNAME) CHANNEL_USERNAME="$value" ;;
+            esac
+        done < "$BANNER_IDENTITY_CONF"
+    fi
+
+    [[ "$ADMIN_USERNAME" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]] || ADMIN_USERNAME="TUSTDZ"
+    [[ "$CHANNEL_USERNAME" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]] || CHANNEL_USERNAME="TuhinBroh"
+}
+
+load_banner_identity
 
 while true; do
     if [[ ! -s "$DB_FILE" ]]; then
@@ -1100,13 +1176,13 @@ while true; do
 
             if $is_expired; then
                 STATUS_TEXT="Expired"
-                MSG_BLOCK="<font color=\"red\">Oops! Your account has expired.<br>Please buy a new account<br>Or contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> to renew<br>your access.</font>"
+                MSG_BLOCK="<font color=\"red\">Oops! Your account has expired.<br>Please buy a new account<br>Or contact </font><a href=\"https://t.me/${ADMIN_USERNAME}\">@${ADMIN_USERNAME}</a><font color=\"red\"> to renew<br>your access.</font>"
             elif $traffic_exceeded; then
                 STATUS_TEXT="Traffic Ended"
-                MSG_BLOCK="<font color=\"red\">Oops! Your data limit has been reached.<br>Please recharge your account<br>Or contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> to top-up<br>your data.</font>"
+                MSG_BLOCK="<font color=\"red\">Oops! Your data limit has been reached.<br>Please recharge your account<br>Or contact </font><a href=\"https://t.me/${ADMIN_USERNAME}\">@${ADMIN_USERNAME}</a><font color=\"red\"> to top-up<br>your data.</font>"
             elif $user_locked; then
                 STATUS_TEXT="Locked"
-                MSG_BLOCK="<font color=\"red\">Oops! Your account has been locked.<br>This is maybe billing or abuse issue —<br>please contact </font><a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><font color=\"red\"> directly<br>to unlock your access.</font>"
+                MSG_BLOCK="<font color=\"red\">Oops! Your account has been locked.<br>This is maybe billing or abuse issue —<br>please contact </font><a href=\"https://t.me/${ADMIN_USERNAME}\">@${ADMIN_USERNAME}</a><font color=\"red\"> directly<br>to unlock your access.</font>"
             else
                 STATUS_TEXT="Active"
                 MSG_BLOCK=""
@@ -1124,8 +1200,8 @@ while true; do
             fi
 
             banner_content+="${SEP}<br>"
-            banner_content+="<b>[-] Admin:</b> <a href=\"https://t.me/TUSTDZ\">@TUSTDZ</a><br>"
-            banner_content+="<b>[-] Channel:</b> <a href=\"https://t.me/TuhinBroh\">@TuhinBroh</a><br>${SEP}"
+            banner_content+="<b>[-] Admin:</b> <a href=\"https://t.me/${ADMIN_USERNAME}\">@${ADMIN_USERNAME}</a><br>"
+            banner_content+="<b>[-] Channel:</b> <a href=\"https://t.me/${CHANNEL_USERNAME}\">@${CHANNEL_USERNAME}</a><br>${SEP}"
 
             write_banner_if_changed "$user" "$banner_content"
         fi
@@ -1259,7 +1335,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-06-28.2"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-17.1"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -1475,13 +1551,13 @@ domain_cert_menu() {
             generate_self_signed_edge_cert "$common_name"
             ;;
         3)
-            if [[ -z "$EDGE_DOMAIN" && ! -f "$SSL_CERT_FILE" ]]; then
+            if [[ -z "$EDGE_DOMAIN" && ! -f "$TDZ_SSL_CERT_FILE" ]]; then
                 echo -e "\n${C_YELLOW}ℹ️ No certificate to remove.${C_RESET}"
                 return
             fi
             read -p "👉 Confirm removal? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                rm -f "$SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
+                rm -f "$TDZ_SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
                 echo -e "\n${C_GREEN}✅ Certificate removed.${C_RESET}"
             else
                 echo -e "\n${C_YELLOW}❌ Cancelled.${C_RESET}"
@@ -2740,6 +2816,47 @@ WORKER_EOF
     chmod +x "$AUTO_BACKUP_SCRIPT"
 }
 
+auto_backup_choose_interval() {
+    AUTO_BACKUP_SELECTED_SECONDS=""
+    AUTO_BACKUP_SELECTED_LABEL=""
+
+    echo -e "\n${C_BOLD}Auto Backup Interval:${C_RESET}"
+    echo -e "  ${C_CHOICE}[1]${C_RESET} Every 10 minutes"
+    echo -e "  ${C_CHOICE}[2]${C_RESET} Every 30 minutes"
+    echo -e "  ${C_CHOICE}[3]${C_RESET} Every 1 hour"
+    echo -e "  ${C_CHOICE}[4]${C_RESET} Every 6 hours"
+    echo -e "  ${C_CHOICE}[5]${C_RESET} Every 12 hours"
+    echo -e "  ${C_CHOICE}[6]${C_RESET} Every 1 day"
+    echo -e "  ${C_CHOICE}[7]${C_RESET} Custom (minutes)"
+    echo -e "  ${C_WARN}[0]${C_RESET} Cancel\n"
+    read -r -p "Select interval [0-7]: " int_choice
+    case "$int_choice" in
+        1) AUTO_BACKUP_SELECTED_SECONDS=600; AUTO_BACKUP_SELECTED_LABEL="10 minutes" ;;
+        2) AUTO_BACKUP_SELECTED_SECONDS=1800; AUTO_BACKUP_SELECTED_LABEL="30 minutes" ;;
+        3) AUTO_BACKUP_SELECTED_SECONDS=3600; AUTO_BACKUP_SELECTED_LABEL="1 hour" ;;
+        4) AUTO_BACKUP_SELECTED_SECONDS=21600; AUTO_BACKUP_SELECTED_LABEL="6 hours" ;;
+        5) AUTO_BACKUP_SELECTED_SECONDS=43200; AUTO_BACKUP_SELECTED_LABEL="12 hours" ;;
+        6) AUTO_BACKUP_SELECTED_SECONDS=86400; AUTO_BACKUP_SELECTED_LABEL="1 day" ;;
+        7)
+            local custom_minutes
+            read -r -p "Enter interval in minutes (1-525600): " custom_minutes
+            if ! [[ "$custom_minutes" =~ ^[1-9][0-9]*$ ]] || (( custom_minutes > 525600 )); then
+                echo -e "\n${C_RED}Invalid interval. Enter 1 to 525600 minutes.${C_RESET}"
+                return 1
+            fi
+            AUTO_BACKUP_SELECTED_SECONDS=$((custom_minutes * 60))
+            if (( custom_minutes == 1 )); then
+                AUTO_BACKUP_SELECTED_LABEL="1 minute"
+            else
+                AUTO_BACKUP_SELECTED_LABEL="${custom_minutes} minutes"
+            fi
+            ;;
+        0) echo -e "${C_YELLOW}Cancelled.${C_RESET}"; return 1 ;;
+        *) echo -e "\n${C_RED}Invalid choice.${C_RESET}"; return 1 ;;
+    esac
+    return 0
+}
+
 auto_backup_connect_bot() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- Connect Telegram Bot ---${C_RESET}\n"
@@ -2761,39 +2878,64 @@ auto_backup_connect_bot() {
         return
     fi
 
-    echo -e "\n${C_BOLD}Auto Backup Interval:${C_RESET}"
-    echo -e "  ${C_CHOICE}[1]${C_RESET} Every 30 minutes"
-    echo -e "  ${C_CHOICE}[2]${C_RESET} Every 1 hour"
-    echo -e "  ${C_CHOICE}[3]${C_RESET} Every 6 hours"
-    echo -e "  ${C_CHOICE}[4]${C_RESET} Every 12 hours"
-    echo -e "  ${C_CHOICE}[5]${C_RESET} Every 24 hours"
-    echo -e "  ${C_CHOICE}[6]${C_RESET} Custom (minutes)\n"
-    read -r -p "Select interval [1-6]: " int_choice
-    local interval_seconds interval_label
-    case "$int_choice" in
-        1) interval_seconds=1800; interval_label="30 minutes" ;;
-        2) interval_seconds=3600; interval_label="1 hour" ;;
-        3) interval_seconds=21600; interval_label="6 hours" ;;
-        4) interval_seconds=43200; interval_label="12 hours" ;;
-        5) interval_seconds=86400; interval_label="24 hours" ;;
-        6)
-            read -r -p "Enter interval in minutes: " cust_min
-            if ! [[ "$cust_min" =~ ^[1-9][0-9]*$ ]]; then
-                echo -e "\n${C_RED}Invalid number.${C_RESET}"
-                press_enter
-                return
-            fi
-            interval_seconds=$((cust_min * 60))
-            interval_label="$cust_min minutes"
-            ;;
-        *) echo -e "\n${C_RED}Invalid choice.${C_RESET}"; press_enter; return ;;
-    esac
+    if ! auto_backup_choose_interval; then
+        press_enter
+        return
+    fi
+    local interval_seconds="$AUTO_BACKUP_SELECTED_SECONDS"
+    local interval_label="$AUTO_BACKUP_SELECTED_LABEL"
 
-    auto_backup_save_conf "$bot_token" "$chat_id" "$interval_seconds" "$interval_label"
-    auto_backup_write_worker
+    if ! auto_backup_save_conf "$bot_token" "$chat_id" "$interval_seconds" "$interval_label" ||
+       ! auto_backup_write_worker; then
+        echo -e "\n${C_RED}Could not save the bot configuration.${C_RESET}"
+        press_enter
+        return
+    fi
 
     echo -e "\n${C_GREEN}Bot connected. Interval: $interval_label${C_RESET}"
     echo -e "${C_YELLOW}Use 'Start Bot' to begin auto-backups.${C_RESET}"
+    press_enter
+}
+
+auto_backup_edit_interval() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- Edit Auto Backup Interval ---${C_RESET}\n"
+    if ! auto_backup_load_conf; then
+        echo -e "${C_RED}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
+        press_enter
+        return
+    fi
+
+    local saved_bot_token="$BOT_TOKEN"
+    local saved_chat_id="$CHAT_ID"
+    local bot_was_running=false
+    echo -e "${C_WHITE}Current interval:${C_RESET} ${C_GREEN}${INTERVAL_LABEL:-unknown}${C_RESET}"
+
+    if ! auto_backup_choose_interval; then
+        press_enter
+        return
+    fi
+
+    pm2 list 2>/dev/null | grep -q "$AUTO_BACKUP_PM2_NAME" && bot_was_running=true
+    if ! auto_backup_save_conf "$saved_bot_token" "$saved_chat_id" \
+        "$AUTO_BACKUP_SELECTED_SECONDS" "$AUTO_BACKUP_SELECTED_LABEL" ||
+       ! auto_backup_write_worker; then
+        echo -e "\n${C_RED}❌ Could not save the new backup interval.${C_RESET}"
+        press_enter
+        return
+    fi
+
+    if [[ "$bot_was_running" == true ]]; then
+        if pm2 restart "$AUTO_BACKUP_PM2_NAME" --update-env >/dev/null 2>&1; then
+            pm2 save >/dev/null 2>&1 || true
+            echo -e "\n${C_GREEN}✅ Interval changed to ${AUTO_BACKUP_SELECTED_LABEL}; the bot was restarted.${C_RESET}"
+        else
+            echo -e "\n${C_RED}❌ Interval was saved, but the bot could not be restarted.${C_RESET}"
+        fi
+    else
+        echo -e "\n${C_GREEN}✅ Interval changed to ${AUTO_BACKUP_SELECTED_LABEL}.${C_RESET}"
+        echo -e "${C_DIM}The new interval will be used the next time the bot starts.${C_RESET}"
+    fi
     press_enter
 }
 
@@ -2933,7 +3075,8 @@ backup_data_menu() {
         printf "  ${C_CHOICE}[ 5]${C_RESET} %-40s\n" "Restart Bot"
         printf "  ${C_CHOICE}[ 6]${C_RESET} %-40s\n" "Send Backup Now"
         printf "  ${C_CHOICE}[ 7]${C_RESET} %-40s\n" "Bot Status"
-        printf "  ${C_CHOICE}[ 8]${C_RESET} %-40s\n" "Reset Bot"
+        printf "  ${C_CHOICE}[ 8]${C_RESET} %-40s\n" "Edit Backup Interval"
+        printf "  ${C_CHOICE}[ 9]${C_RESET} %-40s\n" "Reset Bot"
         echo -e "\n  ${C_WARN}[ 0]${C_RESET} Return to Main Menu"
         echo
         read -r -p "$(echo -e ${C_PROMPT}"  Select an option: "${C_RESET})" b_choice
@@ -2945,7 +3088,8 @@ backup_data_menu() {
             5) auto_backup_restart ;;
             6) auto_backup_send_now ;;
             7) auto_backup_status ;;
-            8) auto_backup_reset ;;
+            8) auto_backup_edit_interval ;;
+            9) auto_backup_reset ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -2953,13 +3097,13 @@ backup_data_menu() {
 }
 
 _enable_banner_in_sshd_config() {
-    echo -e "\n${C_BLUE}⚙️ Configuring sshd_config...${C_RESET}"
+    echo -e "\n${C_BLUE}⚙️ Applying SSH banner settings...${C_RESET}"
     disable_dynamic_ssh_banner_system
     sed -i.bak -E 's/^( *Banner *).*/#\1/' /etc/ssh/sshd_config
     if ! grep -q -E "^Banner $SSH_BANNER_FILE" /etc/ssh/sshd_config; then
         echo -e "\n# TDZ SSH TUNNEL SSH Banner\nBanner $SSH_BANNER_FILE" >> /etc/ssh/sshd_config
     fi
-    echo -e "${C_GREEN}✅ sshd_config updated.${C_RESET}"
+    echo -e "${C_GREEN}✅ SSH banner settings updated.${C_RESET}"
 }
 
 _restart_ssh() {
@@ -2982,12 +3126,89 @@ _restart_ssh() {
     fi
 }
 
+is_valid_telegram_username() {
+    [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]]
+}
+
+load_banner_identity_config() {
+    local key value
+    BANNER_ADMIN_USERNAME="$DEFAULT_BANNER_ADMIN_USERNAME"
+    BANNER_CHANNEL_USERNAME="$DEFAULT_BANNER_CHANNEL_USERNAME"
+
+    if [[ -r "$BANNER_IDENTITY_CONF" ]]; then
+        while IFS='=' read -r key value; do
+            value=${value%$'\r'}
+            case "$key" in
+                ADMIN_USERNAME) BANNER_ADMIN_USERNAME="$value" ;;
+                CHANNEL_USERNAME) BANNER_CHANNEL_USERNAME="$value" ;;
+            esac
+        done < "$BANNER_IDENTITY_CONF"
+    fi
+
+    is_valid_telegram_username "$BANNER_ADMIN_USERNAME" || BANNER_ADMIN_USERNAME="$DEFAULT_BANNER_ADMIN_USERNAME"
+    is_valid_telegram_username "$BANNER_CHANNEL_USERNAME" || BANNER_CHANNEL_USERNAME="$DEFAULT_BANNER_CHANNEL_USERNAME"
+}
+
+save_banner_identity_config() {
+    local admin_username="$1" channel_username="$2" tmp_file
+    mkdir -p "$DB_DIR" || return 1
+    tmp_file="${BANNER_IDENTITY_CONF}.tmp"
+    printf 'ADMIN_USERNAME=%s\nCHANNEL_USERNAME=%s\n' \
+        "$admin_username" "$channel_username" > "$tmp_file" || return 1
+    chmod 600 "$tmp_file"
+    mv -f "$tmp_file" "$BANNER_IDENTITY_CONF"
+}
+
+edit_dynamic_banner_contacts() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- 👤 Dynamic Banner Contacts ---${C_RESET}\n"
+    load_banner_identity_config
+    echo -e "${C_WHITE}Current Admin:${C_RESET}   ${C_GREEN}@${BANNER_ADMIN_USERNAME}${C_RESET}"
+    echo -e "${C_WHITE}Current Channel:${C_RESET} ${C_GREEN}@${BANNER_CHANNEL_USERNAME}${C_RESET}"
+    echo -e "${C_DIM}Enter Telegram usernames only. Links are generated automatically.${C_RESET}\n"
+
+    local new_admin new_channel
+    read -r -p "Admin username [@${BANNER_ADMIN_USERNAME}]: " new_admin
+    read -r -p "Channel username [@${BANNER_CHANNEL_USERNAME}]: " new_channel
+    new_admin=${new_admin#@}
+    new_channel=${new_channel#@}
+    new_admin=${new_admin:-$BANNER_ADMIN_USERNAME}
+    new_channel=${new_channel:-$BANNER_CHANNEL_USERNAME}
+
+    if ! is_valid_telegram_username "$new_admin"; then
+        echo -e "\n${C_RED}❌ Invalid Admin username. Use 5-32 letters, numbers, or underscores, starting with a letter.${C_RESET}"
+        press_enter
+        return
+    fi
+    if ! is_valid_telegram_username "$new_channel"; then
+        echo -e "\n${C_RED}❌ Invalid Channel username. Use 5-32 letters, numbers, or underscores, starting with a letter.${C_RESET}"
+        press_enter
+        return
+    fi
+
+    if ! save_banner_identity_config "$new_admin" "$new_channel"; then
+        echo -e "\n${C_RED}❌ Could not save the banner contacts.${C_RESET}"
+        press_enter
+        return
+    fi
+
+    local limiter_reloaded=true
+    setup_limiter_service >/dev/null 2>&1 || limiter_reloaded=false
+    refresh_dynamic_banner_routing_if_enabled
+    echo -e "\n${C_GREEN}✅ Dynamic banner contacts updated.${C_RESET}"
+    echo -e "   • Admin: ${C_YELLOW}@${new_admin}${C_RESET}"
+    echo -e "   • Channel: ${C_YELLOW}@${new_channel}${C_RESET}"
+    if [[ "$limiter_reloaded" != true ]]; then
+        echo -e "${C_YELLOW}⚠️ Contacts were saved, but the banner worker could not be restarted.${C_RESET}"
+    fi
+    press_enter
+}
+
 set_ssh_banner_paste() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- 📋 Paste Static SSH Banner ---${C_RESET}"
     echo -e "Paste your custom banner below. Press ${C_YELLOW}[Ctrl+D]${C_RESET} when you are finished."
-    echo -e "${C_DIM}This will be shown to all SSH users through 'Banner $SSH_BANNER_FILE'.${C_RESET}"
-    echo -e "${C_DIM}The current banner (if any) will be overwritten.${C_RESET}"
+    echo -e "${C_DIM}The current static banner (if any) will be overwritten.${C_RESET}"
     echo -e "--------------------------------------------------"
     cat > "$SSH_BANNER_FILE"
     chmod 644 "$SSH_BANNER_FILE"
@@ -3006,7 +3227,7 @@ view_ssh_banner() {
         cat "$SSH_BANNER_FILE"
         echo -e "${C_CYAN}---- END BANNER ----${C_RESET}"
     else
-        echo -e "\n${C_YELLOW}ℹ️ No banner file found at $SSH_BANNER_FILE.${C_RESET}"
+        echo -e "\n${C_YELLOW}ℹ️ No static banner is configured.${C_RESET}"
     fi
     echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return..." && read -r
 }
@@ -3022,14 +3243,14 @@ remove_ssh_banner() {
     fi
     if [ -f "$SSH_BANNER_FILE" ]; then
         rm -f "$SSH_BANNER_FILE"
-        echo -e "\n${C_GREEN}✅ Removed banner file: $SSH_BANNER_FILE${C_RESET}"
+        echo -e "\n${C_GREEN}✅ Static banner removed.${C_RESET}"
     else
-        echo -e "\n${C_YELLOW}ℹ️ No banner file to remove.${C_RESET}"
+        echo -e "\n${C_YELLOW}ℹ️ No static banner is configured.${C_RESET}"
     fi
     disable_dynamic_ssh_banner_system
-    echo -e "\n${C_BLUE}⚙️ Disabling banner in sshd_config...${C_RESET}"
+    echo -e "\n${C_BLUE}⚙️ Disabling SSH banner settings...${C_RESET}"
     disable_static_ssh_banner_in_sshd_config
-    echo -e "${C_GREEN}✅ Banner disabled in configuration.${C_RESET}"
+    echo -e "${C_GREEN}✅ SSH banner disabled.${C_RESET}"
     _restart_ssh
     echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return..." && read -r
 }
@@ -3400,9 +3621,9 @@ build_shared_tls_bundle() {
         echo -e "${C_RED}❌ Certificate chain or key is missing.${C_RESET}"
         return 1
     fi
-    cat "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" > "$SSL_CERT_FILE" || return 1
+    cat "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" > "$TDZ_SSL_CERT_FILE" || return 1
     chmod 644 "$SSL_CERT_CHAIN_FILE"
-    chmod 600 "$SSL_CERT_KEY_FILE" "$SSL_CERT_FILE"
+    chmod 600 "$SSL_CERT_KEY_FILE" "$TDZ_SSL_CERT_FILE"
     return 0
 }
 
@@ -3502,7 +3723,7 @@ select_edge_certificate() {
         preferred_host="tdztunnel.local"
     fi
 
-    if [ -s "$SSL_CERT_FILE" ] && [ -s "$SSL_CERT_CHAIN_FILE" ] && [ -s "$SSL_CERT_KEY_FILE" ]; then
+    if [ -s "$TDZ_SSL_CERT_FILE" ] && [ -s "$SSL_CERT_CHAIN_FILE" ] && [ -s "$SSL_CERT_KEY_FILE" ]; then
         has_existing_cert=true
     fi
 
@@ -4053,7 +4274,7 @@ frontend port_443_edge
 #   - HTTP WS upgrade payload (GET wss://... Upgrade: websocket) -> ws_ssh_bridge
 # ====================================================================
 frontend internal_decryptor
-    bind 127.0.0.1:${HAPROXY_INTERNAL_DECRYPT_PORT} ssl crt ${SSL_CERT_FILE}
+    bind 127.0.0.1:${HAPROXY_INTERNAL_DECRYPT_PORT} ssl crt ${TDZ_SSL_CERT_FILE}
     mode tcp
     tcp-request inspect-delay 500ms
 
@@ -4085,11 +4306,11 @@ backend ws_ssh_bridge
 
 backend nginx_cleartext
     mode tcp
-    server nginx_8880 127.0.0.1:${NGINX_INTERNAL_HTTP_PORT}
+    server nginx_http 127.0.0.1:${NGINX_INTERNAL_HTTP_PORT}
 
 backend nginx_tls
     mode tcp
-    server nginx_8442 127.0.0.1:${NGINX_INTERNAL_TLS_PORT}
+    server nginx_tls 127.0.0.1:${NGINX_INTERNAL_TLS_PORT}
 
 backend loopback_ssl_terminator
     mode tcp
@@ -4166,12 +4387,220 @@ configure_edge_stack() {
     fi
 
     save_edge_ports_info
+    save_edge_port_settings || {
+        echo -e "${C_RED}❌ Could not save the public edge port settings.${C_RESET}"
+        return 1
+    }
     return 0
+}
+
+tdz_tcp_port_in_use() {
+    local port="$1"
+    command -v ss >/dev/null 2>&1 || return 1
+    ss -H -lnt "( sport = :$port )" 2>/dev/null | grep -q .
+}
+
+validate_edge_public_port() {
+    local port="$1" label="$2"
+    if ! tdz_is_valid_port_number "$port"; then
+        echo -e "${C_RED}❌ ${label} must be a number from 1 to 65535.${C_RESET}"
+        return 1
+    fi
+    if tdz_is_reserved_edge_port "$port"; then
+        echo -e "${C_RED}❌ Port ${port} is reserved by an internal TDZ service.${C_RESET}"
+        return 1
+    fi
+    return 0
+}
+
+restore_edge_stack_after_port_failure() {
+    local rollback_dir="$1"
+    local haproxy_was_active="$2" nginx_was_active="$3"
+    local haproxy_was_enabled="$4" nginx_was_enabled="$5"
+
+    systemctl stop haproxy nginx >/dev/null 2>&1 || true
+
+    if [[ -f "$rollback_dir/haproxy.cfg" ]]; then
+        cp -af "$rollback_dir/haproxy.cfg" "$HAPROXY_CONFIG"
+    else
+        rm -f "$HAPROXY_CONFIG"
+    fi
+    if [[ -f "$rollback_dir/nginx-default" ]]; then
+        cp -af "$rollback_dir/nginx-default" "$NGINX_CONFIG_FILE"
+    else
+        rm -f "$NGINX_CONFIG_FILE"
+    fi
+    if [[ -f "$rollback_dir/nginx_ports.conf" ]]; then
+        cp -af "$rollback_dir/nginx_ports.conf" "$NGINX_PORTS_FILE"
+    else
+        rm -f "$NGINX_PORTS_FILE"
+    fi
+
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [[ "$nginx_was_enabled" == true ]]; then
+        systemctl enable nginx >/dev/null 2>&1 || true
+    else
+        systemctl disable nginx >/dev/null 2>&1 || true
+    fi
+    if [[ "$haproxy_was_enabled" == true ]]; then
+        systemctl enable haproxy >/dev/null 2>&1 || true
+    else
+        systemctl disable haproxy >/dev/null 2>&1 || true
+    fi
+    [[ "$nginx_was_active" == true ]] && systemctl start nginx >/dev/null 2>&1 || true
+    [[ "$haproxy_was_active" == true ]] && systemctl start haproxy >/dev/null 2>&1 || true
+}
+
+apply_edge_public_ports() {
+    local new_http="$1" new_tls="$2" force_apply="${3:-false}"
+    local old_http="$EDGE_PUBLIC_HTTP_PORT" old_tls="$EDGE_PUBLIC_TLS_PORT"
+    local haproxy_was_active=false nginx_was_active=false
+    local haproxy_was_enabled=false nginx_was_enabled=false
+    local stack_ready=false rollback_dir server_name
+
+    validate_edge_public_port "$new_http" "HTTP/WS port" || return 1
+    validate_edge_public_port "$new_tls" "TLS/SSL port" || return 1
+    if [[ "$new_http" == "$new_tls" ]]; then
+        echo -e "${C_RED}❌ HTTP/WS and TLS/SSL must use different ports.${C_RESET}"
+        return 1
+    fi
+
+    if [[ "$new_http" == "$old_http" && "$new_tls" == "$old_tls" && "$force_apply" != true ]]; then
+        echo -e "${C_YELLOW}ℹ️ Those ports are already selected.${C_RESET}"
+        return 0
+    fi
+
+    systemctl is-active --quiet haproxy && haproxy_was_active=true
+    systemctl is-active --quiet nginx && nginx_was_active=true
+    systemctl is-enabled --quiet haproxy 2>/dev/null && haproxy_was_enabled=true
+    systemctl is-enabled --quiet nginx 2>/dev/null && nginx_was_enabled=true
+
+    if command -v haproxy >/dev/null 2>&1 &&
+       command -v nginx >/dev/null 2>&1 &&
+       [[ -s "$HAPROXY_CONFIG" && -s "$NGINX_CONFIG_FILE" && -s "$TDZ_SSL_CERT_FILE" ]]; then
+        stack_ready=true
+    fi
+
+    if [[ "$haproxy_was_active" == true || "$nginx_was_active" == true ]]; then
+        if [[ "$stack_ready" != true ]]; then
+            echo -e "${C_RED}❌ The running edge stack is incomplete, so its ports cannot be changed safely.${C_RESET}"
+            echo -e "${C_DIM}Repair or reinstall the HAProxy edge stack first.${C_RESET}"
+            return 1
+        fi
+
+        rollback_dir=$(mktemp -d /tmp/tdz-edge-port-rollback.XXXXXX) || return 1
+        cp -af "$HAPROXY_CONFIG" "$rollback_dir/haproxy.cfg"
+        cp -af "$NGINX_CONFIG_FILE" "$rollback_dir/nginx-default"
+        [[ -f "$NGINX_PORTS_FILE" ]] && cp -af "$NGINX_PORTS_FILE" "$rollback_dir/nginx_ports.conf"
+
+        if [[ "$new_http" != "$old_http" ]] && tdz_tcp_port_in_use "$new_http"; then
+            echo -e "${C_RED}❌ Port ${new_http} is already in use. No changes were applied.${C_RESET}"
+            rm -rf "$rollback_dir"
+            return 1
+        fi
+        if [[ "$new_tls" != "$old_tls" ]] && tdz_tcp_port_in_use "$new_tls"; then
+            echo -e "${C_RED}❌ Port ${new_tls} is already in use. No changes were applied.${C_RESET}"
+            rm -rf "$rollback_dir"
+            return 1
+        fi
+
+        if ! check_and_open_firewall_port "$new_http" tcp || ! check_and_open_firewall_port "$new_tls" tcp; then
+            rm -rf "$rollback_dir"
+            return 1
+        fi
+
+        EDGE_PUBLIC_HTTP_PORT="$new_http"
+        EDGE_PUBLIC_TLS_PORT="$new_tls"
+        load_edge_cert_info
+        server_name="${EDGE_DOMAIN:-$(detect_preferred_host)}"
+        [[ -z "$server_name" ]] && server_name="_"
+
+        if ! configure_edge_stack "$server_name"; then
+            echo -e "${C_RED}❌ The new configuration failed. Restoring the previous working ports...${C_RESET}"
+            EDGE_PUBLIC_HTTP_PORT="$old_http"
+            EDGE_PUBLIC_TLS_PORT="$old_tls"
+            restore_edge_stack_after_port_failure "$rollback_dir" \
+                "$haproxy_was_active" "$nginx_was_active" "$haproxy_was_enabled" "$nginx_was_enabled"
+            rm -rf "$rollback_dir"
+            return 1
+        fi
+
+        rm -rf "$rollback_dir"
+        echo -e "${C_GREEN}✅ Public ports changed and the edge stack restarted successfully.${C_RESET}"
+    else
+        EDGE_PUBLIC_HTTP_PORT="$new_http"
+        EDGE_PUBLIC_TLS_PORT="$new_tls"
+        if ! save_edge_port_settings; then
+            EDGE_PUBLIC_HTTP_PORT="$old_http"
+            EDGE_PUBLIC_TLS_PORT="$old_tls"
+            echo -e "${C_RED}❌ Could not save the new public ports.${C_RESET}"
+            return 1
+        fi
+        echo -e "${C_GREEN}✅ Public ports saved. They will be used when the edge stack is installed or reconfigured.${C_RESET}"
+    fi
+
+    echo -e "   • HTTP/WS: ${C_YELLOW}${EDGE_PUBLIC_HTTP_PORT}${C_RESET}"
+    echo -e "   • TLS/SSL: ${C_YELLOW}${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
+    echo -e "   • Internal Nginx: ${C_YELLOW}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
+    return 0
+}
+
+edge_public_port_menu() {
+    while true; do
+        clear; show_banner
+        echo -e "${C_BOLD}${C_PURPLE}--- 🔧 Public Edge Port Management ---${C_RESET}\n"
+        echo -e "${C_WHITE}Current HTTP/WS:${C_RESET} ${C_GREEN}${EDGE_PUBLIC_HTTP_PORT}${C_RESET}"
+        echo -e "${C_WHITE}Current TLS/SSL:${C_RESET} ${C_GREEN}${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
+        echo -e "${C_DIM}Defaults: ${DEFAULT_EDGE_PUBLIC_HTTP_PORT}/${DEFAULT_EDGE_PUBLIC_TLS_PORT} • Internal backend: ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}\n"
+        printf "  ${C_CHOICE}[ 1]${C_RESET} %-45s\n" "Change HTTP/WS Port"
+        printf "  ${C_CHOICE}[ 2]${C_RESET} %-45s\n" "Change TLS/SSL Port"
+        printf "  ${C_CHOICE}[ 3]${C_RESET} %-45s\n" "Change Both Public Ports"
+        printf "  ${C_CHOICE}[ 4]${C_RESET} %-45s\n" "Restore Default Public Ports"
+        printf "  ${C_CHOICE}[ 5]${C_RESET} %-45s\n" "Apply/Repair Current Edge Port Layout"
+        echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
+        echo
+        read -r -p "👉 Select an option: " port_choice
+
+        local new_http="$EDGE_PUBLIC_HTTP_PORT" new_tls="$EDGE_PUBLIC_TLS_PORT" force_apply=false
+        case "$port_choice" in
+            1) read -r -p "New HTTP/WS port: " new_http ;;
+            2) read -r -p "New TLS/SSL port: " new_tls ;;
+            3)
+                read -r -p "New HTTP/WS port: " new_http
+                read -r -p "New TLS/SSL port: " new_tls
+                ;;
+            4)
+                new_http="$DEFAULT_EDGE_PUBLIC_HTTP_PORT"
+                new_tls="$DEFAULT_EDGE_PUBLIC_TLS_PORT"
+                ;;
+            5) force_apply=true ;;
+            0) return ;;
+            *) invalid_option; continue ;;
+        esac
+
+        validate_edge_public_port "$new_http" "HTTP/WS port" || { press_enter; continue; }
+        validate_edge_public_port "$new_tls" "TLS/SSL port" || { press_enter; continue; }
+        if [[ "$new_http" == "$new_tls" ]]; then
+            echo -e "${C_RED}❌ HTTP/WS and TLS/SSL must use different ports.${C_RESET}"
+            press_enter
+            continue
+        fi
+
+        echo -e "\n${C_YELLOW}New public ports: HTTP/WS ${new_http}, TLS/SSL ${new_tls}.${C_RESET}"
+        echo -e "${C_DIM}If the edge stack is running, active connections will briefly disconnect during restart.${C_RESET}"
+        read -r -p "Apply this configuration? (y/n): " confirm
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            apply_edge_public_ports "$new_http" "$new_tls" "$force_apply"
+        else
+            echo -e "${C_YELLOW}Cancelled.${C_RESET}"
+        fi
+        press_enter
+    done
 }
 
 install_ssl_tunnel() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing HAProxy Edge Stack (2080/442 -> 8880/8442) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing HAProxy Edge Stack (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} -> ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}) ---${C_RESET}"
     echo -e "\n${C_CYAN}This installer will configure:${C_RESET}"
     echo -e "   • HAProxy on ${C_WHITE}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
     echo -e "   • Internal Nginx on ${C_WHITE}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
@@ -4242,7 +4671,7 @@ EOF
     local delete_cert="n"
     if [[ "$UNINSTALL_MODE" == "silent" ]]; then
         delete_cert="y"
-    elif [ -f "$SSL_CERT_FILE" ] || [ -f "$SSL_CERT_CHAIN_FILE" ] || [ -f "$SSL_CERT_KEY_FILE" ]; then
+    elif [ -f "$TDZ_SSL_CERT_FILE" ] || [ -f "$SSL_CERT_CHAIN_FILE" ] || [ -f "$SSL_CERT_KEY_FILE" ]; then
         if systemctl is-active --quiet nginx; then
             echo -e "${C_YELLOW}⚠️ The shared certificate is also used by the internal Nginx proxy.${C_RESET}"
         fi
@@ -4254,7 +4683,7 @@ EOF
             echo -e "${C_GREEN}🛑 Stopping Nginx because the shared certificate is being removed...${C_RESET}"
             systemctl stop nginx >/dev/null 2>&1
         fi
-        rm -f "$SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
+        rm -f "$TDZ_SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
         rm -f "$NGINX_PORTS_FILE"
         echo -e "${C_GREEN}🗑️ Shared certificate files removed.${C_RESET}"
     fi
@@ -4871,10 +5300,10 @@ purge_nginx() {
 
 install_nginx_proxy() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Reconfiguring Internal Nginx Proxy (8880/8442) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Reconfiguring Internal Nginx Proxy (${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}) ---${C_RESET}"
     echo -e "\n${C_CYAN}This keeps HAProxy on ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} and rewrites the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
 
-    if [ ! -s "$SSL_CERT_FILE" ] || [ ! -s "$SSL_CERT_CHAIN_FILE" ] || [ ! -s "$SSL_CERT_KEY_FILE" ]; then
+    if [ ! -s "$TDZ_SSL_CERT_FILE" ] || [ ! -s "$SSL_CERT_CHAIN_FILE" ] || [ ! -s "$SSL_CERT_KEY_FILE" ]; then
         echo -e "\n${C_YELLOW}⚠️ No shared TDZ SSH TUNNEL certificate was found.${C_RESET}"
         echo -e "${C_DIM}Running the full HAProxy edge installer so the certificate and both services stay aligned.${C_RESET}"
         install_ssl_tunnel
@@ -5059,16 +5488,45 @@ nginx_proxy_menu() {
 install_xui_panel() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Install X-UI Panel ---${C_RESET}"
-    echo -e "\nThis will download and run the official installation script for X-UI."
+    echo -e "\nThis installs your fixed patched X-UI release."
     echo -e "Choose an installation option:\n"
-    printf "  ${C_GREEN}[ 1]${C_RESET} %-40s\n" "Install the latest version of X-UI"
+    printf "  ${C_GREEN}[ 1]${C_RESET} %-40s\n" "Install ${XUI_PATCHED_LABEL}"
     echo -e "\n  ${C_RED}[ 0]${C_RESET} ❌ Cancel Installation"
     echo
     read -p "👉 Select an option: " choice
     case $choice in
         1)
-            echo -e "\n${C_BLUE}⚙️ Installing the latest version...${C_RESET}"
-            bash <(curl -Ls https://raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/master/install.sh)
+            local installer_file installer_hash installer_url
+            installer_file=$(mktemp /tmp/tdz-xui-installer.XXXXXX.sh) || {
+                echo -e "\n${C_RED}❌ Could not create a temporary installer file.${C_RESET}"
+                return 1
+            }
+            installer_url="https://raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/${XUI_INSTALLER_COMMIT}/install.sh"
+            echo -e "\n${C_BLUE}⚙️ Downloading ${XUI_PATCHED_LABEL} installer...${C_RESET}"
+            if ! curl -fLsS --retry 3 --connect-timeout 10 -o "$installer_file" "$installer_url"; then
+                rm -f "$installer_file"
+                echo -e "${C_RED}❌ Failed to download the patched installer.${C_RESET}"
+                return 1
+            fi
+
+            installer_hash=$(sha256sum "$installer_file" 2>/dev/null | awk '{print $1}')
+            if [[ "$installer_hash" != "$XUI_INSTALLER_SHA256" ]]; then
+                rm -f "$installer_file"
+                echo -e "${C_RED}❌ Installer integrity check failed. Installation stopped.${C_RESET}"
+                return 1
+            fi
+
+            # The tagged upstream installer still points fallback files at a
+            # non-existent "main" branch. Pin every fallback to the same commit.
+            sed -i "s|raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/main/|raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/${XUI_INSTALLER_COMMIT}/|g" "$installer_file"
+
+            echo -e "${C_BLUE}⚙️ Installing ${XUI_PATCHED_LABEL}...${C_RESET}"
+            if bash "$installer_file" "$XUI_PATCHED_TAG"; then
+                echo -e "\n${C_GREEN}✅ ${XUI_PATCHED_LABEL} installed successfully.${C_RESET}"
+            else
+                echo -e "\n${C_RED}❌ X-UI installation failed.${C_RESET}"
+            fi
+            rm -f "$installer_file"
             ;;
         0)
             echo -e "\n${C_YELLOW}❌ Installation cancelled.${C_RESET}"
@@ -5237,6 +5695,21 @@ invalidate_banner_cache() {
     DASH_CACHE_TS=0
 }
 
+get_clean_os_name() {
+    local os_release_file="${1:-/etc/os-release}"
+    local os_name
+    os_name=$(awk -F= '
+        $1 == "PRETTY_NAME" {
+            sub(/^[^=]*=/, "")
+            gsub(/^"|"$/, "")
+            print
+            exit
+        }
+    ' "$os_release_file" 2>/dev/null)
+    os_name=$(printf '%s' "$os_name" | sed -E 's/[[:space:]]+\([^()]*\)[[:space:]]*$//')
+    printf '%s\n' "${os_name:-Linux}"
+}
+
 refresh_banner_cache() {
     local now
     now=$(date +%s)
@@ -5245,7 +5718,7 @@ refresh_banner_cache() {
     fi
 
     if [[ -z "$BANNER_CACHE_OS_NAME" ]]; then
-        BANNER_CACHE_OS_NAME=$(grep -oP 'PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null || echo "Linux")
+        BANNER_CACHE_OS_NAME=$(get_clean_os_name)
     fi
     BANNER_CACHE_UP_TIME=$(uptime -p 2>/dev/null | sed 's/up //' || echo "unknown")
     BANNER_CACHE_RAM_USAGE=$(free -m | awk '/^Mem:/{if($2>0){printf "%.2f", $3*100/$2}else{print "0.00"}}')
@@ -5269,7 +5742,7 @@ refresh_dashboard_cache() {
     fi
 
     # OS + uptime (local, fast)
-    DASH_CACHE_OS_NAME=$(grep -oP 'PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null | cut -c1-28 || echo "Linux")
+    DASH_CACHE_OS_NAME=$(get_clean_os_name | cut -c1-28)
     DASH_CACHE_UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' | cut -c1-20 || echo "unknown")
 
     # CPU load (1-min avg) + core count (1 core / N cores)
@@ -5369,7 +5842,7 @@ protocol_menu() {
         local udp_custom_status; if systemctl is-active --quiet udp-custom; then udp_custom_status="${C_STATUS_A}(Active)${C_RESET}"; else udp_custom_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local zivpn_status; if systemctl is-active --quiet zivpn.service; then zivpn_status="${C_STATUS_A}(Active)${C_RESET}"; else zivpn_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         
-        local ssl_tunnel_text="HAProxy Edge Stack (2080/442)"
+        local ssl_tunnel_text="HAProxy Edge Stack (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})"
         local ssl_tunnel_status="${C_STATUS_I}(Inactive)${C_RESET}"
         if systemctl is-active --quiet haproxy; then
             ssl_tunnel_status="${C_STATUS_A}(Active)${C_RESET}"
@@ -5396,13 +5869,16 @@ protocol_menu() {
         printf "     ${C_CHOICE}[ 4]${C_RESET} %-45s\n" "🗑️ Uninstall HAProxy Edge Stack"
         printf "     ${C_CHOICE}[ 5]${C_RESET} %-45s %s\n" "📡 Install/View DNSTT (Port 53)" "$dnstt_status"
         printf "     ${C_CHOICE}[ 6]${C_RESET} %-45s\n" "🗑️ Uninstall DNSTT"
-        printf "     ${C_CHOICE}[ 7]${C_RESET} %-45s %s\n" "🌐 Install/Manage Internal Nginx (8880/8442)" "$nginx_status"
+        printf "     ${C_CHOICE}[ 7]${C_RESET} %-45s %s\n" "🌐 Install/Manage Internal Nginx (${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT})" "$nginx_status"
         printf "     ${C_CHOICE}[ 8]${C_RESET} %-45s %s\n" "🛡️ Install ZiVPN (UDP 5667)" "$zivpn_status"
         printf "     ${C_CHOICE}[ 9]${C_RESET} %-45s\n" "🗑️ Uninstall ZiVPN"
         
         echo -e "     ${C_ACCENT}--- 💻 MANAGEMENT PANELS ---${C_RESET}"
-        printf "     ${C_CHOICE}[10]${C_RESET} %-45s %s\n" "💻 Install X-UI Panel" "$xui_status"
+        printf "     ${C_CHOICE}[10]${C_RESET} %-45s %s\n" "💻 Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status"
         printf "     ${C_CHOICE}[11]${C_RESET} %-45s\n" "🗑️ Uninstall X-UI Panel"
+
+        echo -e "     ${C_ACCENT}--- 🔧 PORT MANAGEMENT ---${C_RESET}"
+        printf "     ${C_CHOICE}[12]${C_RESET} %-45s\n" "🔌 Public Ports (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})"
         
         echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
         echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return to Main Menu"
@@ -5418,6 +5894,7 @@ protocol_menu() {
             7) nginx_proxy_menu ;;
             8) install_zivpn; press_enter ;; 9) uninstall_zivpn; press_enter ;;
             10) install_xui_panel; press_enter ;; 11) uninstall_xui_panel; press_enter ;;
+            12) edge_public_port_menu ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -5782,8 +6259,8 @@ generate_client_config() {
     if systemctl is-active --quiet haproxy; then
         echo -e "\n🔹 ${C_BOLD}HAProxy Edge Stack${C_RESET}:"
         echo -e "   • Host: $host_domain"
-        echo -e "   • Port 2080: HTTP payloads / raw SSH"
-        echo -e "   • Port 442: TLS / SNI / SSL payloads"
+        echo -e "   • Port ${EDGE_PUBLIC_HTTP_PORT}: HTTP payloads / raw SSH"
+        echo -e "   • Port ${EDGE_PUBLIC_TLS_PORT}: TLS / SNI / SSL payloads"
         echo -e "   • Internal handoff: Nginx ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
         echo -e "   • SNI (BugHost): $host_domain (or your preferred SNI)"
     elif systemctl is-active --quiet nginx; then
@@ -6063,12 +6540,12 @@ ssh_banner_menu() {
         esac
 
         echo -e "\n   ${C_TITLE}═════════════════[ ${C_BOLD}🎨 SSH BANNER MODE: ${banner_status} ${C_RESET}${C_TITLE}]═════════════════${C_RESET}"
-        echo -e "${C_DIM}Static mode uses 'Banner $SSH_BANNER_FILE'. Dynamic mode shows per-user account info.${C_RESET}"
         printf "     ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "✨ Enable Dynamic Account Banner"
         printf "     ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "📋 Paste or Replace Static Banner"
         printf "     ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "👁️ View Current Static Banner"
         printf "     ${C_CHOICE}[ 4]${C_RESET} %-40s\n" "📝 Preview Dynamic Banner"
-        printf "     ${C_DANGER}[ 5]${C_RESET} %-40s\n" "🗑️ Disable All SSH Banners"
+        printf "     ${C_CHOICE}[ 5]${C_RESET} %-40s\n" "👤 Edit Dynamic Banner Contacts"
+        printf "     ${C_DANGER}[ 6]${C_RESET} %-40s\n" "🗑️ Disable All SSH Banners"
         echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
         echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return to Main Menu"
         echo
@@ -6087,7 +6564,8 @@ ssh_banner_menu() {
             2) set_ssh_banner_paste ;;
             3) view_ssh_banner ;;
             4) preview_dynamic_ssh_banner ;;
-            5) remove_ssh_banner ;;
+            5) edit_dynamic_banner_contacts ;;
+            6) remove_ssh_banner ;;
             0) return ;;
             *) echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" && sleep 1 ;;
         esac
