@@ -5876,9 +5876,6 @@ protocol_menu() {
         echo -e "     ${C_ACCENT}--- 💻 MANAGEMENT PANELS ---${C_RESET}"
         printf "     ${C_CHOICE}[10]${C_RESET} %-45s %s\n" "💻 Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status"
         printf "     ${C_CHOICE}[11]${C_RESET} %-45s\n" "🗑️ Uninstall X-UI Panel"
-
-        echo -e "     ${C_ACCENT}--- 🔧 PORT MANAGEMENT ---${C_RESET}"
-        printf "     ${C_CHOICE}[12]${C_RESET} %-45s\n" "🔌 Public Ports (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})"
         
         echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
         echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return to Main Menu"
@@ -5894,7 +5891,6 @@ protocol_menu() {
             7) nginx_proxy_menu ;;
             8) install_zivpn; press_enter ;; 9) uninstall_zivpn; press_enter ;;
             10) install_xui_panel; press_enter ;; 11) uninstall_xui_panel; press_enter ;;
-            12) edge_public_port_menu ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -6692,7 +6688,7 @@ main_menu() {
         tdz_box_header "VPN & PROTOCOLS"
         tdz_box_divider
         tdz_menu2 "[12]" "Protocol Manager" "[14]" "Block Torrent"
-        tdz_menu1 "[13]" "Traffic Monitor"
+        tdz_menu2 "[13]" "Port Management"  "[15]" "Traffic Monitor"
         tdz_box_bot
 
         # ── SECTION 5: SYSTEM & MAINTENANCE ───────────────────────────
@@ -6700,9 +6696,9 @@ main_menu() {
         tdz_box_top
         tdz_box_header "SYSTEM & MAINTENANCE"
         tdz_box_divider
-        tdz_menu2 "[15]" "Domain & SSL Cert" "[18]" "Backup Data"
-        tdz_menu2 "[16]" "SSH Banner"        "[19]" "Restore Data"
-        tdz_menu2 "[17]" "Auto-Reboot Task"  "[20]" "Cleanup Expired"
+        tdz_menu2 "[16]" "Domain & SSL Cert" "[19]" "Backup Data"
+        tdz_menu2 "[17]" "SSH Banner"        "[20]" "Restore Data"
+        tdz_menu2 "[18]" "Auto-Reboot Task"  "[21]" "Cleanup Expired"
         tdz_box_bot
 
         # ── SECTION 6: DANGER ZONE (red) ──────────────────────────────
@@ -6732,15 +6728,16 @@ main_menu() {
             11) bulk_create_users; press_enter ;;
 
             12) protocol_menu ;;
-            13) traffic_monitor_menu ;;
+            13) edge_public_port_menu ;;
             14) torrent_block_menu ;;
+            15) traffic_monitor_menu ;;
 
-            15) domain_cert_menu; press_enter ;;
-            16) ssh_banner_menu ;;
-            17) auto_reboot_menu ;;
-            18) backup_data_menu ;;
-            19) restore_user_data; press_enter ;;
-            20) cleanup_expired; press_enter ;;
+            16) domain_cert_menu; press_enter ;;
+            17) ssh_banner_menu ;;
+            18) auto_reboot_menu ;;
+            19) backup_data_menu ;;
+            20) restore_user_data; press_enter ;;
+            21) cleanup_expired; press_enter ;;
 
             99) uninstall_script ;;
             0) exit 0 ;;
