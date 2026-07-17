@@ -6860,8 +6860,8 @@ show_banner() {
     [[ $title_rpad_len -gt 0 ]] && printf -v title_rpad "%${title_rpad_len}s" ""
     printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$title_lpad" "$title_content" "$title_rpad"
     # Subtitle line — centered
-    local sub_content="${C_GRAY}Powered By: T.me/TuhinBroh${C_RESET}"
-    local sub_clean="Powered By: T.me/TuhinBroh"
+    local sub_content="${C_GRAY}Powered By: t.me/TuhinBroh${C_RESET}"
+    local sub_clean="Powered By: t.me/TuhinBroh"
     local sub_pad=$(( (64 - ${#sub_clean}) / 2 ))
     [[ $sub_pad -lt 0 ]] && sub_pad=0
     local sub_lpad="" sub_rpad=""
