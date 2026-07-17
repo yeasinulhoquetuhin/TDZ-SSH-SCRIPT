@@ -110,7 +110,7 @@ After installation, type **`menu`** to launch the management interface.
 
 ---
 
-## Domain & SSL Certificate — Menu 17
+## SSL Certificate — Menu 17
 
 Open **`menu → 17) Domain & SSL Cert`** to manage the shared certificate used by the TDZ edge stack.
 
