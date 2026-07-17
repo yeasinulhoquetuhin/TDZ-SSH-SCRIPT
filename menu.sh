@@ -3095,7 +3095,7 @@ ssh_banner_menu() {
 
 install_udp_custom() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Installing udp-custom ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing udp-custom ---${C_RESET}"
     if [ -f "$UDP_CUSTOM_SERVICE_FILE" ] || [ -f "$UDPGW_SERVICE_FILE" ]; then
         echo -e "\n${C_YELLOW}ℹ️ udp-custom is already installed.${C_RESET}"
         return
@@ -3254,7 +3254,7 @@ ensure_badvpn_service_is_quiet() {
 
 install_badvpn() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Installing badvpn (udpgw) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing badvpn (udpgw) ---${C_RESET}"
     if [ -f "$BADVPN_SERVICE_FILE" ]; then
         echo -e "\n${C_YELLOW}ℹ️ badvpn is already installed.${C_RESET}"
         return
@@ -3461,7 +3461,7 @@ obtain_certbot_edge_cert() {
         return 1
     }
 
-    echo -e "\n${C_BLUE}🚀 Requesting a Certbot certificate for ${C_YELLOW}$domain_name${C_RESET}"
+    echo -e "\n${C_BLUE}⚡ Requesting a Certbot certificate for ${C_YELLOW}$domain_name${C_RESET}"
     certbot certonly --standalone -d "$domain_name" --non-interactive --agree-tos -m "$email"
     if [ $? -ne 0 ]; then
         echo -e "\n${C_RED}❌ Certbot failed to obtain a certificate.${C_RESET}"
@@ -4171,7 +4171,7 @@ configure_edge_stack() {
 
 install_ssl_tunnel() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Installing HAProxy Edge Stack (2080/442 -> 8880/8442) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing HAProxy Edge Stack (2080/442 -> 8880/8442) ---${C_RESET}"
     echo -e "\n${C_CYAN}This installer will configure:${C_RESET}"
     echo -e "   • HAProxy on ${C_WHITE}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
     echo -e "   • Internal Nginx on ${C_WHITE}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
@@ -4650,7 +4650,7 @@ uninstall_tdz_proxy() {
 # --- ZiVPN Installation Logic ---
 install_zivpn() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Installing ZiVPN (UDP/VPN) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Installing ZiVPN (UDP/VPN) ---${C_RESET}"
     
     if [ -f "$ZIVPN_SERVICE_FILE" ]; then
         echo -e "\n${C_YELLOW}ℹ️ ZiVPN is already installed.${C_RESET}"
@@ -4762,7 +4762,7 @@ EOF
 }
 EOF
 
-    echo -e "\n${C_GREEN}🚀 Starting ZiVPN Service...${C_RESET}"
+    echo -e "\n${C_GREEN}⚡ Starting ZiVPN Service...${C_RESET}"
     systemctl daemon-reload
     systemctl enable zivpn.service
     systemctl start zivpn.service
@@ -4871,7 +4871,7 @@ purge_nginx() {
 
 install_nginx_proxy() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Reconfiguring Internal Nginx Proxy (8880/8442) ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Reconfiguring Internal Nginx Proxy (8880/8442) ---${C_RESET}"
     echo -e "\n${C_CYAN}This keeps HAProxy on ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} and rewrites the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
 
     if [ ! -s "$SSL_CERT_FILE" ] || [ ! -s "$SSL_CERT_CHAIN_FILE" ] || [ ! -s "$SSL_CERT_KEY_FILE" ]; then
@@ -5058,28 +5058,17 @@ nginx_proxy_menu() {
 
 install_xui_panel() {
     clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚀 Install X-UI Panel ---${C_RESET}"
+    echo -e "${C_BOLD}${C_PURPLE}--- ⚡ Install X-UI Panel ---${C_RESET}"
     echo -e "\nThis will download and run the official installation script for X-UI."
     echo -e "Choose an installation option:\n"
-    echo -e "Choose an installation option:\n"
     printf "  ${C_GREEN}[ 1]${C_RESET} %-40s\n" "Install the latest version of X-UI"
-    printf "  ${C_GREEN}[ 2]${C_RESET} %-40s\n" "Install a specific version of X-UI"
     echo -e "\n  ${C_RED}[ 0]${C_RESET} ❌ Cancel Installation"
     echo
     read -p "👉 Select an option: " choice
     case $choice in
         1)
             echo -e "\n${C_BLUE}⚙️ Installing the latest version...${C_RESET}"
-            bash <(curl -Ls https://raw.githubusercontent.com/alireza0/x-ui/master/install.sh)
-            ;;
-        2)
-            read -p "👉 Enter the version to install (e.g., 1.8.0): " version
-            if [[ -z "$version" ]]; then
-                echo -e "\n${C_RED}❌ Version number cannot be empty.${C_RESET}"
-                return
-            fi
-            echo -e "\n${C_BLUE}⚙️ Installing version ${C_YELLOW}$version...${C_RESET}"
-            VERSION=$version bash <(curl -Ls "https://raw.githubusercontent.com/alireza0/x-ui/$version/install.sh") "$version"
+            bash <(curl -Ls https://raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/master/install.sh)
             ;;
         0)
             echo -e "\n${C_YELLOW}❌ Installation cancelled.${C_RESET}"
@@ -5401,7 +5390,7 @@ protocol_menu() {
         
         echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}🔌 PROTOCOL & PANEL MANAGEMENT ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
         echo -e "     ${C_ACCENT}--- TUNNELLING PROTOCOLS---${C_RESET}"
-        printf "     ${C_CHOICE}[ 1]${C_RESET} %-45s %s\n" "🚀 Install badvpn (UDP 7300)" "$badvpn_status"
+        printf "     ${C_CHOICE}[ 1]${C_RESET} %-45s %s\n" "⚡ Install badvpn (UDP 7300)" "$badvpn_status"
         printf "     ${C_CHOICE}[ 2]${C_RESET} %-45s\n" "🗑️ Uninstall badvpn"
         printf "     ${C_CHOICE}[ 3]${C_RESET} %-45s %s\n" "🔒 Install ${ssl_tunnel_text}" "$ssl_tunnel_status"
         printf "     ${C_CHOICE}[ 4]${C_RESET} %-45s\n" "🗑️ Uninstall HAProxy Edge Stack"
