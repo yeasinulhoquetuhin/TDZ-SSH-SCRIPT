@@ -186,12 +186,11 @@ The optional suite requires Python 3.7 or newer. On an older distribution the co
 The OpenVPN portal is generated automatically:
 
 ```text
+http://VPS-IP-OR-HOST:1180/openvpn/
 https://VPS-IP-OR-HOST:1180/openvpn/
 ```
 
-The landing page summarizes every transport. Full client fields, copyable payloads, SNI values, firewall requirements, verification order, and troubleshooting are available at `/openvpn/docs`; individual profiles, the complete ZIP, and the server CA are available at `/openvpn/download`. Plain HTTP requests on the same portal address are redirected safely to HTTPS. The offline text guide remains inside the ZIP but is no longer required to understand the setup. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
-
-While connected to OpenVPN, the portal and other services on the same VPS can be reached through the lowercase `route-gateway` shown in `PUSH_REPLY`. The portal is served directly at `http://ROUTE-GATEWAY:1180/openvpn/` only for authenticated tunnel subnets; public HTTP requests continue to redirect to HTTPS.
+The landing page summarizes every transport. Full client fields, copyable payloads, SNI values, firewall requirements, verification order, and troubleshooting are available at `/openvpn/docs`; individual profiles, the complete ZIP, and the server CA are available at `/openvpn/download`. The managed portal accepts both HTTP and HTTPS on port `1180`; HTTPS is strongly recommended when downloading profiles because HTTP cannot prevent network-side tampering. The offline text guide remains inside the ZIP but is no longer required to understand the setup. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
 
 The portal uses the same validated outer certificate as WSS and SSL. A matching certificate applied through **Domain & SSL Cert** is reused automatically across all three services; if it does not cover the saved OpenVPN host, the last working adapter certificate is preserved and the menu reports the mismatch. The private OpenVPN CA remains separate and embedded in every profile.
 
@@ -203,7 +202,6 @@ The portal uses the same validated outer certificate as WSS and SSL. A matching 
 - The configured connection limit is shared across active SSH and OpenVPN sessions
 - Bandwidth usage from both transports is added to the same per-user quota without double counting
 - Expired or quota-exhausted accounts are disconnected and locked automatically
-- Services hosted on the same VPS are reachable through the tunnel's lowercase `route-gateway` address and their normal service ports
 - VPN clients are isolated from one another and cannot use the transport gateway as an open proxy
 
 Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores while retaining AES-256-GCM negotiation with the server.
@@ -256,7 +254,7 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 | 448 | UDP | OpenVPN direct UDP transport |
 | 449 | HTTP / WS | OpenVPN HTTP CONNECT, HTTP Payload, and WebSocket gateway |
 | 450 | WSS | OpenVPN TLS WebSocket / SNI gateway |
-| 1180 | HTTP / HTTPS | OpenVPN documentation and profile portal; HTTP redirects to HTTPS |
+| 1180 | HTTP / HTTPS | OpenVPN documentation and profile portal; both protocols are accepted |
 
 ## Supported Platforms
 

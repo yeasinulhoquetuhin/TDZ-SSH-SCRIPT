@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import ipaddress
 import mimetypes
 import os
 import re
@@ -46,7 +45,7 @@ class PortalServer(ThreadingHTTPServer):
         root: Path,
         tls_context: ssl.SSLContext,
         public_host: str,
-        trusted_subnets: tuple[ipaddress.IPv4Network, ...],
+        allow_http: bool,
     ) -> None:
         super().__init__(address, PortalHandler)
         self.portal_root = root.resolve()
@@ -54,7 +53,7 @@ class PortalServer(ThreadingHTTPServer):
         self.tls_context = tls_context
         self.public_host = public_host
         self.public_port = int(address[1])
-        self.trusted_subnets = trusted_subnets
+        self.allow_http = allow_http
 
     def get_request(self):
         request, client_address = super().get_request()
@@ -108,17 +107,10 @@ class PortalHandler(BaseHTTPRequestHandler):
     def _redirect_plain_http(self) -> bool:
         if isinstance(self.connection, ssl.SSLSocket):
             return False
-        try:
-            client_ip = ipaddress.ip_address(self.client_address[0])
-        except ValueError:
-            client_ip = None
-        trusted_subnets = self.server.trusted_subnets  # type: ignore[attr-defined]
-        if client_ip is not None and any(
-            client_ip in subnet for subnet in trusted_subnets
-        ):
-            # The request is already protected by the authenticated OpenVPN
-            # tunnel. Serve it directly so the tunnel gateway IP does not hit
-            # a public-host redirect or a certificate-name mismatch.
+        if self.server.allow_http:  # type: ignore[attr-defined]
+            # TDZ explicitly exposes the public, credential-free profile
+            # portal over both protocols. HTTPS remains the recommended path
+            # because HTTP cannot protect downloaded profiles from tampering.
             return False
         parsed = urlsplit(self.path)
         path = quote(unquote(parsed.path or "/"), safe="/:@-._~!$&'()*+,;=")
@@ -254,7 +246,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--tls-cert", required=True, type=Path)
     parser.add_argument("--tls-key", required=True, type=Path)
-    parser.add_argument("--trusted-subnet", action="append", default=[])
+    parser.add_argument("--allow-http", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
@@ -266,14 +258,6 @@ def parse_args() -> argparse.Namespace:
         parser.error("TLS private key does not exist")
     if not PUBLIC_HOST_PATTERN.fullmatch(args.public_host):
         parser.error("public host must be a valid IPv4 address or domain")
-    try:
-        args.trusted_subnet = tuple(
-            ipaddress.ip_network(value, strict=True) for value in args.trusted_subnet
-        )
-    except ValueError:
-        parser.error("trusted subnet must be a valid IPv4 network")
-    if any(network.version != 4 for network in args.trusted_subnet):
-        parser.error("trusted subnet must use IPv4")
     return args
 
 
@@ -294,7 +278,7 @@ def main() -> None:
         args.root,
         tls_context,
         args.public_host,
-        args.trusted_subnet,
+        args.allow_http,
     )
     try:
         print(

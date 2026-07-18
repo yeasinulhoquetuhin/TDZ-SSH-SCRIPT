@@ -329,7 +329,7 @@ class GatewayTests(ProcessCase):
 
 
 class PortalTests(ProcessCase):
-    def test_plain_http_is_served_inside_trusted_vpn_subnet(self):
+    def test_plain_http_can_be_enabled_alongside_https(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             public = root / "ovpn-configs"
@@ -345,8 +345,7 @@ class PortalTests(ProcessCase):
                 str(port),
                 "--public-host",
                 "vpn.example",
-                "--trusted-subnet",
-                "127.0.0.0/8",
+                "--allow-http",
                 "--root",
                 str(root),
                 "--tls-cert",
@@ -363,6 +362,19 @@ class PortalTests(ProcessCase):
             self.assertEqual(response.read(), b"TDZ tunnel portal")
             self.assertIsNone(response.getheader("Strict-Transport-Security"))
             connection.close()
+
+            secure = http.client.HTTPSConnection(
+                "127.0.0.1", port, timeout=3, context=unverified_tls_context()
+            )
+            secure.request("GET", "/openvpn/")
+            secure_response = secure.getresponse()
+            self.assertEqual(secure_response.status, 200)
+            self.assertEqual(secure_response.read(), b"TDZ tunnel portal")
+            self.assertEqual(
+                secure_response.getheader("Strict-Transport-Security"),
+                "max-age=31536000",
+            )
+            secure.close()
 
     def test_https_portal_routes_downloads_and_blocks_private_paths(self):
         with tempfile.TemporaryDirectory() as temp:
