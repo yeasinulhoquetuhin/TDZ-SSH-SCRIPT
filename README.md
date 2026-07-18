@@ -201,6 +201,7 @@ The portal uses the same validated outer certificate as WSS and SSL. A matching 
 - The configured connection limit is shared across active SSH and OpenVPN sessions
 - Bandwidth usage from both transports is added to the same per-user quota without double counting
 - Expired or quota-exhausted accounts are disconnected and locked automatically
+- Services hosted on the same VPS are reachable through the tunnel's lowercase `route-gateway` address and their normal service ports
 - VPN clients are isolated from one another and cannot use the transport gateway as an open proxy
 
 Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores while retaining AES-256-GCM negotiation with the server.

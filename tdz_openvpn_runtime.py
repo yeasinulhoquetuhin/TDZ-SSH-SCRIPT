@@ -354,6 +354,30 @@ def session_matches_peer(
     )
 
 
+def session_matches_disconnect(
+    session: Session,
+    username: str,
+    instance: str,
+    client_id: str,
+    remote_ip: str,
+    remote_port: str,
+) -> bool:
+    """Match only the OpenVPN session represented by a disconnect hook."""
+
+    if session.username != username:
+        return False
+    if instance and session.instance != instance:
+        return False
+    if client_id and session.client_id != client_id:
+        return False
+    if remote_ip and session.remote_ip != remote_ip:
+        return False
+    if remote_port and session.remote_port != remote_port:
+        return False
+    # Never clear every session for a user from an incomplete hook context.
+    return bool(client_id or (remote_ip and remote_port))
+
+
 def cleanup_admissions(sessions: Iterable[Session]) -> None:
     ADMISSION_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     live = {
@@ -626,6 +650,24 @@ def command_disconnect() -> int:
                 candidates[0].unlink()
             except OSError:
                 pass
+
+    # Publish the post-disconnect view immediately instead of leaving the
+    # banner/menu on the watcher's previous snapshot for up to five seconds.
+    # Some OpenVPN releases still expose the closing row briefly while the
+    # hook runs, so explicitly remove the exact hook session as well.
+    remaining = [
+        session
+        for session in live_sessions()
+        if not session_matches_disconnect(
+            session,
+            username,
+            instance,
+            client_id,
+            trusted_ip,
+            trusted_port,
+        )
+    ]
+    write_session_snapshot(remaining)
     return 0
 
 

@@ -232,19 +232,23 @@ class GatewayTests(ProcessCase):
             cert, key = generate_self_signed_cert(Path(temp))
             port = self.start_gateway(backend.port, cert=cert, key=key)
             context = unverified_tls_context()
+            ws_key = base64.b64encode(os.urandom(16)).decode()
             with socket.create_connection(("127.0.0.1", port), timeout=3) as plain:
                 with context.wrap_socket(plain, server_hostname="vpn.example") as client:
-                    client.sendall(
-                        b"GET / HTTP/1.1\r\n"
-                        b"Host: custom.payload.example\r\n"
-                        b"Upgrade: websocket\r\n"
-                        b"Connection: Upgrade\r\n\r\n"
+                    request = (
+                        "GET / HTTP/1.1\r\nHost: custom.payload.example\r\n"
+                        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                        f"Sec-WebSocket-Key: {ws_key}\r\n"
+                        "Sec-WebSocket-Version: 13\r\n\r\n"
                     )
+                    client.sendall(request.encode())
                     response = client.recv(4096)
                     self.assertIn(b"101 <b><font color=\"red\"", response)
                     self.assertIn(b"tuhinbro.com", response)
-                    client.sendall(b"wss-openvpn")
-                    self.assertEqual(client.recv(11), b"wss-openvpn")
+                    self.assertIn(b"Sec-WebSocket-Accept:", response)
+                    raw = b"\x00\xe0wss-openvpn"
+                    client.sendall(raw)
+                    self.assertEqual(client.recv(len(raw)), raw)
 
     def test_real_websocket_frames_are_relayed(self):
         with EchoServer() as backend:
@@ -273,6 +277,28 @@ class GatewayTests(ProcessCase):
                 self.assertEqual(first, 0x82)
                 self.assertEqual(length, len(payload))
                 self.assertEqual(client.recv(length), payload)
+
+    def test_websocket_key_with_raw_injector_stream_is_relayed(self):
+        """Android injectors may send a WS key but not frame tunnel bytes."""
+
+        with EchoServer() as backend:
+            port = self.start_gateway(backend.port)
+            key = base64.b64encode(os.urandom(16)).decode()
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
+                request = (
+                    "GET / HTTP/1.1\r\nHost: vpn.example\r\nUpgrade: websocket\r\n"
+                    f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                    "Sec-WebSocket-Version: 13\r\n\r\n"
+                )
+                client.sendall(request.encode())
+                response = client.recv(4096)
+                self.assertIn(b"101 <b><font color=\"red\"", response)
+                self.assertIn(b"Sec-WebSocket-Accept:", response)
+                # A realistic OpenVPN-over-TCP length prefix can have the
+                # mask bit set in byte two; it must still select raw mode.
+                raw = b"\x00\xe0raw-after-key"
+                client.sendall(raw)
+                self.assertEqual(client.recv(len(raw)), raw)
 
     def test_raw_ssl_gateway_relays_encrypted_transport(self):
         with EchoServer() as backend, tempfile.TemporaryDirectory() as temp:

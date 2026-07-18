@@ -208,6 +208,8 @@ class ModuleTests(unittest.TestCase):
 
             direct_profile = (root / "portal/ovpn-configs/tdz-openvpn-tcp.ovpn").read_text()
             self.assertIn("data-ciphers AES-256-GCM:AES-128-GCM", direct_profile)
+            self.assertNotIn("tun-mtu 1400", direct_profile)
+            self.assertNotIn("mssfix 1360", direct_profile)
             self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", direct_profile)
             self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", profile)
             for adapter_name in (
@@ -222,6 +224,8 @@ class ModuleTests(unittest.TestCase):
                     "route vpn.example.com 255.255.255.255 net_gateway",
                     adapter_profile,
                 )
+                self.assertIn("tun-mtu 1400", adapter_profile)
+                self.assertIn("mssfix 1360", adapter_profile)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
             self.assertIn("TDZ <span>•</span><br>OVPN PORTAL", portal)
@@ -300,6 +304,8 @@ class ModuleTests(unittest.TestCase):
             guide = (public / "connection-guide.txt").read_text()
             self.assertIn("https://vpn.example.com:1180/openvpn/docs", guide)
             self.assertIn("https://vpn.example.com:1180/openvpn/download", guide)
+            self.assertIn("gateway:PANEL_PORT", guide)
+            self.assertIn("public\nadapter endpoint remains outside the tunnel", guide)
             self.assertNotIn("/ovpn-configs", portal + docs + downloads + guide)
 
             (root / "portal/ovpn-configs/stale.ovpn").write_text("stale\n")
@@ -349,19 +355,13 @@ class ModuleTests(unittest.TestCase):
             self.assertIn('HTTP_PORT="449"', firewall)
             self.assertIn('WSS_PORT="450"', firewall)
             self.assertIn('SSL_PORT="446"', firewall)
-            self.assertIn('SSH_PORT=22', firewall)
             self.assertIn("MASQUERADE", firewall)
             self.assertIn("tun-tdz-tcp", firewall)
-            tcp_drop = firewall.index("filter_add INPUT -i tun-tdz-tcp -j DROP")
-            tcp_ssh = firewall.index(
-                'filter_add INPUT -i tun-tdz-tcp -p tcp --dport "$SSH_PORT" -j ACCEPT'
-            )
-            udp_drop = firewall.index("filter_add INPUT -i tun-tdz-udp -j DROP")
-            udp_ssh = firewall.index(
-                'filter_add INPUT -i tun-tdz-udp -p tcp --dport "$SSH_PORT" -j ACCEPT'
-            )
-            self.assertLess(tcp_drop, tcp_ssh)
-            self.assertLess(udp_drop, udp_ssh)
+            self.assertNotIn("SSH_PORT=", firewall)
+            self.assertIn("filter_add INPUT -i tun-tdz-tcp -j ACCEPT", firewall)
+            self.assertIn("filter_add INPUT -i tun-tdz-udp -j ACCEPT", firewall)
+            self.assertNotIn("filter_add INPUT -i tun-tdz-tcp -j DROP", firewall)
+            self.assertNotIn("filter_add INPUT -i tun-tdz-udp -j DROP", firewall)
             units = list((root / "systemd").glob("tdz-openvpn-*.service"))
             self.assertEqual(len(units), 8)
             for unit in units:
@@ -425,7 +425,7 @@ class ModuleTests(unittest.TestCase):
 
     def test_limiter_preserves_established_openvpn_sessions(self):
         menu = (REPO / "menu.sh").read_text()
-        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-18.6", menu)
+        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-19.7", menu)
         self.assertIn("if (( online_count > limit )); then", menu)
         self.assertIn("banner_session_count=$((online_count + 1))", menu)
         self.assertIn(
@@ -438,6 +438,22 @@ class ModuleTests(unittest.TestCase):
             'if (( online_count > limit )) && (( ${ovpn_online[$user]:-0} == 0 )); then',
             menu,
         )
+
+    def test_banner_refresh_and_session_detection_are_immediate_and_authoritative(self):
+        menu = (REPO / "menu.sh").read_text()
+        refresh_start = menu.index("refresh_dynamic_banner_routing_if_enabled() {")
+        refresh_end = menu.index("\n}\n\nupdate_ssh_banners_config", refresh_start)
+        refresh = menu[refresh_start:refresh_end]
+        self.assertIn('[[ -f "/etc/tdztunnel/banners_enabled" ]]', refresh)
+        self.assertNotIn("is_dynamic_ssh_banner_enabled", refresh)
+        self.assertIn('-s "$banner_dir/${user}.txt"', refresh)
+
+        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-19.7")
+        limiter_end = menu.index("\nEOF\n    chmod +x \"$LIMITER_SCRIPT\"", limiter_start)
+        limiter = menu[limiter_start:limiter_end]
+        self.assertIn('${#unique_sshd_sessions[@]} -gt 0', limiter)
+        self.assertNotIn('${#unique_pids[@]} -gt 0', limiter)
+        self.assertNotIn('online_count=1\n', limiter)
 
     def test_protocol_manager_numbering_is_sequential(self):
         menu = (REPO / "menu.sh").read_text()

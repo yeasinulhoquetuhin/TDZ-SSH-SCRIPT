@@ -178,7 +178,7 @@ DASH_CACHE_RAM_USED="0M / 0M"
 DASH_CACHE_DISK_PCT="0"
 DASH_CACHE_TOTAL_USERS=0
 DASH_CACHE_ONLINE_USERS=0
-SSH_SESSION_CACHE_TTL=10
+SSH_SESSION_CACHE_TTL=1
 SSH_SESSION_CACHE_TS=0
 
 # CPU percentage — uses vmstat with /proc/stat fallback.
@@ -1249,9 +1249,9 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-18.6
-# Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
-# This catches users connected via WS-bridge (whose sshd child already exec'd shell).
+# TDZ SSH TUNNEL limiter version 2026-07-19.7
+# Live session counts use authenticated `who`, sshd, and OpenVPN records only.
+# Per-user process scans remain traffic-accounting inputs, never session evidence.
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
 PID_DIR="$BW_DIR/pidtrack"
@@ -1515,25 +1515,24 @@ while true; do
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_pids["$pid"]=1
         done
 
-        # Online if `who` shows them OR they have live PIDs
-        local_user_online=false
-        if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ||
-              ${ovpn_online[$user]:-0} -gt 0 ]]; then
-            local_user_online=true
-        fi
-
         declare -A unique_sshd_sessions=()
         for pid in ${sshd_session_pids[$user]:-}; do
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_sshd_sessions["$pid"]=1
         done
 
+        # Only authenticated session sources may mark an account online.
+        # A detached/background process owned by the user can outlive SSH and
+        # must not leave a stale session in the banner or connection limit.
+        local_user_online=false
+        if [[ -n "${who_online[$user]+x}" || ${#unique_sshd_sessions[@]} -gt 0 ||
+              ${ovpn_online[$user]:-0} -gt 0 ]]; then
+            local_user_online=true
+        fi
+
         # Connection count: sshd sessions are authoritative for tunnel/no-PTY users.
         online_count=${who_online[$user]:-0}
         if (( ${#unique_sshd_sessions[@]} > online_count )); then
             online_count=${#unique_sshd_sessions[@]}
-        fi
-        if (( online_count == 0 && ${ovpn_online[$user]:-0} == 0 )) && [[ "$local_user_online" == true ]]; then
-            online_count=1
         fi
         # Publish the SSH-only count for the OpenVPN admission hook. This is
         # written atomically after the complete database scan so the shared
@@ -1785,7 +1784,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-18.5"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-19.7"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -1912,9 +1911,36 @@ get_ssh_banner_mode() {
 }
 
 refresh_dynamic_banner_routing_if_enabled() {
-    if is_dynamic_ssh_banner_enabled; then
-        update_ssh_banners_config
+    local users=("$@") attempt user all_ready
+    local banner_dir="/etc/tdztunnel/banners"
+
+    # The feature flag is the source of truth. Requiring the generated sshd
+    # include here made refresh a no-op when that file was missing or had been
+    # removed during an update, even though Dynamic Banner was still enabled.
+    [[ -f "/etc/tdztunnel/banners_enabled" ]] || return 0
+
+    update_ssh_banners_config
+    if ! systemctl is-active --quiet tdztunnel-limiter; then
+        systemctl start tdztunnel-limiter --no-block >/dev/null 2>&1 || true
     fi
+
+    # New accounts can be used immediately after this function returns. Give
+    # the one-second worker cycle a short bounded window to publish each new
+    # banner before the user's first SSH connection reaches OpenSSH.
+    (( ${#users[@]} > 0 )) || return 0
+    mkdir -p "$banner_dir"
+    for ((attempt=0; attempt<30; attempt++)); do
+        all_ready=true
+        for user in "${users[@]}"; do
+            [[ -n "$user" && -s "$banner_dir/${user}.txt" ]] || {
+                all_ready=false
+                break
+            }
+        done
+        $all_ready && return 0
+        sleep 0.1
+    done
+    return 0
 }
 
 update_ssh_banners_config() {
@@ -2568,7 +2594,7 @@ rename_tdztunnel_user() {
     fi
 
     invalidate_banner_cache
-    refresh_dynamic_banner_routing_if_enabled
+    refresh_dynamic_banner_routing_if_enabled "$new_username"
     if $limiter_was_active && ! systemctl start tdztunnel-limiter >/dev/null 2>&1; then
         echo -e "${C_YELLOW}[WARNING] Username changed, but the account worker must be restarted manually.${C_RESET}"
     fi
@@ -2691,7 +2717,7 @@ create_user() {
     fi
     
     invalidate_banner_cache
-    refresh_dynamic_banner_routing_if_enabled
+    refresh_dynamic_banner_routing_if_enabled "$username"
 }
 
 delete_user() {
@@ -6983,16 +7009,15 @@ refresh_ssh_session_cache() {
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_sshd_sessions["$pid"]=1
         done
 
-        # Mark online if SSH or OpenVPN has a live authenticated session.
-        if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ||
+        # Mark online only from authenticated SSH/OpenVPN records. Background
+        # processes remain available for traffic accounting but cannot keep a
+        # disconnected account falsely online.
+        if [[ -n "${who_online[$user]+x}" || ${#unique_sshd_sessions[@]} -gt 0 ||
               ${openvpn_online[$user]:-0} -gt 0 ]]; then
             # CONNS count: sshd sessions are authoritative for tunnel/no-PTY users.
             local _conns=${who_online[$user]:-0}
             if (( ${#unique_sshd_sessions[@]} > _conns )); then
                 _conns=${#unique_sshd_sessions[@]}
-            fi
-            if (( _conns == 0 && ${openvpn_online[$user]:-0} == 0 )); then
-                _conns=1
             fi
             _conns=$((_conns + ${openvpn_online[$user]:-0}))
             SSH_SESSION_COUNTS["$user"]=$_conns
@@ -7440,7 +7465,7 @@ create_trial_account() {
     fi
     
     invalidate_banner_cache
-    refresh_dynamic_banner_routing_if_enabled
+    refresh_dynamic_banner_routing_if_enabled "$username"
 }
 
 format_trial_time_left() {
@@ -7668,6 +7693,7 @@ bulk_create_users() {
     echo -e "${C_GRAY}─────────────────────┼─────────────────┼─────────────${C_RESET}"
     
     local created=0
+    local -a created_usernames=()
     for ((i=1; i<=count; i++)); do
         local username="${prefix}${i}"
         if id "$username" &>/dev/null || grep -q "^$username:" "$DB_FILE"; then
@@ -7686,12 +7712,13 @@ bulk_create_users() {
         echo "$username:$password:$stored_expiry:$limit:$bandwidth_gb$metadata_suffix" >> "$DB_FILE"
         printf "  ${C_GREEN}%-20s${C_RESET} | ${C_YELLOW}%-15s${C_RESET} | ${C_CYAN}%-12s${C_RESET}\n" "$username" "$password" "$table_expiry"
         created=$((created + 1))
+        created_usernames+=("$username")
     done
     
     tdz_message OK "Created $created account(s). Connections: ${limit}; bandwidth: ${bw_display}; expiry starts: ${activation_display}."
     
     invalidate_banner_cache
-    refresh_dynamic_banner_routing_if_enabled
+    refresh_dynamic_banner_routing_if_enabled "${created_usernames[@]}"
 }
 
 generate_client_config() {

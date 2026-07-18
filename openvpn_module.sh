@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-18.12"
+TDZ_OVPN_MODULE_VERSION="2026-07-19.13"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -655,7 +655,6 @@ HTTP_PORT="$TDZ_OVPN_HTTP_PORT"
 WSS_PORT="$TDZ_OVPN_WSS_PORT"
 SSL_PORT="$TDZ_OVPN_SSL_PORT"
 PORTAL_PORT="$TDZ_OVPN_PORTAL_PORT"
-SSH_PORT=22
 
 filter_add() { iptables -C "\$@" >/dev/null 2>&1 || iptables -I "\$@"; }
 nat_add() { iptables -t nat -C "\$@" >/dev/null 2>&1 || iptables -t nat -I "\$@"; }
@@ -678,14 +677,11 @@ if [ "\$action" = start ]; then
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
     filter_add INPUT -p tcp -m multiport --dports "\$TCP_PORT,\$HTTP_PORT,\$WSS_PORT,\$SSL_PORT,\$PORTAL_PORT" -j ACCEPT
     filter_add INPUT -p udp --dport "\$UDP_PORT" -j ACCEPT
-    filter_add INPUT -i tun-tdz-tcp -j DROP
-    filter_add INPUT -i tun-tdz-udp -j DROP
-    # filter_add inserts at the head of INPUT, so these SSH exceptions are
-    # intentionally added after the blanket tunnel-interface drops. Clients
-    # can manage this VPS through its VPN gateway address without exposing
-    # any other local service to the VPN subnets.
-    filter_add INPUT -i tun-tdz-tcp -p tcp --dport "\$SSH_PORT" -j ACCEPT
-    filter_add INPUT -i tun-tdz-udp -p tcp --dport "\$SSH_PORT" -j ACCEPT
+    # Authenticated VPN clients may reach services hosted on this same VPS
+    # through the tunnel gateway address (SSH, panels, web services, etc.).
+    # FORWARD isolation below still prevents VPN clients reaching each other.
+    filter_add INPUT -i tun-tdz-tcp -j ACCEPT
+    filter_add INPUT -i tun-tdz-udp -j ACCEPT
     for subnet in "\$TCP_SUBNET" "\$UDP_SUBNET"; do
         filter_add FORWARD -s "\$subnet" -j ACCEPT
         filter_add FORWARD -d "\$subnet" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -700,10 +696,8 @@ if [ "\$action" = start ]; then
 else
     filter_del INPUT -p tcp -m multiport --dports "\$TCP_PORT,\$HTTP_PORT,\$WSS_PORT,\$SSL_PORT,\$PORTAL_PORT" -j ACCEPT
     filter_del INPUT -p udp --dport "\$UDP_PORT" -j ACCEPT
-    filter_del INPUT -i tun-tdz-tcp -p tcp --dport "\$SSH_PORT" -j ACCEPT
-    filter_del INPUT -i tun-tdz-udp -p tcp --dport "\$SSH_PORT" -j ACCEPT
-    filter_del INPUT -i tun-tdz-tcp -j DROP
-    filter_del INPUT -i tun-tdz-udp -j DROP
+    filter_del INPUT -i tun-tdz-tcp -j ACCEPT
+    filter_del INPUT -i tun-tdz-udp -j ACCEPT
     for subnet in "\$TCP_SUBNET" "\$UDP_SUBNET"; do
         filter_del FORWARD -s "\$subnet" -j ACCEPT
         filter_del FORWARD -d "\$subnet" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -761,6 +755,13 @@ auth-user-pass
 auth-retry interact
 cipher AES-256-GCM
 EOF
+    if [[ "$compatibility" == "adapter" ]]; then
+        cat <<EOF
+# Leave headroom for HTTP/WebSocket/TLS encapsulation on mobile networks.
+tun-mtu 1400
+mssfix 1360
+EOF
+    fi
     if [[ "$compatibility" != "adapter" ]]; then
         cat <<EOF
 data-ciphers AES-256-GCM:AES-128-GCM
@@ -847,10 +848,11 @@ GET / HTTP/1.1[crlf]Host: $TDZ_OVPN_HOST[crlf]Upgrade: websocket[crlf]Connection
 
 Import a profile, then enter the same TDZ account username and password.
 Expiry, lock, connection limit, first-use activation, and shared bandwidth quota apply.
-To access this VPS over the VPN itself, connect SSH port 22 to the tunnel route-gateway
-shown inside the client's PUSH_REPLY (normally the assigned /24 address ending in .1).
-Do not use Android's uppercase ROUTE_GATEWAY platform line. The public adapter endpoint
-remains outside the tunnel.
+To access services hosted on this VPS over the VPN itself, use the tunnel route-gateway
+shown inside the client's PUSH_REPLY plus the service port (for example gateway:22 for
+SSH or gateway:PANEL_PORT for a panel). The gateway is normally the assigned /24 address
+ending in .1. Do not use Android's uppercase ROUTE_GATEWAY platform line. The public
+adapter endpoint remains outside the tunnel so it cannot route back into itself.
 If your VPS provider uses an external firewall or security group, allow TCP $TDZ_OVPN_PORTAL_PORT,
 TCP $TDZ_OVPN_TCP_PORT/$TDZ_OVPN_HTTP_PORT/$TDZ_OVPN_WSS_PORT/$TDZ_OVPN_SSL_PORT, and UDP $TDZ_OVPN_UDP_PORT.
 EOF
@@ -1158,7 +1160,7 @@ EOF
 
 <section class="content-section" id="policy"><div class="kicker">Account policy</div><h2>What the same TDZ login enforces</h2><div class="grid two"><div class="callout"><span class="callout-mark">ID</span><div><strong>One username and password</strong><p>Profiles never contain credentials. Enter the existing TDZ account after import.</p></div></div><div class="callout"><span class="callout-mark">BW</span><div><strong>Shared usage accounting</strong><p>OpenVPN traffic is reconciled against the account bandwidth limit.</p></div></div><div class="callout"><span class="callout-mark">EX</span><div><strong>Expiry and first use</strong><p>Pending activation and expiry follow the same account lifecycle.</p></div></div><div class="callout"><span class="callout-mark">CN</span><div><strong>Connection admission</strong><p>Session limits are checked atomically before a connection is admitted.</p></div></div></div></section>
 
-<section class="content-section" id="troubleshooting"><div class="kicker">Troubleshooting</div><h2>Understand the client log</h2><div class="table-wrap"><table><thead><tr><th>Log or symptom</th><th>Meaning</th><th>Check</th></tr></thead><tbody><tr><td><code>AUTH_FAILED</code></td><td>The transport reached OpenVPN, but account authentication failed.</td><td>Username/password, expiry, lock, quota and connection limit</td></tr><tr><td><code>Connection refused</code></td><td>No listener is reachable on that port.</td><td>Selected mode, VPS service and provider firewall/security group</td></tr><tr><td><code>TLS Error</code></td><td>The endpoint answered, but TLS or profile validation failed.</td><td>Correct profile, SNI, CA and device time</td></tr><tr><td><code>HTTP 200</code> or <code>101</code></td><td>The HTTP or WS adapter accepted the request.</td><td>Continue to the later OpenVPN authentication lines</td></tr><tr><td>SSH to this VPS while connected</td><td>The public adapter endpoint stays outside the VPN to prevent a routing loop.</td><td>Use the lowercase <code>route-gateway</code> value inside <code>PUSH_REPLY</code> with SSH port 22; do not use Android's uppercase <code>ROUTE_GATEWAY</code> line</td></tr></tbody></table></div><div class="panel warning spaced-panel"><span class="label">External firewall</span><p>The installer opens the local VPS firewall. If the provider has a separate firewall or security group, allow TCP $TDZ_OVPN_SSL_PORT, $TDZ_OVPN_TCP_PORT, $TDZ_OVPN_HTTP_PORT and $TDZ_OVPN_WSS_PORT, plus UDP $TDZ_OVPN_UDP_PORT.</p></div></section>
+<section class="content-section" id="troubleshooting"><div class="kicker">Troubleshooting</div><h2>Understand the client log</h2><div class="table-wrap"><table><thead><tr><th>Log or symptom</th><th>Meaning</th><th>Check</th></tr></thead><tbody><tr><td><code>AUTH_FAILED</code></td><td>The transport reached OpenVPN, but account authentication failed.</td><td>Username/password, expiry, lock, quota and connection limit</td></tr><tr><td><code>Connection refused</code></td><td>No listener is reachable on that port.</td><td>Selected mode, VPS service and provider firewall/security group</td></tr><tr><td><code>TLS Error</code></td><td>The endpoint answered, but TLS or profile validation failed.</td><td>Correct profile, SNI, CA and device time</td></tr><tr><td><code>HTTP 200</code> or <code>101</code></td><td>The HTTP or WS adapter accepted the request.</td><td>Continue to the later OpenVPN authentication lines</td></tr><tr><td>Services on this VPS while connected</td><td>The public adapter endpoint stays outside the VPN to prevent a routing loop.</td><td>Use the lowercase <code>route-gateway</code> value inside <code>PUSH_REPLY</code> with the required SSH, web, or panel port; do not use Android's uppercase <code>ROUTE_GATEWAY</code> line</td></tr></tbody></table></div><div class="panel warning spaced-panel"><span class="label">External firewall</span><p>The installer opens the local VPS firewall. If the provider has a separate firewall or security group, allow TCP $TDZ_OVPN_SSL_PORT, $TDZ_OVPN_TCP_PORT, $TDZ_OVPN_HTTP_PORT and $TDZ_OVPN_WSS_PORT, plus UDP $TDZ_OVPN_UDP_PORT.</p></div></section>
 </article>
 <aside class="toc" aria-label="On this page"><div class="toc-title">On this page</div><a href="#modes">Mode-by-mode setup</a><a href="#certificates">Certificate layers</a><a href="#payloads">Payload reference</a><a href="#verification">Verification order</a><a href="#policy">Account policy</a><a href="#troubleshooting">Troubleshooting</a></aside>
 </main>

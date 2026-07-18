@@ -211,6 +211,45 @@ def ws_frame(payload: bytes, opcode: int = 0x2) -> bytes:
     return bytes((first, 127)) + struct.pack("!Q", length) + payload
 
 
+async def probe_websocket_framing(
+    reader: asyncio.StreamReader,
+    initial: bytes,
+    timeout: float,
+) -> Tuple[bool, bytes]:
+    """Detect whether bytes after a WebSocket handshake are RFC frames.
+
+    Standards-compliant browser/WebSocket clients mask every client frame.
+    Several Android injector apps still send ``Sec-WebSocket-Key`` in their
+    payload but switch directly to a raw OpenVPN stream after the 101 reply.
+    The two-byte frame prefix lets the gateway support both behaviours without
+    selecting a mode from headers alone.
+    """
+
+    data = bytearray(initial)
+    deadline = asyncio.get_running_loop().time() + timeout
+    while len(data) < 2:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError("WebSocket/OpenVPN data probe timed out")
+        chunk = await asyncio.wait_for(reader.read(4096), timeout=remaining)
+        if not chunk:
+            raise ConnectionError("client closed before tunnel data")
+        data.extend(chunk)
+
+    first, second = data[0], data[1]
+    opcode = first & 0x0F
+    is_framed = (
+        not (first & 0x70)
+        # The first frame on a new tunnel cannot be a continuation. Requiring
+        # FIN also avoids mistaking OpenVPN's two-byte TCP length prefix (for
+        # example 00 e0) for a masked WebSocket frame.
+        and bool(first & 0x80)
+        and opcode in {0x1, 0x2, 0x8, 0x9, 0xA}
+        and bool(second & 0x80)
+    )
+    return is_framed, bytes(data)
+
+
 async def websocket_to_backend(
     client: BufferedStream,
     client_writer: asyncio.StreamWriter,
@@ -312,6 +351,7 @@ async def relay_http_upgrade(
     client_writer: asyncio.StreamWriter,
     backend_reader: asyncio.StreamReader,
     backend_writer: asyncio.StreamWriter,
+    probe_timeout: float,
 ) -> None:
     method, _target, _version, headers = parse_http_head(head)
     if method not in {"GET", "POST", "HEAD", "OPTIONS"}:
@@ -332,13 +372,27 @@ async def relay_http_upgrade(
         )
         client_writer.write(response.encode("ascii"))
         await client_writer.drain()
-        await relay_websocket(
-            client_reader,
-            client_writer,
-            backend_reader,
-            backend_writer,
-            remainder,
+        framed, buffered = await probe_websocket_framing(
+            client_reader, remainder, probe_timeout
         )
+        if framed:
+            await relay_websocket(
+                client_reader,
+                client_writer,
+                backend_reader,
+                backend_writer,
+                buffered,
+            )
+        else:
+            # Injector compatibility: some apps request a standards-compliant
+            # handshake but carry unframed OpenVPN bytes afterward.
+            await relay_raw(
+                client_reader,
+                client_writer,
+                backend_reader,
+                backend_writer,
+                buffered,
+            )
         return
 
     # Injector-compatible HTTP Upgrade/raw payload mode.  The request target
@@ -390,6 +444,7 @@ async def handle_http(
                     client_writer,
                     backend_reader,
                     backend_writer,
+                    settings.handshake_timeout,
                 )
                 return
             await relay_raw(
@@ -408,6 +463,7 @@ async def handle_http(
             client_writer,
             backend_reader,
             backend_writer,
+            settings.handshake_timeout,
         )
     finally:
         await close_writer(backend_writer)

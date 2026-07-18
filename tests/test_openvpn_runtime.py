@@ -245,6 +245,28 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.bw / "alice.usage").read_text().strip(), "400")
 
+    def test_disconnect_immediately_removes_the_published_session(self):
+        self.db.write_text("alice:secret:2099-12-31:3:5\n")
+        self.write_status(100, 200)
+        self.assertEqual(self.run_runtime("sync").returncode, 0)
+        snapshot = self.ovpn / "run/sessions.tsv"
+        self.assertIn("alice\ttcp\t7", snapshot.read_text())
+
+        result = self.run_runtime(
+            "disconnect",
+            extra_env={
+                "username": "alice",
+                "TDZ_OVPN_INSTANCE": "tcp",
+                "client_id": "7",
+                "trusted_ip": "198.51.100.8",
+                "trusted_port": "50000",
+                "bytes_received": "100",
+                "bytes_sent": "200",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(snapshot.read_text(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
