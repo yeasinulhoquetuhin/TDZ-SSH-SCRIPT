@@ -183,15 +183,15 @@ The optional suite requires Python 3.7 or newer. On an older distribution the co
 | **WSS / SNI** | Compatible TLS WebSocket adapter | Injector profile; use the configured host as SNI |
 | **SSL / SNI** | Compatible external SSL/TLS adapter | Injector profile; use the configured host as SNI |
 
-The OpenVPN HTTPS portal is generated automatically:
+The OpenVPN portal is generated automatically:
 
 ```text
 https://VPS-IP-OR-HOST:1180/openvpn/
 ```
 
-The landing page summarizes every transport. Full client fields, payloads, SNI values, firewall requirements, verification order, and troubleshooting are available at `/openvpn/docs`; individual profiles, the complete ZIP, and the server CA are available at `/openvpn/download`. The offline text guide remains inside the ZIP but is no longer required to understand the setup. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
+The landing page summarizes every transport. Full client fields, copyable payloads, SNI values, firewall requirements, verification order, and troubleshooting are available at `/openvpn/docs`; individual profiles, the complete ZIP, and the server CA are available at `/openvpn/download`. Plain HTTP requests on the same portal address are redirected safely to HTTPS. The offline text guide remains inside the ZIP but is no longer required to understand the setup. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
 
-The portal uses the same validated gateway certificate as WSS and SSL. A self-signed certificate still encrypts the connection but may show a browser trust warning; configuring a publicly trusted certificate for the selected host removes that warning.
+The portal uses the same validated outer certificate as WSS and SSL. A matching certificate applied through **Domain & SSL Cert** is reused automatically across all three services; if it does not cover the saved OpenVPN host, the last working adapter certificate is preserved and the menu reports the mismatch. The private OpenVPN CA remains separate and embedded in every profile.
 
 ### Shared account enforcement
 
@@ -203,7 +203,7 @@ The portal uses the same validated gateway certificate as WSS and SSL. A self-si
 - Expired or quota-exhausted accounts are disconnected and locked automatically
 - VPN clients are isolated from one another and cannot use the transport gateway as an open proxy
 
-Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer.
+Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores while retaining AES-256-GCM negotiation with the server.
 
 Compatibility follows the official OpenVPN transport model: the core protocol runs over TCP or UDP, while HTTP proxy mode uses TCP. Session status and forced disconnects use the local OpenVPN management interface. See the [OpenVPN protocol reference](https://openvpn.net/community-docs/openvpn-protocol.html), [HTTP proxy guide](https://openvpn.net/community-docs/connecting-to-an-openvpn-server-via-an-http-proxy.html), and [management interface reference](https://openvpn.net/community-docs/management-interface.html).
 
@@ -253,7 +253,7 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 | 448 | UDP | OpenVPN direct UDP transport |
 | 449 | HTTP / WS | OpenVPN HTTP CONNECT, HTTP Payload, and WebSocket gateway |
 | 450 | WSS | OpenVPN TLS WebSocket / SNI gateway |
-| 1180 | HTTPS | OpenVPN documentation and profile portal (when the optional suite is installed) |
+| 1180 | HTTP / HTTPS | OpenVPN documentation and profile portal; HTTP redirects to HTTPS |
 
 ## Supported Platforms
 

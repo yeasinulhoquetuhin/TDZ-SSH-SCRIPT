@@ -32,6 +32,7 @@ LOG = logging.getLogger("tdz-openvpn-gateway")
 MAX_HEADER_BYTES = 32 * 1024
 COPY_BUFFER = 128 * 1024
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+HTTP_METHOD_PREFIXES = (b"GET ", b"POST ", b"HEAD ", b"OPTIONS ")
 
 
 @dataclass(frozen=True)
@@ -117,9 +118,9 @@ async def relay_raw(
 
 
 async def read_http_head(
-    reader: asyncio.StreamReader, timeout: float
+    reader: asyncio.StreamReader, timeout: float, initial: bytes = b""
 ) -> Tuple[bytes, bytes]:
-    data = bytearray()
+    data = bytearray(initial)
     deadline = asyncio.get_running_loop().time() + timeout
     while b"\r\n\r\n" not in data:
         remaining = deadline - asyncio.get_running_loop().time()
@@ -131,8 +132,42 @@ async def read_http_head(
         data.extend(chunk)
         if len(data) > MAX_HEADER_BYTES:
             raise ValueError("HTTP headers exceed limit")
+    if data.index(b"\r\n\r\n") + 4 > MAX_HEADER_BYTES:
+        raise ValueError("HTTP headers exceed limit")
     head, remainder = bytes(data).split(b"\r\n\r\n", 1)
     return head + b"\r\n\r\n", remainder
+
+
+async def probe_nested_http_request(
+    reader: asyncio.StreamReader,
+    initial: bytes,
+    timeout: float,
+) -> Tuple[Optional[Tuple[bytes, bytes]], bytes]:
+    """Distinguish raw OpenVPN bytes from an injector's second HTTP request.
+
+    Several Android injector clients first establish an HTTP CONNECT tunnel and
+    only then send their configured GET/Upgrade payload.  A stock OpenVPN HTTP
+    proxy client sends binary OpenVPN data immediately after CONNECT instead.
+    The small prefix probe supports both without trusting the CONNECT target.
+    """
+
+    data = bytearray(initial)
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        if any(data.startswith(prefix) for prefix in HTTP_METHOD_PREFIXES):
+            head, remainder = await read_http_head(reader, timeout, bytes(data))
+            return (head, remainder), b""
+        if data and not any(prefix.startswith(data) for prefix in HTTP_METHOD_PREFIXES):
+            return None, bytes(data)
+        if len(data) >= max(len(prefix) for prefix in HTTP_METHOD_PREFIXES):
+            return None, bytes(data)
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return None, bytes(data)
+        chunk = await asyncio.wait_for(reader.read(4096), timeout=remaining)
+        if not chunk:
+            return None, bytes(data)
+        data.extend(chunk)
 
 
 def parse_http_head(head: bytes) -> Tuple[str, str, str, Dict[str, str]]:
@@ -264,13 +299,69 @@ async def open_backend(settings: Settings) -> Tuple[asyncio.StreamReader, asynci
     return reader, writer
 
 
+async def relay_http_upgrade(
+    head: bytes,
+    remainder: bytes,
+    client_reader: asyncio.StreamReader,
+    client_writer: asyncio.StreamWriter,
+    backend_reader: asyncio.StreamReader,
+    backend_writer: asyncio.StreamWriter,
+) -> None:
+    method, _target, _version, headers = parse_http_head(head)
+    if method not in {"GET", "POST", "HEAD", "OPTIONS"}:
+        raise ValueError("unsupported tunneled HTTP method")
+
+    upgrade = headers.get("upgrade", "").lower()
+    ws_key = headers.get("sec-websocket-key", "")
+    if upgrade == "websocket" and ws_key:
+        try:
+            accept_value = websocket_accept(ws_key)
+        except (UnicodeEncodeError, ValueError) as exc:
+            raise ValueError("invalid WebSocket key") from exc
+        response = (
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept_value}\r\n\r\n"
+        )
+        client_writer.write(response.encode("ascii"))
+        await client_writer.drain()
+        await relay_websocket(
+            client_reader,
+            client_writer,
+            backend_reader,
+            backend_writer,
+            remainder,
+        )
+        return
+
+    # Injector-compatible HTTP Upgrade/raw payload mode.  The request target
+    # and Host value are display/payload fields only; the backend stays fixed.
+    status = (
+        b"HTTP/1.1 101 Switching Protocols\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Upgrade: tdz-openvpn\r\n\r\n"
+        if upgrade == "websocket"
+        else b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    )
+    client_writer.write(status)
+    await client_writer.drain()
+    await relay_raw(
+        client_reader,
+        client_writer,
+        backend_reader,
+        backend_writer,
+        remainder,
+    )
+
+
 async def handle_http(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
     settings: Settings,
 ) -> None:
     head, remainder = await read_http_head(client_reader, settings.handshake_timeout)
-    method, _target, _version, headers = parse_http_head(head)
+    method, _target, _version, _headers = parse_http_head(head)
     backend_reader, backend_writer = await open_backend(settings)
     try:
         if method == "CONNECT":
@@ -279,56 +370,38 @@ async def handle_http(
                 b"Proxy-Agent: TDZ-OpenVPN\r\n\r\n"
             )
             await client_writer.drain()
+            nested, raw_data = await probe_nested_http_request(
+                client_reader,
+                remainder,
+                settings.handshake_timeout,
+            )
+            if nested is not None:
+                nested_head, nested_remainder = nested
+                await relay_http_upgrade(
+                    nested_head,
+                    nested_remainder,
+                    client_reader,
+                    client_writer,
+                    backend_reader,
+                    backend_writer,
+                )
+                return
             await relay_raw(
                 client_reader,
                 client_writer,
                 backend_reader,
                 backend_writer,
-                remainder,
+                raw_data,
             )
             return
 
-        upgrade = headers.get("upgrade", "").lower()
-        ws_key = headers.get("sec-websocket-key", "")
-        if upgrade == "websocket" and ws_key:
-            try:
-                accept_value = websocket_accept(ws_key)
-            except (UnicodeEncodeError, ValueError) as exc:
-                raise ValueError("invalid WebSocket key") from exc
-            response = (
-                "HTTP/1.1 101 Switching Protocols\r\n"
-                "Upgrade: websocket\r\n"
-                "Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Accept: {accept_value}\r\n\r\n"
-            )
-            client_writer.write(response.encode("ascii"))
-            await client_writer.drain()
-            await relay_websocket(
-                client_reader,
-                client_writer,
-                backend_reader,
-                backend_writer,
-                remainder,
-            )
-            return
-
-        # Injector-compatible HTTP Upgrade/raw payload mode.  The request
-        # destination is intentionally ignored; the backend is fixed.
-        status = (
-            b"HTTP/1.1 101 Switching Protocols\r\n"
-            b"Connection: Upgrade\r\n"
-            b"Upgrade: tdz-openvpn\r\n\r\n"
-            if upgrade == "websocket"
-            else b"HTTP/1.1 200 Connection Established\r\n\r\n"
-        )
-        client_writer.write(status)
-        await client_writer.drain()
-        await relay_raw(
+        await relay_http_upgrade(
+            head,
+            remainder,
             client_reader,
             client_writer,
             backend_reader,
             backend_writer,
-            remainder,
         )
     finally:
         await close_writer(backend_writer)

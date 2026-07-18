@@ -4704,7 +4704,7 @@ apply_existing_certificate_files() {
     local cert_domain="$4"
     local cert_email="${5:-}"
     local rollback_dir had_chain=false had_key=false had_bundle=false had_info=false
-    local nginx_was_active=false haproxy_was_active=false
+    local nginx_was_active=false haproxy_was_active=false ovpn_tls_rc=0
 
     validate_certificate_pair "$source_chain" "$source_key" || return 1
     rollback_dir=$(mktemp -d) || return 1
@@ -4758,9 +4758,19 @@ apply_existing_certificate_files() {
     rm -rf "$rollback_dir"
     echo -e "${C_GREEN}[OK] Certificate applied successfully for ${C_YELLOW}$cert_domain${C_RESET}."
     if declare -F tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 && tdz_openvpn_is_installed; then
-        if ! tdz_openvpn_refresh_gateway_tls; then
-            echo -e "${C_YELLOW}[WARNING] OpenVPN kept its previous working WSS/SSL certificate.${C_RESET}"
-        fi
+        tdz_openvpn_refresh_gateway_tls
+        ovpn_tls_rc=$?
+        case "$ovpn_tls_rc" in
+            0)
+                echo -e "${C_GREEN}[OK] The same certificate is active on the OpenVPN portal, WSS and SSL gateways.${C_RESET}"
+                ;;
+            2)
+                echo -e "${C_YELLOW}[WARNING] The certificate does not cover the saved OpenVPN host, so its previous working outer-TLS certificate was kept.${C_RESET}"
+                ;;
+            *)
+                echo -e "${C_YELLOW}[WARNING] OpenVPN kept its previous working portal/WSS/SSL certificate because the TLS refresh did not validate.${C_RESET}"
+                ;;
+        esac
     fi
     return 0
 }
@@ -4858,13 +4868,17 @@ import_custom_certificate() {
 }
 
 generate_self_signed_edge_cert() {
-    local common_name="$1"
+    local common_name="$1" san_type="DNS" ovpn_tls_rc=0
+    [[ "$common_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && san_type="IP"
     mkdir -p "$SSL_CERT_DIR"
     echo -e "\n${C_GREEN}Generating a shared self-signed certificate...${C_RESET}"
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
         -keyout "$SSL_CERT_KEY_FILE" \
         -out "$SSL_CERT_CHAIN_FILE" \
         -subj "/CN=$common_name" \
+        -addext "subjectAltName=${san_type}:${common_name}" \
+        -addext "keyUsage=digitalSignature,keyEncipherment" \
+        -addext "extendedKeyUsage=serverAuth" \
         >/dev/null 2>&1 || {
             echo -e "${C_RED}[ERROR] Failed to generate the self-signed certificate.${C_RESET}"
             return 1
@@ -4873,7 +4887,15 @@ generate_self_signed_edge_cert() {
     save_edge_cert_info "self-signed" "$common_name" ""
     echo -e "${C_GREEN}[OK] Shared certificate created for ${C_YELLOW}$common_name${C_RESET}"
     if declare -F tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 && tdz_openvpn_is_installed; then
-        tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 || true
+        tdz_openvpn_refresh_gateway_tls
+        ovpn_tls_rc=$?
+        if (( ovpn_tls_rc == 0 )); then
+            echo -e "${C_GREEN}[OK] The certificate is also active on the OpenVPN portal, WSS and SSL gateways.${C_RESET}"
+        elif (( ovpn_tls_rc == 2 )); then
+            echo -e "${C_YELLOW}[WARNING] It does not cover the saved OpenVPN host, so the OpenVPN gateways kept their previous certificate.${C_RESET}"
+        else
+            echo -e "${C_YELLOW}[WARNING] OpenVPN kept its previous working outer-TLS certificate because validation did not complete.${C_RESET}"
+        fi
     fi
     return 0
 }

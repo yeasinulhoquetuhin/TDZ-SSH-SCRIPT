@@ -152,9 +152,15 @@ class ProcessCase(unittest.TestCase):
 
 
 class GatewayTests(ProcessCase):
-    def start_gateway(self, backend_port: int) -> int:
+    def start_gateway(
+        self,
+        backend_port: int,
+        *,
+        cert: Path | None = None,
+        key: Path | None = None,
+    ) -> int:
         port = free_port()
-        self.start(
+        command = [
             str(GATEWAY),
             "--listen",
             "127.0.0.1",
@@ -164,8 +170,14 @@ class GatewayTests(ProcessCase):
             str(backend_port),
             "--mode",
             "http",
-        )
-        wait_port(port)
+        ]
+        if cert is not None and key is not None:
+            command.extend(("--tls-cert", str(cert), "--tls-key", str(key)))
+        self.start(*command)
+        if cert is None:
+            wait_port(port)
+        else:
+            wait_tls_port(port)
         return port
 
     def test_http_connect_is_a_fixed_backend_tunnel(self):
@@ -177,6 +189,56 @@ class GatewayTests(ProcessCase):
                 self.assertIn(b"200 Connection Established", response)
                 client.sendall(b"openvpn-bytes")
                 self.assertEqual(client.recv(13), b"openvpn-bytes")
+
+    def test_connect_then_injector_websocket_payload_is_relayed(self):
+        with EchoServer() as backend:
+            port = self.start_gateway(backend.port)
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
+                client.sendall(
+                    b"CONNECT vpn.example:449 HTTP/1.1\r\n"
+                    b"Host: vpn.example\r\n\r\n"
+                )
+                self.assertIn(b"200 Connection Established", client.recv(4096))
+                client.sendall(
+                    b"GET / HTTP/1.1\r\n"
+                    b"Host: custom.payload.example\r\n"
+                    b"Upgrade: websocket\r\n"
+                    b"Connection: Upgrade\r\n\r\n"
+                )
+                self.assertIn(b"101 Switching Protocols", client.recv(4096))
+                client.sendall(b"nested-openvpn")
+                self.assertEqual(client.recv(14), b"nested-openvpn")
+
+    def test_raw_injector_websocket_payload_is_relayed(self):
+        with EchoServer() as backend:
+            port = self.start_gateway(backend.port)
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
+                client.sendall(
+                    b"GET / HTTP/1.1\r\n"
+                    b"Host: vpn.example\r\n"
+                    b"Upgrade: websocket\r\n"
+                    b"Connection: Upgrade\r\n\r\n"
+                )
+                self.assertIn(b"101 Switching Protocols", client.recv(4096))
+                client.sendall(b"raw-openvpn")
+                self.assertEqual(client.recv(11), b"raw-openvpn")
+
+    def test_wss_injector_payload_is_relayed_inside_tls(self):
+        with EchoServer() as backend, tempfile.TemporaryDirectory() as temp:
+            cert, key = generate_self_signed_cert(Path(temp))
+            port = self.start_gateway(backend.port, cert=cert, key=key)
+            context = unverified_tls_context()
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as plain:
+                with context.wrap_socket(plain, server_hostname="vpn.example") as client:
+                    client.sendall(
+                        b"GET / HTTP/1.1\r\n"
+                        b"Host: custom.payload.example\r\n"
+                        b"Upgrade: websocket\r\n"
+                        b"Connection: Upgrade\r\n\r\n"
+                    )
+                    self.assertIn(b"101 Switching Protocols", client.recv(4096))
+                    client.sendall(b"wss-openvpn")
+                    self.assertEqual(client.recv(11), b"wss-openvpn")
 
     def test_real_websocket_frames_are_relayed(self):
         with EchoServer() as backend:
@@ -224,7 +286,7 @@ class GatewayTests(ProcessCase):
                 "--tls-key",
                 str(key),
             )
-            wait_port(port)
+            wait_tls_port(port)
             context = unverified_tls_context()
             with socket.create_connection(("127.0.0.1", port), timeout=3) as plain:
                 with context.wrap_socket(plain, server_hostname="vpn.example") as client:
@@ -256,6 +318,8 @@ class PortalTests(ProcessCase):
                 "127.0.0.1",
                 "--port",
                 str(port),
+                "--public-host",
+                "vpn.example",
                 "--root",
                 str(root),
                 "--tls-cert",
@@ -264,6 +328,17 @@ class PortalTests(ProcessCase):
                 str(key),
             )
             wait_tls_port(port)
+
+            plaintext = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            plaintext.request("GET", "/openvpn/docs?mode=ws")
+            redirect = plaintext.getresponse()
+            self.assertEqual(redirect.status, 308)
+            self.assertEqual(
+                redirect.getheader("Location"),
+                f"https://vpn.example:{port}/openvpn/docs?mode=ws",
+            )
+            redirect.read()
+            plaintext.close()
 
             connection = http.client.HTTPSConnection(
                 "127.0.0.1", port, timeout=3, context=unverified_tls_context()

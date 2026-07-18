@@ -3,6 +3,8 @@
 import os
 import subprocess
 import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -126,6 +128,57 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.run_runtime("sync").returncode, 0)
         reauth = self.run_runtime("connect", extra_env={"common_name": "alice"})
         self.assertEqual(reauth.returncode, 0, reauth.stderr)
+
+    def test_stale_admission_does_not_block_an_adapter_retry(self):
+        self.db.write_text("alice:secret:2099-12-31:1:5\n")
+        admissions = self.bw / "admissions"
+        admissions.mkdir(parents=True)
+        (admissions / "stale.json").write_text(
+            '{"signature":"stale","username":"alice","created":1}\n'
+        )
+        result = self.run_runtime("connect", extra_env={"common_name": "alice"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((admissions / "stale.json").exists())
+
+    def test_connection_limit_waits_for_adapter_reconciliation_grace(self):
+        now = int(time.time())
+        script = textwrap.dedent(
+            f"""
+            import importlib.util
+            import sys
+            spec = importlib.util.spec_from_file_location("runtime", {str(RUNTIME)!r})
+            runtime = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = runtime
+            spec.loader.exec_module(runtime)
+            runtime.read_accounts = lambda: {{
+                "alice": runtime.Account("alice", "secret", "2099-12-31", 1, 0)
+            }}
+            runtime.account_expired = lambda account: False
+            runtime.quota_exceeded = lambda account: False
+            runtime.account_locked = lambda username: False
+            runtime.count_ssh_sessions = lambda username: 0
+            killed = []
+            runtime.kill_session = lambda session, reason: killed.append((session.client_id, reason)) or True
+            old = runtime.Session("tcp", "alice", "1", {now - 30}, 0)
+            fresh = runtime.Session("tcp", "alice", "2", {now}, 0)
+            runtime.enforce_sessions([old, fresh])
+            print(killed)
+            fresh = runtime.Session("tcp", "alice", "2", {now - 10}, 0)
+            runtime.enforce_sessions([old, fresh])
+            print(killed)
+            """
+        )
+        result = subprocess.run(
+            ["python3", "-c", script],
+            env={**self.env, "TDZ_OVPN_SESSION_GRACE": "8"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "[]")
+        self.assertEqual(lines[1], "[('2', 'connection-limit')]")
 
     def test_status_accounting_adds_only_deltas(self):
         self.db.write_text("alice:secret:2099-12-31:3:5\n")

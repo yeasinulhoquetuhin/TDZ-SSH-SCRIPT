@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only HTTPS documentation and download portal for TDZ OpenVPN."""
+"""Read-only HTTP-to-HTTPS documentation and download portal for TDZ OpenVPN."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import html
 import mimetypes
 import os
 import re
+import socket
 import ssl
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,9 @@ PUBLIC_PREFIX = "/openvpn"
 LEGACY_PREFIX = "/ovpn-configs"
 DOWNLOAD_SUFFIXES = {".ovpn", ".zip", ".conf", ".txt", ".crt", ".pem"}
 DOWNLOAD_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+PUBLIC_HOST_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*\Z"
+)
 PAGE_ROUTES = {
     f"{PUBLIC_PREFIX}/": "index.html",
     f"{PUBLIC_PREFIX}/docs": "docs.html",
@@ -40,16 +44,28 @@ class PortalServer(ThreadingHTTPServer):
         address: tuple[str, int],
         root: Path,
         tls_context: ssl.SSLContext,
+        public_host: str,
     ) -> None:
         super().__init__(address, PortalHandler)
         self.portal_root = root.resolve()
         self.public_root = (self.portal_root / "ovpn-configs").resolve()
-        self.socket = tls_context.wrap_socket(self.socket, server_side=True)
+        self.tls_context = tls_context
+        self.public_host = public_host
+        self.public_port = int(address[1])
 
     def get_request(self):
         request, client_address = super().get_request()
-        request.settimeout(15)
-        return request, client_address
+        request.settimeout(5)
+        try:
+            prefix = request.recv(3, socket.MSG_PEEK | socket.MSG_WAITALL)
+            is_tls = len(prefix) >= 3 and prefix[0] == 0x16 and prefix[1] == 0x03
+            if is_tls:
+                request = self.tls_context.wrap_socket(request, server_side=True)
+            request.settimeout(15)
+            return request, client_address
+        except Exception:
+            request.close()
+            raise
 
 
 class PortalHandler(BaseHTTPRequestHandler):
@@ -76,6 +92,8 @@ class PortalHandler(BaseHTTPRequestHandler):
             "img-src 'self'; connect-src 'none'; object-src 'none'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         )
+        if isinstance(self.connection, ssl.SSLSocket):
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
 
     def _redirect(self, location: str) -> None:
         self.send_response(HTTPStatus.FOUND)
@@ -83,6 +101,22 @@ class PortalHandler(BaseHTTPRequestHandler):
         self._security_headers()
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def _redirect_plain_http(self) -> bool:
+        if isinstance(self.connection, ssl.SSLSocket):
+            return False
+        parsed = urlsplit(self.path)
+        path = quote(unquote(parsed.path or "/"), safe="/:@-._~!$&'()*+,;=")
+        if parsed.query:
+            path += "?" + quote(parsed.query, safe="=&:@-._~!$'()*+,;/%")
+        host = self.server.public_host  # type: ignore[attr-defined]
+        port = self.server.public_port  # type: ignore[attr-defined]
+        self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+        self.send_header("Location", f"https://{host}:{port}{path}")
+        self._security_headers()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
 
     def _error(self, status: HTTPStatus, message: str) -> None:
         body = (
@@ -185,19 +219,23 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to read the file.")
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        self._serve()
+        if not self._redirect_plain_http():
+            self._serve()
 
     def do_HEAD(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        self._serve()
+        if not self._redirect_plain_http():
+            self._serve()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        self._error(HTTPStatus.METHOD_NOT_ALLOWED, "This portal is read-only.")
+        if not self._redirect_plain_http():
+            self._error(HTTPStatus.METHOD_NOT_ALLOWED, "This portal is read-only.")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TDZ OpenVPN profile portal")
     parser.add_argument("--listen", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=1180)
+    parser.add_argument("--public-host", required=True)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--tls-cert", required=True, type=Path)
     parser.add_argument("--tls-key", required=True, type=Path)
@@ -210,6 +248,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("TLS certificate does not exist")
     if not args.tls_key.is_file():
         parser.error("TLS private key does not exist")
+    if not PUBLIC_HOST_PATTERN.fullmatch(args.public_host):
+        parser.error("public host must be a valid IPv4 address or domain")
     return args
 
 
@@ -225,9 +265,14 @@ def main() -> None:
     args = parse_args()
     os.chdir("/")
     tls_context = build_tls_context(args.tls_cert, args.tls_key)
-    server = PortalServer((args.listen, args.port), args.root, tls_context)
+    server = PortalServer(
+        (args.listen, args.port), args.root, tls_context, args.public_host
+    )
     try:
-        print(f"TDZ OpenVPN HTTPS portal listening on {args.listen}:{args.port}", flush=True)
+        print(
+            f"TDZ OpenVPN HTTP/HTTPS portal listening on {args.listen}:{args.port}",
+            flush=True,
+        )
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass

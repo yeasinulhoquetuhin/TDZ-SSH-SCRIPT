@@ -48,6 +48,22 @@ SSH_SESSION_SNAPSHOT = Path(
 TEST_MODE = os.environ.get("TDZ_RUNTIME_TEST_MODE") == "1"
 
 
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return min(maximum, max(minimum, value))
+
+
+ADMISSION_TTL_SECONDS = _bounded_env_int(
+    "TDZ_OVPN_ADMISSION_TTL", 10, 3, 60
+)
+SESSION_ENFORCEMENT_GRACE_SECONDS = _bounded_env_int(
+    "TDZ_OVPN_SESSION_GRACE", 8, 0, 30
+)
+
+
 @dataclass(frozen=True)
 class Account:
     username: str
@@ -358,7 +374,11 @@ def cleanup_admissions(sessions: Iterable[Session]) -> None:
         data = load_state(path)
         created = _parse_int(str(data.get("created", 0)))
         signature = str(data.get("signature", ""))
-        if not signature or signature in live or now - created > 30:
+        if (
+            not signature
+            or signature in live
+            or now - created > ADMISSION_TTL_SECONDS
+        ):
             try:
                 path.unlink()
             except OSError:
@@ -647,6 +667,17 @@ def management_command(instance: str, command: str) -> bool:
         return False
 
 
+def kill_session(session: Session, reason: str) -> bool:
+    print(
+        "TDZ OpenVPN disconnect: "
+        f"user={session.username} instance={session.instance} "
+        f"client={session.client_id} reason={reason}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return management_command(session.instance, f"client-kill {session.client_id}")
+
+
 def command_sync(print_rows: bool = True) -> int:
     sessions = sync_usage(live_sessions())
     write_session_snapshot(sessions)
@@ -744,19 +775,28 @@ def enforce_sessions(sessions: list[Session]) -> None:
             if should_lock:
                 lock_linux_account(username)
             for session in user_sessions:
-                management_command(session.instance, f"client-kill {session.client_id}")
+                kill_session(session, "account-policy")
             continue
 
         assert account is not None
         excess = count_ssh_sessions(username) + len(user_sessions) - account.limit
         if excess > 0:
-            # Remove the newest OpenVPN connections first.  Existing SSH and
-            # older VPN sessions remain stable while the account limit wins.
+            # Injector clients may briefly overlap the previous transport
+            # socket while switching from payload/TLS setup to the OpenVPN
+            # data channel. Give that transient row a short reconciliation
+            # window, then enforce the configured combined SSH + VPN limit.
+            now = int(time.time())
             newest_first = sorted(
                 user_sessions, key=lambda item: item.connected_epoch, reverse=True
             )
             for session in newest_first[:excess]:
-                management_command(session.instance, f"client-kill {session.client_id}")
+                if (
+                    session.connected_epoch > 0
+                    and now - session.connected_epoch
+                    < SESSION_ENFORCEMENT_GRACE_SECONDS
+                ):
+                    continue
+                kill_session(session, "connection-limit")
 
 
 def command_watch(interval: float) -> int:

@@ -98,6 +98,64 @@ class ModuleTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_matching_shared_certificate_is_reused_for_outer_tls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            matching_cert = root / "matching.crt"
+            matching_key = root / "matching.key"
+            private_cert = root / "private.crt"
+            private_key = root / "private.key"
+            for cert, key, name in (
+                (matching_cert, matching_key, "vpn.example.com"),
+                (private_cert, private_key, "tdz-openvpn-server"),
+            ):
+                generated = subprocess.run(
+                    [
+                        "openssl",
+                        "req",
+                        "-x509",
+                        "-newkey",
+                        "rsa:2048",
+                        "-nodes",
+                        "-days",
+                        "2",
+                        "-subj",
+                        f"/CN={name}",
+                        "-addext",
+                        f"subjectAltName=DNS:{name}",
+                        "-keyout",
+                        str(key),
+                        "-out",
+                        str(cert),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                self.assertEqual(generated.returncode, 0)
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_PKI={root}/pki
+                TDZ_OVPN_SERVICE_USER=root
+                TDZ_OVPN_HOST=vpn.example.com
+                SSL_CERT_CHAIN_FILE={matching_cert}
+                SSL_CERT_KEY_FILE={matching_key}
+                mkdir -p "$TDZ_OVPN_PKI"
+                cp {private_cert} "$TDZ_OVPN_PKI/server.crt"
+                cp {private_key} "$TDZ_OVPN_PKI/server.key"
+                tdz_openvpn_prepare_gateway_certificate || exit 20
+                [[ "$TDZ_OVPN_GATEWAY_CERT_SOURCE" == shared ]] || exit 21
+                cmp -s {matching_cert} "$TDZ_OVPN_PKI/gateway.crt" || exit 22
+
+                TDZ_OVPN_HOST=other.example.com
+                tdz_openvpn_prepare_gateway_certificate || exit 23
+                [[ "$TDZ_OVPN_GATEWAY_CERT_SOURCE" == private ]] || exit 24
+                [[ "$TDZ_OVPN_GATEWAY_CERT_NOTE" == shared-host-mismatch ]] || exit 25
+                cmp -s {private_cert} "$TDZ_OVPN_PKI/gateway.crt" || exit 26
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_profiles_and_server_config_are_generated_without_credentials(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -139,6 +197,17 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("password", profile.lower())
             self.assertNotIn("auth-nocache", profile)
 
+            direct_profile = (root / "portal/ovpn-configs/tdz-openvpn-tcp.ovpn").read_text()
+            self.assertIn("data-ciphers AES-256-GCM:AES-128-GCM", direct_profile)
+            for adapter_name in (
+                "tdz-openvpn-ws-injector.ovpn",
+                "tdz-openvpn-wss-injector.ovpn",
+                "tdz-openvpn-ssl-injector.ovpn",
+            ):
+                adapter_profile = (root / "portal/ovpn-configs" / adapter_name).read_text()
+                self.assertIn("cipher AES-256-GCM", adapter_profile)
+                self.assertNotIn("data-ciphers", adapter_profile)
+
             portal = (root / "portal/ovpn-configs/index.html").read_text()
             self.assertIn("TDZ <span>•</span><br>OVPN PORTAL", portal)
             self.assertIn('<span class="brand-main">TDZ</span>', portal)
@@ -155,8 +224,8 @@ class ModuleTests(unittest.TestCase):
             downloads = (root / "portal/ovpn-configs/download.html").read_text()
             self.assertIn("/openvpn/download/openvpn-profiles.zip", downloads)
             css = (root / "portal/ovpn-configs/portal.css").read_text()
-            self.assertIn("--bg:#f2f0eb", css)
-            self.assertIn("--accent:#1ac9a0", css)
+            self.assertIn("--bg:#efeee9", css)
+            self.assertIn("--accent:#12b98f", css)
             self.assertIn(':root[data-theme="dark"]', css)
             self.assertIn("@media(prefers-color-scheme:dark)", css)
             self.assertIn("backdrop-filter:blur", css)
@@ -185,7 +254,8 @@ class ModuleTests(unittest.TestCase):
                 self.assertIn("<title>TDZ • OVPN PORTAL</title>", page_text)
                 self.assertIn("Developed By:", page_text)
                 self.assertIn("Yeasinul Hoque Tuhin", page_text)
-                self.assertIn("© 2026 Yeasinul Hoque Tuhin", page_text)
+                self.assertNotIn("© 2026", page_text)
+                self.assertNotIn("All rights reserved", page_text)
                 self.assertIn('src="/openvpn/assets/portal.js"', page_text)
                 self.assertIn("data-theme-toggle", page_text)
                 self.assertNotIn("Powered By", page_text)
@@ -270,6 +340,7 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", gateway)
             portal = (root / "systemd/tdz-openvpn-portal.service").read_text()
             self.assertIn("--port 1180", portal)
+            self.assertIn("--public-host", portal)
             self.assertIn("--tls-cert", portal)
             self.assertIn("--tls-key", portal)
             if shutil.which("systemd-analyze"):
