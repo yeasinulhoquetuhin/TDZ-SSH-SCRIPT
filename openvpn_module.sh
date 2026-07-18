@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-19.20"
+TDZ_OVPN_MODULE_VERSION="2026-07-19.21"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -23,6 +23,11 @@ TDZ_OVPN_FIXED_HTTP_PORT=449
 TDZ_OVPN_FIXED_WSS_PORT=450
 TDZ_OVPN_TCP_TUN_MTU=1400
 TDZ_OVPN_TCP_QUEUE_LIMIT=128
+# External injector modes add a second TCP/TLS/WebSocket queue in front of
+# OpenVPN.  Keep the inner OpenVPN socket large enough for a fast mobile link,
+# but bounded so it cannot accumulate the multi-megabyte backlog seen in
+# HTTP Custom under load. Direct TCP/HTTP/UDP profiles remain untouched.
+TDZ_OVPN_ADAPTER_SOCKET_BUFFER=524288
 TDZ_OVPN_SYSTEMD_DIR="${TDZ_OVPN_SYSTEMD_DIR:-/etc/systemd/system}"
 TDZ_OVPN_PAM_SERVICE="${TDZ_OVPN_PAM_SERVICE:-/etc/pam.d/tdz-openvpn}"
 TDZ_OVPN_SYSCTL="${TDZ_OVPN_SYSCTL:-/etc/sysctl.d/99-tdz-openvpn.conf}"
@@ -769,7 +774,7 @@ tdz_openvpn_profile_common() {
         # Embedded OpenVPN cores in injector apps can identify themselves as
         # 2.5 while still rejecting data-ciphers. Keep their profile on the
         # negotiated AES-256-GCM cipher without emitting unsupported options.
-        cipher_compatibility='ignore-unknown-option block-ipv6'
+        cipher_compatibility='ignore-unknown-option pull-filter block-ipv6'
     else
         cipher_compatibility='ignore-unknown-option data-ciphers data-ciphers-fallback block-ipv6'
     fi
@@ -786,6 +791,18 @@ remote-cert-tls server
 verify-x509-name tdz-openvpn-server name
 auth-user-pass
 auth-retry interact
+EOF
+    if [[ "$compatibility" == "adapter" ]]; then
+        cat <<EOF
+# Prevent an external injector and OpenVPN from each holding several MB of
+# queued TCP data. This cap applies only to WS/WSS/SSL adapter profiles.
+pull-filter ignore "sndbuf"
+pull-filter ignore "rcvbuf"
+sndbuf $TDZ_OVPN_ADAPTER_SOCKET_BUFFER
+rcvbuf $TDZ_OVPN_ADAPTER_SOCKET_BUFFER
+EOF
+    fi
+    cat <<EOF
 cipher AES-256-GCM
 EOF
     if [[ "$compatibility" != "adapter" ]]; then

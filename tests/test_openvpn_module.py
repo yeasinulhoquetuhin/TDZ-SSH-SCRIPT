@@ -242,6 +242,21 @@ class ModuleTests(unittest.TestCase):
                 )
                 self.assertIn("tun-mtu 1400", adapter_profile)
                 self.assertNotIn("mssfix 1360", adapter_profile)
+                self.assertIn('pull-filter ignore "sndbuf"', adapter_profile)
+                self.assertIn('pull-filter ignore "rcvbuf"', adapter_profile)
+                self.assertIn("sndbuf 524288", adapter_profile)
+                self.assertIn("rcvbuf 524288", adapter_profile)
+
+            for direct_name in (
+                "tdz-openvpn-udp.ovpn",
+                "tdz-openvpn-tcp.ovpn",
+                "tdz-openvpn-http-connect.ovpn",
+            ):
+                direct = (root / "portal/ovpn-configs" / direct_name).read_text()
+                self.assertNotIn('pull-filter ignore "sndbuf"', direct)
+                self.assertNotIn('pull-filter ignore "rcvbuf"', direct)
+                self.assertNotIn("sndbuf 524288", direct)
+                self.assertNotIn("rcvbuf 524288", direct)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
             self.assertIn("TDZ <span>•</span><br>OVPN PORTAL", portal)

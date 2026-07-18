@@ -34,12 +34,6 @@ MAX_HEADER_BYTES = 32 * 1024
 # backlog.  A 32 KiB chunk still saturates fast links while letting interactive
 # packets reach the socket between bulk-transfer chunks.
 COPY_BUFFER = 32 * 1024
-# Injector apps often add another userspace TCP/TLS/WebSocket adapter in front
-# of OpenVPN.  Smaller bursts keep that extra adapter responsive without
-# changing the native HTTP CONNECT path, which already performs well.
-ADAPTER_COPY_BUFFER = 8 * 1024
-ADAPTER_WRITE_HIGH = 16 * 1024
-ADAPTER_WRITE_LOW = 4 * 1024
 TCP_NOTSENT_LIMIT = 32 * 1024
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 HTTP_METHOD_PREFIXES = (b"GET ", b"POST ", b"HEAD ", b"OPTIONS ")
@@ -108,19 +102,6 @@ def tune_socket(writer: asyncio.StreamWriter) -> None:
                 sock.setsockopt(socket.IPPROTO_TCP, option, value)
 
 
-def tune_adapter_buffer(writer: asyncio.StreamWriter) -> None:
-    """Bound only the asyncio queue added by an external adapter relay."""
-
-    transport = getattr(writer, "transport", None)
-    if transport is None:
-        return
-    with contextlib.suppress(AttributeError, NotImplementedError, ValueError):
-        transport.set_write_buffer_limits(
-            high=ADAPTER_WRITE_HIGH,
-            low=ADAPTER_WRITE_LOW,
-        )
-
-
 async def close_writer(writer: Optional[asyncio.StreamWriter]) -> None:
     if writer is None:
         return
@@ -154,9 +135,6 @@ async def relay_raw(
     initial_client_data: bytes = b"",
     buffer_size: int = COPY_BUFFER,
 ) -> None:
-    if buffer_size == ADAPTER_COPY_BUFFER:
-        tune_adapter_buffer(client_writer)
-        tune_adapter_buffer(backend_writer)
     to_backend = asyncio.create_task(
         pipe(client_reader, backend_writer, initial_client_data, buffer_size)
     )
@@ -363,7 +341,7 @@ async def websocket_to_backend(
         offset = 0
         while remaining:
             chunk = await client.readexactly(
-                min(remaining, ADAPTER_COPY_BUFFER)
+                min(remaining, COPY_BUFFER)
             )
             backend_writer.write(websocket_unmask(chunk, mask, offset))
             await backend_writer.drain()
@@ -375,7 +353,7 @@ async def backend_to_websocket(
     backend_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
 ) -> None:
     while True:
-        chunk = await backend_reader.read(ADAPTER_COPY_BUFFER)
+        chunk = await backend_reader.read(COPY_BUFFER)
         if not chunk:
             return
         client_writer.write(ws_frame(chunk))
@@ -389,8 +367,6 @@ async def relay_websocket(
     backend_writer: asyncio.StreamWriter,
     initial: bytes,
 ) -> None:
-    tune_adapter_buffer(client_writer)
-    tune_adapter_buffer(backend_writer)
     buffered = BufferedStream(client_reader, initial)
     to_backend = asyncio.create_task(
         websocket_to_backend(buffered, client_writer, backend_writer)
@@ -479,7 +455,7 @@ async def relay_http_upgrade(
                 backend_reader,
                 backend_writer,
                 buffered,
-                ADAPTER_COPY_BUFFER,
+                COPY_BUFFER,
             )
         return
 
@@ -505,7 +481,7 @@ async def relay_http_upgrade(
         backend_reader,
         backend_writer,
         remainder,
-        ADAPTER_COPY_BUFFER,
+        COPY_BUFFER,
     )
 
 
@@ -599,7 +575,7 @@ async def serve_client(
                         client_writer,
                         backend_reader,
                         backend_writer,
-                        buffer_size=ADAPTER_COPY_BUFFER,
+                        buffer_size=COPY_BUFFER,
                     )
                 finally:
                     await close_writer(backend_writer)
