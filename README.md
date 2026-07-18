@@ -114,6 +114,7 @@ Account status, expiration, remaining validity, active connections, and compact 
 
 ### Tunnel Protocols
 - **SSH (Direct)** — standard SSH tunnel on port 22
+- **OpenVPN protocol suite** — optional direct UDP/TCP, native HTTP CONNECT, HTTP Payload/WebSocket, WSS/SNI, and SSL/SNI transports with downloadable profiles
 - **stunnel4 TLS** — TLS-wrapped SSH on port 2288 for firewall bypass
 - **WebSocket NTLS** — non-TLS WebSocket payload on port 2289
 - **BadVPN / UDPGW** — UDP game tunneling on port 7300
@@ -165,6 +166,47 @@ After installation, type **`menu`** to launch the management interface.
 
 ---
 
+## OpenVPN Protocol Suite
+
+Open **`menu → 13) Protocol Manager → 12) OpenVPN Protocol Suite`** to install or manage OpenVPN. The component is optional: installing or removing it does not remove TDZ users or change the existing SSH, HAProxy, Nginx, DNSTT, BadVPN, ZiVPN, banner, certificate, or backup configuration.
+
+During first installation, TDZ asks for the public VPS IP or domain. It then selects five unused high-range ports at random, excludes known TDZ ports and the restricted port list, creates fresh server cryptographic material, applies isolated VPN subnets, starts the required services, and verifies that every listener is active. Re-running the installer repairs the suite while preserving the selected ports and account data.
+
+The optional suite requires Python 3.7 or newer. On an older distribution the core TDZ SSH features remain available, while OpenVPN installation stops safely without changing the existing setup.
+
+| Mode | Client support | Profile / setup |
+|---|---|---|
+| **Direct UDP** | Official OpenVPN clients | Ready-to-import `.ovpn` profile |
+| **Direct TCP** | Official OpenVPN clients | Ready-to-import `.ovpn` profile |
+| **HTTP CONNECT** | Official OpenVPN clients | Native OpenVPN HTTP proxy profile |
+| **HTTP Payload / WebSocket** | Compatible injector or WebSocket adapter | Injector profile plus payload template |
+| **WSS / SNI** | Compatible TLS WebSocket adapter | Injector profile; use the configured host as SNI |
+| **SSL / SNI** | Compatible external SSL/TLS adapter | Injector profile; use the configured host as SNI |
+
+The public download page is generated automatically:
+
+```text
+http://VPS-IP-OR-HOST:4071/ovpn-configs/
+```
+
+It includes individual profiles, one ZIP containing all profiles, the server CA, protocol details, SNI values, and payload templates. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
+
+### Shared account enforcement
+
+- SSH and OpenVPN use the same TDZ user database and Linux password
+- Manual lock and account deletion terminate both SSH and OpenVPN sessions
+- Expiry and **Start After First Use** apply to the first successful SSH or OpenVPN login
+- The configured connection limit is shared across active SSH and OpenVPN sessions
+- Bandwidth usage from both transports is added to the same per-user quota without double counting
+- Expired or quota-exhausted accounts are disconnected and locked automatically
+- VPN clients are isolated from one another and cannot use the transport gateway as an open proxy
+
+Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer.
+
+Compatibility follows the official OpenVPN transport model: the core protocol runs over TCP or UDP, while HTTP proxy mode uses TCP. Session status and forced disconnects use the local OpenVPN management interface. See the [OpenVPN protocol reference](https://openvpn.net/community-docs/openvpn-protocol.html), [HTTP proxy guide](https://openvpn.net/community-docs/connecting-to-an-openvpn-server-via-an-http-proxy.html), and [management interface reference](https://openvpn.net/community-docs/management-interface.html).
+
+---
+
 ## SSL Certificate — Menu 17
 
 Open **`menu → 17) Domain & SSL Cert`** to manage the shared certificate used by the TDZ edge stack.
@@ -204,6 +246,8 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 | 8770 | HTTP | Nginx internal proxy |
 | 8442 | HTTPS | Nginx internal TLS proxy |
 | 8890 | TCP | WS-to-SSH bridge |
+| 4071 | HTTP | OpenVPN profile download portal (when the optional suite is installed) |
+| Random unused high ports | TCP / UDP | Optional OpenVPN direct and adapter transports; selected during installation |
 
 ## Supported Platforms
 
@@ -240,7 +284,7 @@ menu → 99) Uninstall
 
 - **Developer:** [Yeasinul Hoque Tuhin](https://tuhinbro.com)
 - **Project:** TDZ SSH TUNNEL — independently developed from scratch
-- **Third-party components:** BadVPN, DNSTT, stunnel4, HAProxy, Nginx, certbot (each retains its own license)
+- **Third-party components:** OpenVPN Community Edition, BadVPN, DNSTT, stunnel4, HAProxy, Nginx, certbot (each retains its own license)
 
 ---
 

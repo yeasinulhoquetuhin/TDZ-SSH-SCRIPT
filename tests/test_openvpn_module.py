@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+
+import subprocess
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+
+REPO = Path(__file__).resolve().parents[1]
+MODULE = REPO / "openvpn_module.sh"
+
+
+class ModuleTests(unittest.TestCase):
+    def run_bash(self, body: str):
+        return subprocess.run(
+            ["bash", "-c", f"source {MODULE!s}\n{body}"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_host_and_forbidden_port_validation(self):
+        result = self.run_bash(
+            """
+            tdz_openvpn_valid_host vpn.example.com || exit 10
+            tdz_openvpn_valid_host 203.0.113.9 || exit 11
+            ! tdz_openvpn_valid_host 999.0.0.1 || exit 12
+            ! tdz_openvpn_valid_host bad..example.com || exit 13
+            ! tdz_openvpn_valid_host '-bad.example' || exit 14
+            ! tdz_openvpn_valid_host '.bad.example' || exit 17
+            ! tdz_openvpn_valid_host 'bad.example.' || exit 18
+            for port in 80 443 442 8443 2080 2086 2096 2053 1080 8080 8880 8888 4071; do
+                tdz_openvpn_forbidden_port "$port" || exit 15
+            done
+            ! tdz_openvpn_forbidden_port 35001 || exit 16
+            """
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_profiles_and_server_config_are_generated_without_credentials(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script = f"""
+            TDZ_OVPN_ROOT={root}/openvpn
+            TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+            TDZ_OVPN_RUN=$TDZ_OVPN_ROOT/run
+            TDZ_OVPN_HOOKS=$TDZ_OVPN_ROOT/hooks
+            TDZ_OVPN_PROFILES={root}/portal/ovpn-configs
+            TDZ_OVPN_RUNTIME=/runtime-helper
+            TDZ_OVPN_HOST=vpn.example.com
+            TDZ_OVPN_TCP_PORT=25001
+            TDZ_OVPN_UDP_PORT=25002
+            TDZ_OVPN_HTTP_PORT=25003
+            TDZ_OVPN_WSS_PORT=25004
+            TDZ_OVPN_SSL_PORT=25005
+            mkdir -p "$TDZ_OVPN_PKI" "$TDZ_OVPN_RUN" "$TDZ_OVPN_HOOKS"
+            printf '%s\n' 'TEST CA' > "$TDZ_OVPN_PKI/ca.crt"
+            printf '%s\n' 'TEST TLS KEY' > "$TDZ_OVPN_PKI/tls-crypt.key"
+            tdz_openvpn_write_server_config tcp tcp-server 25001 10.100.10.0 /pam-plugin.so
+            tdz_openvpn_generate_profiles
+            """
+            result = self.run_bash(script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            server = (root / "openvpn/server-tcp.conf").read_text()
+            self.assertIn("verify-client-cert none", server)
+            self.assertIn("plugin /pam-plugin.so tdz-openvpn", server)
+            self.assertNotIn("auth-gen-token", server)
+            self.assertIn("max-clients 250", server)
+            self.assertIn("tls-version-min 1.2", server)
+            self.assertNotIn("comp-lzo", server)
+
+            profile = (root / "portal/ovpn-configs/tdz-openvpn-http-connect.ovpn").read_text()
+            self.assertIn("http-proxy vpn.example.com 25003", profile)
+            self.assertIn("setenv CLIENT_CERT 0", profile)
+            self.assertIn("<tls-crypt>", profile)
+            self.assertNotIn("password", profile.lower())
+            self.assertNotIn("auth-nocache", profile)
+
+            portal = (root / "portal/ovpn-configs/index.html").read_text()
+            self.assertIn("http://vpn.example.com:4071/ovpn-configs/", portal)
+            self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
+
+            (root / "portal/ovpn-configs/stale.ovpn").write_text("stale\n")
+            regenerated = self.run_bash(script)
+            self.assertEqual(regenerated.returncode, 0, regenerated.stderr)
+            self.assertFalse((root / "portal/ovpn-configs/stale.ovpn").exists())
+            self.assertEqual(list((root / "portal").glob(".ovpn-configs.*")), [])
+
+    def test_firewall_and_service_files_are_syntactically_well_formed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script = f"""
+            TDZ_OVPN_ROOT={root}/openvpn
+            TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+            TDZ_OVPN_RUN=$TDZ_OVPN_ROOT/run
+            TDZ_OVPN_HOOKS=$TDZ_OVPN_ROOT/hooks
+            TDZ_OVPN_PORTAL_BASE={root}/portal
+            TDZ_OVPN_PROFILES=$TDZ_OVPN_PORTAL_BASE/ovpn-configs
+            TDZ_OVPN_SYSTEMD_DIR={root}/systemd
+            TDZ_OVPN_PAM_SERVICE={root}/pam/tdz-openvpn
+            TDZ_OVPN_SYSCTL={root}/sysctl/tdz-openvpn.conf
+            TDZ_OVPN_FIREWALL={root}/libexec/tdz-openvpn-firewall
+            TDZ_OVPN_RUNTIME=/bin/true
+            TDZ_OVPN_GATEWAY=/bin/true
+            TDZ_OVPN_PORTAL=/bin/true
+            TDZ_OVPN_SERVICE_USER=root
+            TDZ_OVPN_BIN=/bin/true
+            TDZ_OVPN_TCP_PORT=25001
+            TDZ_OVPN_UDP_PORT=25002
+            TDZ_OVPN_HTTP_PORT=25003
+            TDZ_OVPN_WSS_PORT=25004
+            TDZ_OVPN_SSL_PORT=25005
+            TDZ_OVPN_TCP_SUBNET=10.100.10.0
+            TDZ_OVPN_UDP_SUBNET=10.101.11.0
+            mkdir -p "$TDZ_OVPN_PKI"
+            : > "$TDZ_OVPN_PKI/gateway.crt"
+            : > "$TDZ_OVPN_PKI/gateway.key"
+            tdz_openvpn_write_network_service
+            tdz_openvpn_write_systemd_units
+            dash -n "$TDZ_OVPN_FIREWALL"
+            """
+            result = self.run_bash(script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            firewall = (root / "libexec/tdz-openvpn-firewall").read_text()
+            self.assertIn('TCP_PORT="25001"', firewall)
+            self.assertIn("MASQUERADE", firewall)
+            self.assertIn("tun-tdz-tcp", firewall)
+            units = list((root / "systemd").glob("tdz-openvpn-*.service"))
+            self.assertEqual(len(units), 8)
+            for unit in units:
+                text = unit.read_text()
+                self.assertIn("[Unit]", text)
+                self.assertIn("[Service]", text)
+            gateway = (root / "systemd/tdz-openvpn-wss.service").read_text()
+            self.assertIn("User=root", gateway)
+            self.assertIn("NoNewPrivileges=true", gateway)
+            self.assertIn("CapabilityBoundingSet=", gateway)
+            if shutil.which("systemd-analyze"):
+                verified = subprocess.run(
+                    ["systemd-analyze", "verify", *map(str, units)],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def test_state_round_trip_preserves_service_account_ownership(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+                TDZ_OVPN_HOST=vpn.example.com
+                TDZ_OVPN_TCP_PORT=25001
+                TDZ_OVPN_UDP_PORT=25002
+                TDZ_OVPN_HTTP_PORT=25003
+                TDZ_OVPN_WSS_PORT=25004
+                TDZ_OVPN_SSL_PORT=25005
+                TDZ_OVPN_TCP_SUBNET=10.100.10.0
+                TDZ_OVPN_UDP_SUBNET=10.101.11.0
+                TDZ_OVPN_SERVICE_USER_CREATED=1
+                TDZ_OVPN_SERVICE_GROUP_CREATED=1
+                tdz_openvpn_save_state || exit 20
+                TDZ_OVPN_SERVICE_USER_CREATED=0
+                TDZ_OVPN_SERVICE_GROUP_CREATED=0
+                tdz_openvpn_load_state || exit 21
+                [[ "$TDZ_OVPN_SERVICE_USER_CREATED" == 1 ]] || exit 22
+                [[ "$TDZ_OVPN_SERVICE_GROUP_CREATED" == 1 ]] || exit 23
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_limiter_uses_the_shared_first_use_lock(self):
+        menu = (REPO / "menu.sh").read_text()
+        start = menu.index("activate_pending_account() {")
+        end = menu.index("\n}\n\nload_banner_identity", start)
+        activation = menu[start:end]
+        self.assertIn('exec 8>"$USAGE_LOCK"', activation)
+        self.assertIn("flock -x 8", activation)
+        self.assertIn("active:*", activation)
+
+
+if __name__ == "__main__":
+    unittest.main()

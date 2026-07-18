@@ -87,6 +87,18 @@ XUI_PATCHED_TAG="v2.9.3-patched"
 XUI_PATCHED_LABEL="v2.9.3 • Patched"
 XUI_INSTALLER_COMMIT="89fb75da778db776e6ec0a7f735c2a55626229aa"
 XUI_INSTALLER_SHA256="e3ae8c4d42e3f249ea5cad47d9d6b0e98daa675829daab57ffa214efce118186"
+TDZ_LIB_DIR="/usr/local/lib/tdz-ssh-tunnel"
+TDZ_MENU_SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+
+# OpenVPN is optional.  Installed systems load the managed module; repository
+# runs and source-only tests use the adjacent copy.
+if [[ -r "$TDZ_LIB_DIR/openvpn_module.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$TDZ_LIB_DIR/openvpn_module.sh"
+elif [[ -n "$TDZ_MENU_SOURCE_DIR" && -r "$TDZ_MENU_SOURCE_DIR/openvpn_module.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$TDZ_MENU_SOURCE_DIR/openvpn_module.sh"
+fi
 
 tdz_is_valid_port_number() {
     local port="$1"
@@ -789,6 +801,7 @@ check_environment() {
             missing_packages+=("$cmd")
         fi
     done
+    command -v flock &>/dev/null || missing_packages+=("util-linux")
 
     if (( ${#missing_packages[@]} > 0 )); then
         echo -e "${C_YELLOW}[WARNING] Installing missing dependencies: ${missing_packages[*]}${C_RESET}"
@@ -973,6 +986,9 @@ delete_tdztunnel_user_accounts() {
 
     for username in "${users_to_delete[@]}"; do
         [[ -n "$username" ]] || continue
+        if declare -F tdz_openvpn_kill_user >/dev/null 2>&1; then
+            tdz_openvpn_kill_user "$username"
+        fi
         killall -u "$username" -9 &>/dev/null
         if id "$username" &>/dev/null; then
             if userdel -r "$username" &>/dev/null; then
@@ -1023,6 +1039,14 @@ initial_setup() {
     
     echo -e "${C_BLUE}Installing trial account cleanup script...${C_RESET}"
     setup_trial_cleanup_script
+
+    if declare -F tdz_openvpn_refresh_runtime >/dev/null 2>&1 && tdz_openvpn_is_installed; then
+        echo -e "${C_BLUE}Refreshing optional OpenVPN services...${C_RESET}"
+        tdz_openvpn_refresh_runtime || {
+            echo -e "${C_RED}[ERROR] OpenVPN refresh failed; its previous working state was restored.${C_RESET}"
+            return 1
+        }
+    fi
     
     echo -e "${C_BLUE}Cleaning legacy dynamic SSH banner hooks...${C_RESET}"
     disable_dynamic_ssh_banner_system
@@ -1049,6 +1073,13 @@ update_setup() {
     setup_limiter_service
     setup_bandwidth_service
     setup_trial_cleanup_script
+
+    if declare -F tdz_openvpn_refresh_runtime >/dev/null 2>&1 && tdz_openvpn_is_installed; then
+        tdz_openvpn_refresh_runtime || {
+            echo -e "${C_RED}[ERROR] OpenVPN refresh failed; its previous working state was restored.${C_RESET}"
+            return 1
+        }
+    fi
 
     if $dynamic_banner_was_enabled; then
         touch "$dynamic_banner_flag"
@@ -1218,7 +1249,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-18.1
+# TDZ SSH TUNNEL limiter version 2026-07-18.3
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1229,9 +1260,15 @@ BANNER_IDENTITY_CONF="/etc/tdztunnel/banner_identity.conf"
 ADMIN_USERNAME="TUSTDZ"
 CHANNEL_USERNAME="TuhinBroh"
 SCAN_INTERVAL=1
+OVPN_RUNTIME="/usr/local/lib/tdz-ssh-tunnel/tdz_openvpn_runtime.py"
+OVPN_SESSION_SNAPSHOT="/etc/tdztunnel/openvpn/run/sessions.tsv"
+SSH_SESSION_SNAPSHOT="$BW_DIR/ssh-sessions.tsv"
+SSH_SESSION_SNAPSHOT_TMP="${SSH_SESSION_SNAPSHOT}.tmp.$$"
+USAGE_LOCK="$BW_DIR/.usage.lock"
 
 mkdir -p "$BW_DIR" "$PID_DIR"
 shopt -s nullglob
+trap 'rm -f "$SSH_SESSION_SNAPSHOT_TMP"' EXIT
 
 write_banner_if_changed() {
     local user="$1"
@@ -1318,9 +1355,37 @@ format_bandwidth_usage() {
 
 activate_pending_account() {
     local target_user="$1" duration_days="$2"
-    local activated_expiry tmp_file
+    local activated_expiry tmp_file current_state current_expiry current_duration
 
     [[ "$duration_days" =~ ^[1-9][0-9]*$ ]] || return 1
+    # Share the same advisory lock as the OpenVPN client-connect hook. This
+    # makes simultaneous first SSH + first OpenVPN logins a single atomic
+    # activation instead of letting both writers race over users.db.
+    exec 8>"$USAGE_LOCK"
+    flock -x 8 || return 1
+
+    current_state=$(awk -F: -v target="$target_user" '
+        $1 == target {
+            if ($6 == "pending") print "pending:" $7
+            else print "active:" $3
+            exit
+        }
+    ' "$DB_FILE")
+    case "$current_state" in
+        active:*)
+            current_expiry=${current_state#active:}
+            [[ "$current_expiry" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+            printf '%s' "$current_expiry"
+            return 0
+            ;;
+        pending:*)
+            current_duration=${current_state#pending:}
+            [[ "$current_duration" =~ ^[1-9][0-9]*$ ]] || return 1
+            duration_days=$current_duration
+            ;;
+        *) return 1 ;;
+    esac
+
     activated_expiry=$(date -d "+${duration_days} days" +%Y-%m-%d 2>/dev/null) || return 1
     tmp_file=$(mktemp "${DB_FILE}.activate.XXXXXX") || return 1
 
@@ -1371,11 +1436,22 @@ while true; do
     declare -A loginuid_pids=()
     declare -A sshd_session_pids=()
     declare -A who_online=()
+    declare -A ovpn_online=()
     declare -A managed_user_lookup=()
+    : > "$SSH_SESSION_SNAPSHOT_TMP"
+    chmod 600 "$SSH_SESSION_SNAPSHOT_TMP" 2>/dev/null || true
 
     while IFS=: read -r managed_user _rest; do
         [[ -n "$managed_user" && "$managed_user" != \#* ]] && managed_user_lookup["$managed_user"]=1
     done < "$DB_FILE"
+
+    snapshot_mtime=$(stat -c %Y "$OVPN_SESSION_SNAPSHOT" 2>/dev/null || echo 0)
+    if [[ "$snapshot_mtime" =~ ^[0-9]+$ ]] && (( snapshot_mtime >= current_ts - 5 )); then
+        while IFS=$'\t' read -r ovpn_user _instance _client_id _connected_epoch; do
+            [[ -n "$ovpn_user" && -n "${managed_user_lookup[$ovpn_user]+x}" ]] || continue
+            ovpn_online["$ovpn_user"]=$(( ${ovpn_online["$ovpn_user"]:-0} + 1 ))
+        done < "$OVPN_SESSION_SNAPSHOT"
+    fi
 
     while IFS=: read -r username _ uid _rest; do
         [[ -n "$username" && "$uid" =~ ^[0-9]+$ ]] && uid_to_user["$uid"]="$username"
@@ -1441,7 +1517,8 @@ while true; do
 
         # Online if `who` shows them OR they have live PIDs
         local_user_online=false
-        if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ]]; then
+        if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ||
+              ${ovpn_online[$user]:-0} -gt 0 ]]; then
             local_user_online=true
         fi
 
@@ -1455,9 +1532,14 @@ while true; do
         if (( ${#unique_sshd_sessions[@]} > online_count )); then
             online_count=${#unique_sshd_sessions[@]}
         fi
-        if (( online_count == 0 )) && [[ "$local_user_online" == true ]]; then
+        if (( online_count == 0 && ${ovpn_online[$user]:-0} == 0 )) && [[ "$local_user_online" == true ]]; then
             online_count=1
         fi
+        # Publish the SSH-only count for the OpenVPN admission hook. This is
+        # written atomically after the complete database scan so the shared
+        # connection limit never consumes a partially rendered snapshot.
+        printf '%s\t%s\n' "$user" "$online_count" >> "$SSH_SESSION_SNAPSHOT_TMP"
+        online_count=$((online_count + ${ovpn_online[$user]:-0}))
 
         pending_activation=false
         if [[ "$account_type" == "pending" ]]; then
@@ -1481,7 +1563,7 @@ while true; do
         expiry_ts=0
         is_expired=false
         if [[ "$expiry" != "Never" && -n "$expiry" ]]; then
-            expiry_ts=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+            expiry_ts=$(date -d "$expiry 23:59:59" +%s 2>/dev/null || echo 0)
             if [[ "$expiry_ts" =~ ^[0-9]+$ ]] && (( expiry_ts > 0 && expiry_ts < current_ts )); then
                 is_expired=true
             fi
@@ -1556,13 +1638,14 @@ while true; do
             if ! $user_locked; then
                 usermod -L "$user" &>/dev/null
                 killall -u "$user" -9 &>/dev/null
+                [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" >/dev/null 2>&1 || true
                 locked_users["$user"]=1
             fi
             continue
         fi
 
         [[ "$limit" =~ ^[0-9]+$ ]] || limit=1
-        if (( online_count > limit )); then
+        if (( online_count > limit )) && (( ${ovpn_online[$user]:-0} == 0 )); then
             excess=$((online_count - limit))
             killed=0
             for pid in $(printf "%s\n" "${!unique_sshd_sessions[@]}" | sort -nr); do
@@ -1577,6 +1660,12 @@ while true; do
         fi
 
         usagefile="$BW_DIR/${user}.usage"
+        usage_lock_held=false
+        if command -v flock >/dev/null 2>&1; then
+            exec 9>"$USAGE_LOCK"
+            flock -x 9
+            usage_lock_held=true
+        fi
         accumulated=0
         if [[ -f "$usagefile" ]]; then
             read -r accumulated < "$usagefile"
@@ -1585,6 +1674,7 @@ while true; do
 
         if [[ "$local_user_online" != true ]]; then
             rm -f "$PID_DIR/${user}__"*.last 2>/dev/null
+            if $usage_lock_held; then flock -u 9; exec 9>&-; fi
             continue
         fi
 
@@ -1626,7 +1716,11 @@ while true; do
         done
 
         new_total=$((accumulated + delta_total))
-        printf "%s\n" "$new_total" > "$usagefile"
+        usage_tmp="${usagefile}.tmp.$$"
+        printf "%s\n" "$new_total" > "$usage_tmp"
+        chmod 600 "$usage_tmp" 2>/dev/null || true
+        mv -f "$usage_tmp" "$usagefile"
+        if $usage_lock_held; then flock -u 9; exec 9>&-; fi
 
         if ! quota_is_unlimited "$bandwidth_gb"; then
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
@@ -1634,11 +1728,13 @@ while true; do
                 if ! $user_locked; then
                     usermod -L "$user" &>/dev/null
                     killall -u "$user" -9 &>/dev/null
+                    [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" >/dev/null 2>&1 || true
                     locked_users["$user"]=1
                 fi
             fi
         fi
     done < "$DB_FILE"
+    mv -f "$SSH_SESSION_SNAPSHOT_TMP" "$SSH_SESSION_SNAPSHOT"
 
     sleep "$SCAN_INTERVAL"
 done
@@ -1680,7 +1776,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-18.1"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-18.3"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -1690,6 +1786,9 @@ sync_runtime_components_if_needed() {
     fi
     if [[ -f "$BADVPN_SERVICE_FILE" ]]; then
         ensure_badvpn_service_is_quiet
+    fi
+    if declare -F tdz_openvpn_needs_refresh >/dev/null 2>&1 && tdz_openvpn_needs_refresh; then
+        tdz_openvpn_refresh_runtime >/dev/null 2>&1 || true
     fi
     if [[ -f "/etc/tdztunnel/banners_enabled" ]]; then
         update_ssh_banners_config
@@ -1926,6 +2025,9 @@ domain_cert_menu() {
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                 rm -f "$TDZ_SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
                 echo -e "\n${C_GREEN}[OK] Certificate removed.${C_RESET}"
+                if declare -F tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 && tdz_openvpn_is_installed; then
+                    tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 || true
+                fi
             else
                 tdz_message CANCELLED "Certificate removal cancelled."
             fi
@@ -2175,7 +2277,7 @@ get_user_status() {
     if passwd -S "$username" 2>/dev/null | grep -q " L "; then echo -e "${C_YELLOW}Locked${C_RESET}"; return; fi
     if [[ "$account_type" == "pending" ]]; then echo -e "${C_CYAN}Waiting for First Use${C_RESET}"; return; fi
     if [[ "$expiry_date" == "Never" || -z "$expiry_date" ]]; then echo -e "${C_GREEN}Active${C_RESET}"; return; fi
-    local expiry_ts=$(date -d "$expiry_date" +%s 2>/dev/null || echo 0)
+    local expiry_ts=$(date -d "$expiry_date 23:59:59" +%s 2>/dev/null || echo 0)
     local current_ts=$(date +%s)
     if (( expiry_ts > 0 && expiry_ts < current_ts )); then echo -e "${C_RED}Expired${C_RESET}"; return; fi
     echo -e "${C_GREEN}Active${C_RESET}"
@@ -2339,6 +2441,10 @@ rename_tdztunnel_user() {
             echo -e "\n${C_RED}[ERROR] Could not pause the account worker safely; rename cancelled.${C_RESET}"
             return 1
         fi
+    fi
+
+    if declare -F tdz_openvpn_kill_user >/dev/null 2>&1; then
+        tdz_openvpn_kill_user "$old_username"
     fi
 
     active_process_count=$(pgrep -u "$old_username" 2>/dev/null | wc -l)
@@ -2749,6 +2855,9 @@ lock_user() {
         
         usermod -L "$u"
         if [ $? -eq 0 ]; then
+            if declare -F tdz_openvpn_kill_user >/dev/null 2>&1; then
+                tdz_openvpn_kill_user "$u"
+            fi
             killall -u "$u" -9 &>/dev/null
             echo -e " [OK] ${C_YELLOW}$u${C_RESET} locked and active sessions killed."
         else
@@ -2853,7 +2962,7 @@ list_users() {
             expiry_check=$metadata_value
         elif [[ -n "$expiry" && "$expiry" != "Never" ]]; then
             expiry_display=$(tdz_format_date_display "$expiry")
-            expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+            expiry_check=$(date -d "$expiry 23:59:59" +%s 2>/dev/null || echo 0)
         else
             expiry_display="${expiry:-Unknown}"
         fi
@@ -2972,7 +3081,7 @@ cleanup_expired() {
     
     while IFS=: read -r user pass expiry limit bandwidth_gb _extra; do
         local expiry_ts
-        expiry_ts=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+        expiry_ts=$(date -d "$expiry 23:59:59" +%s 2>/dev/null || echo 0)
         
         if [[ $expiry_ts -lt $current_ts && $expiry_ts -ne 0 ]]; then
             expired_users+=("$user")
@@ -2990,6 +3099,9 @@ cleanup_expired() {
     if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
         for user in "${expired_users[@]}"; do
             echo -e "  ${C_GRAY}•${C_RESET} Deleting ${C_YELLOW}$user${C_RESET}..."
+            if declare -F tdz_openvpn_kill_user >/dev/null 2>&1; then
+                tdz_openvpn_kill_user "$user"
+            fi
             killall -u "$user" -9 &>/dev/null
             # Clean up bandwidth tracking
             rm -f "$BANDWIDTH_DIR/${user}.usage"
@@ -4645,6 +4757,11 @@ apply_existing_certificate_files() {
 
     rm -rf "$rollback_dir"
     echo -e "${C_GREEN}[OK] Certificate applied successfully for ${C_YELLOW}$cert_domain${C_RESET}."
+    if declare -F tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 && tdz_openvpn_is_installed; then
+        if ! tdz_openvpn_refresh_gateway_tls; then
+            echo -e "${C_YELLOW}[WARNING] OpenVPN kept its previous working WSS/SSL certificate.${C_RESET}"
+        fi
+    fi
     return 0
 }
 
@@ -4755,6 +4872,9 @@ generate_self_signed_edge_cert() {
     build_shared_tls_bundle || return 1
     save_edge_cert_info "self-signed" "$common_name" ""
     echo -e "${C_GREEN}[OK] Shared certificate created for ${C_YELLOW}$common_name${C_RESET}"
+    if declare -F tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 && tdz_openvpn_is_installed; then
+        tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 || true
+    fi
     return 0
 }
 
@@ -5812,6 +5932,9 @@ EOF
         rm -f "$TDZ_SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
         rm -f "$NGINX_PORTS_FILE"
         echo -e "${C_GREEN}Shared certificate files removed.${C_RESET}"
+        if declare -F tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 && tdz_openvpn_is_installed; then
+            tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 || true
+        fi
     fi
 
     echo -e "${C_GREEN}[OK] HAProxy edge stack has been removed.${C_RESET}"
@@ -6736,6 +6859,7 @@ refresh_ssh_session_cache() {
     local -A loginuid_pids=()
     local -A sshd_session_pids=()
     local -A who_online=()
+    local -A openvpn_online=()
     local managed_user system_user system_uid ssh_pid ssh_owner candidate_user login_uid
 
     while IFS=: read -r managed_user _rest; do
@@ -6793,6 +6917,23 @@ refresh_ssh_session_cache() {
         session_pids[$_u]="${session_pids[$_u]}$_pid "
     done < <(ps -eo uid=,pid= --no-headers 2>/dev/null)
 
+    # Optional OpenVPN instances share the same TDZ account counters.  The
+    # runtime output is local TSV and also reconciles byte deltas atomically.
+    if declare -F tdz_openvpn_is_installed >/dev/null 2>&1 &&
+       tdz_openvpn_is_installed && [[ -x "${TDZ_OVPN_RUNTIME:-}" ]]; then
+        local ovpn_user ovpn_instance ovpn_client_id ovpn_connected ovpn_rows="" ovpn_snapshot_mtime=0
+        ovpn_snapshot_mtime=$(stat -c %Y "$TDZ_OVPN_RUN/sessions.tsv" 2>/dev/null || echo 0)
+        if [[ "$ovpn_snapshot_mtime" =~ ^[0-9]+$ ]] && (( ovpn_snapshot_mtime >= now - 5 )); then
+            ovpn_rows=$(<"$TDZ_OVPN_RUN/sessions.tsv")
+        else
+            ovpn_rows=$("$TDZ_OVPN_RUNTIME" sessions 2>/dev/null || true)
+        fi
+        while IFS=$'\t' read -r ovpn_user ovpn_instance ovpn_client_id ovpn_connected; do
+            [[ -n "$ovpn_user" && -n "${managed_user_lookup[$ovpn_user]+x}" ]] || continue
+            openvpn_online["$ovpn_user"]=$(( ${openvpn_online["$ovpn_user"]:-0} + 1 ))
+        done <<< "$ovpn_rows"
+    fi
+
     local user pid pid_candidates
     for user in "${!managed_user_lookup[@]}"; do
         declare -A unique_pids=()
@@ -6811,14 +6952,18 @@ refresh_ssh_session_cache() {
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_sshd_sessions["$pid"]=1
         done
 
-        # Mark online if `who` shows them OR they have live PIDs
-        if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ]]; then
+        # Mark online if SSH or OpenVPN has a live authenticated session.
+        if [[ -n "${who_online[$user]+x}" || ${#unique_pids[@]} -gt 0 ||
+              ${openvpn_online[$user]:-0} -gt 0 ]]; then
             # CONNS count: sshd sessions are authoritative for tunnel/no-PTY users.
             local _conns=${who_online[$user]:-0}
             if (( ${#unique_sshd_sessions[@]} > _conns )); then
                 _conns=${#unique_sshd_sessions[@]}
             fi
-            (( _conns == 0 )) && _conns=1
+            if (( _conns == 0 && ${openvpn_online[$user]:-0} == 0 )); then
+                _conns=1
+            fi
+            _conns=$((_conns + ${openvpn_online[$user]:-0}))
             SSH_SESSION_COUNTS["$user"]=$_conns
             for pid in "${!unique_pids[@]}"; do
                 SSH_SESSION_PIDS["$user"]+="$pid "
@@ -6990,6 +7135,7 @@ protocol_menu() {
         local dnstt_status="Inactive" dnstt_color="$C_RED"
         local nginx_status="Inactive" nginx_color="$C_RED"
         local xui_status="Not Installed" xui_color="$C_RED"
+        local openvpn_status="Not Installed" openvpn_color="$C_RED"
         if systemctl is-active --quiet badvpn; then badvpn_status="Active"; badvpn_color="$C_GREEN"; fi
         if systemctl is-active --quiet zivpn.service; then zivpn_status="Active"; zivpn_color="$C_GREEN"; fi
         if systemctl is-active --quiet haproxy; then
@@ -6999,6 +7145,11 @@ protocol_menu() {
         if systemctl is-active --quiet dnstt.service; then dnstt_status="Active"; dnstt_color="$C_GREEN"; fi
         if systemctl is-active --quiet nginx; then nginx_status="Active"; nginx_color="$C_GREEN"; fi
         if command -v x-ui &> /dev/null; then xui_status="Installed"; xui_color="$C_GREEN"; fi
+        if declare -F tdz_openvpn_is_active >/dev/null 2>&1 && tdz_openvpn_is_active; then
+            openvpn_status="Active"; openvpn_color="$C_GREEN"
+        elif declare -F tdz_openvpn_is_installed >/dev/null 2>&1 && tdz_openvpn_is_installed; then
+            openvpn_status="Attention"; openvpn_color="$C_YELLOW"
+        fi
 
         echo
         tdz_box_top
@@ -7014,6 +7165,9 @@ protocol_menu() {
         tdz_menu_status "[ 7]" "Manage Nginx (${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT})" "$nginx_status" "$nginx_color"
         tdz_menu_status "[ 8]" "Install ZiVPN (UDP 5667)" "$zivpn_status" "$zivpn_color"
         tdz_menu1 "[ 9]" "Uninstall ZiVPN"
+        if declare -F tdz_openvpn_menu >/dev/null 2>&1; then
+            tdz_menu_status "[12]" "OpenVPN Protocol Suite" "$openvpn_status" "$openvpn_color"
+        fi
         tdz_box_divider
         tdz_row "${C_GRAY}MANAGEMENT PANELS${C_RESET}"
         tdz_menu_status "[10]" "Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status" "$xui_color"
@@ -7033,6 +7187,7 @@ protocol_menu() {
             7) nginx_proxy_menu ;;
             8) install_zivpn; press_enter ;; 9) uninstall_zivpn; press_enter ;;
             10) install_xui_panel; press_enter ;; 11) uninstall_xui_panel; press_enter ;;
+            12) if declare -F tdz_openvpn_menu >/dev/null 2>&1; then tdz_openvpn_menu; else invalid_option; fi ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -7092,6 +7247,9 @@ uninstall_script() {
     
     chattr -i /etc/resolv.conf &>/dev/null
 
+    if declare -F tdz_openvpn_uninstall >/dev/null 2>&1; then
+        tdz_openvpn_uninstall silent
+    fi
     purge_nginx "silent"
     uninstall_dnstt
     uninstall_badvpn
@@ -7107,6 +7265,7 @@ uninstall_script() {
     rm -rf "$BADVPN_BUILD_DIR"
     rm -rf "$UDP_CUSTOM_DIR"
     rm -rf "$DB_DIR"
+    rm -rf "$TDZ_LIB_DIR"
     rm -f "$(command -v menu)"
     
     tdz_message OK "TDZ SSH TUNNEL was removed successfully."
@@ -7319,7 +7478,7 @@ list_trial_accounts() {
         else
             expiry_display=$(tdz_format_date_display "$expiry")
             time_left="Unknown"
-            expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+            expiry_check=$(date -d "$expiry 23:59:59" +%s 2>/dev/null || echo 0)
         fi
 
         if [[ -f "$BANDWIDTH_DIR/${user}.usage" ]]; then
@@ -7579,6 +7738,11 @@ generate_client_config() {
         tdz_section "ZIVPN"
         tdz_detail "UDP Port" "5667"
         tdz_detail "Forwarded Ports" "6000-19999"
+    fi
+
+    # 6. Optional OpenVPN suite — profiles use the same TDZ credentials.
+    if declare -F tdz_openvpn_append_client_details >/dev/null 2>&1; then
+        tdz_openvpn_append_client_details
     fi
 
     press_enter
@@ -7937,12 +8101,16 @@ main_menu() {
         local pill_haprx="${C_STATUS_I}○${C_RESET}"  pill_nginx="${C_STATUS_I}○${C_RESET}"
         local pill_ws="${C_STATUS_I}○${C_RESET}"     pill_badvpn="${C_STATUS_I}○${C_RESET}"
         local pill_udpgw="${C_STATUS_I}○${C_RESET}"  pill_dnstt="${C_STATUS_I}○${C_RESET}"
+        local pill_openvpn="${C_STATUS_I}○${C_RESET}"
         systemctl is-active --quiet haproxy            && pill_haprx="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet nginx              && pill_nginx="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet tdz-ws-ssh-bridge  && pill_ws="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet badvpn              && pill_badvpn="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet udpgw               && pill_udpgw="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet dnstt               && pill_dnstt="${C_STATUS_A}●${C_RESET}"
+        if declare -F tdz_openvpn_is_active >/dev/null 2>&1 && tdz_openvpn_is_active; then
+            pill_openvpn="${C_STATUS_A}●${C_RESET}"
+        fi
 
         # ── SECTION 1: SERVER PROFILE ──
         # Layout (per user request, 2026-06-25):
@@ -7978,6 +8146,9 @@ main_menu() {
         tdz_box_header "SERVICE STATUS"
         tdz_box_divider
         tdz_row "${pill_haprx} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}   ${pill_nginx} Nginx ${NGINX_INTERNAL_TLS_PORT}   ${pill_ws} WS-Bridge ${WS_SSH_BRIDGE_PORT}"
+        if declare -F tdz_openvpn_is_installed >/dev/null 2>&1 && tdz_openvpn_is_installed; then
+            tdz_row "${pill_openvpn} OpenVPN Suite   ${C_DIM}Profiles :${TDZ_OVPN_PORTAL_PORT}/ovpn-configs${C_RESET}"
+        fi
         tdz_box_bot
 
         # ── SECTION 3: USER MANAGEMENT ────────────────────────────────

@@ -20,6 +20,11 @@ fi
 
 TARGET_MENU="/usr/local/bin/menu"
 TARGET_BRIDGE="/usr/local/bin/tdz-ws-ssh-bridge.py"
+TARGET_LIB_DIR="/usr/local/lib/tdz-ssh-tunnel"
+TARGET_OVPN_MODULE="$TARGET_LIB_DIR/openvpn_module.sh"
+TARGET_OVPN_GATEWAY="$TARGET_LIB_DIR/tdz_openvpn_gateway.py"
+TARGET_OVPN_PORTAL="$TARGET_LIB_DIR/tdz_openvpn_portal.py"
+TARGET_OVPN_RUNTIME="$TARGET_LIB_DIR/tdz_openvpn_runtime.py"
 DATA_DIR="/etc/tdztunnel"
 INSTALL_FLAG="$DATA_DIR/.install"
 SSHD_CONFIG="/etc/ssh/sshd_config"
@@ -28,15 +33,25 @@ SSHD_DROPIN="$SSHD_DROPIN_DIR/tdztunnel.conf"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)"
 MENU_URL="${MENU_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/menu.sh}"
 BRIDGE_URL="${BRIDGE_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/ws_ssh_bridge.py}"
+OVPN_MODULE_URL="${OVPN_MODULE_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/openvpn_module.sh}"
+OVPN_GATEWAY_URL="${OVPN_GATEWAY_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/tdz_openvpn_gateway.py}"
+OVPN_PORTAL_URL="${OVPN_PORTAL_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/tdz_openvpn_portal.py}"
+OVPN_RUNTIME_URL="${OVPN_RUNTIME_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/tdz_openvpn_runtime.py}"
 
 WORK_DIR="$(mktemp -d /tmp/tdz-installer.XXXXXX)"
 LOG_FILE="$WORK_DIR/install.log"
 PAYLOAD_MENU="$WORK_DIR/menu.sh"
 PAYLOAD_BRIDGE="$WORK_DIR/ws_ssh_bridge.py"
+PAYLOAD_OVPN_MODULE="$WORK_DIR/openvpn_module.sh"
+PAYLOAD_OVPN_GATEWAY="$WORK_DIR/tdz_openvpn_gateway.py"
+PAYLOAD_OVPN_PORTAL="$WORK_DIR/tdz_openvpn_portal.py"
+PAYLOAD_OVPN_RUNTIME="$WORK_DIR/tdz_openvpn_runtime.py"
 OLD_MENU="$WORK_DIR/menu.previous"
+OLD_LIB_DIR="$WORK_DIR/lib.previous"
 OLD_SSHD_CONFIG="$WORK_DIR/sshd_config.previous"
 OLD_SSHD_DROPIN="$WORK_DIR/sshd_dropin.previous"
 HAD_OLD_MENU=false
+HAD_OLD_LIB=false
 HAD_OLD_DROPIN=false
 SSH_CHANGED=false
 FINISHED=false
@@ -47,6 +62,7 @@ if [[ -x "$TARGET_MENU" || -f "$INSTALL_FLAG" || -f "$DATA_DIR/users.db" ||
     MODE="update"
 fi
 [[ -f "$TARGET_MENU" ]] && HAD_OLD_MENU=true
+[[ -d "$TARGET_LIB_DIR" ]] && HAD_OLD_LIB=true
 [[ -f "$SSHD_DROPIN" ]] && HAD_OLD_DROPIN=true
 
 cleanup() {
@@ -76,6 +92,13 @@ rollback() {
         install -m 755 "$OLD_MENU" "$TARGET_MENU" 2>/dev/null || true
     elif ! $HAD_OLD_MENU; then
         rm -f "$TARGET_MENU" 2>/dev/null || true
+    fi
+
+    if $HAD_OLD_LIB && [[ -d "$OLD_LIB_DIR" ]]; then
+        rm -rf "$TARGET_LIB_DIR" 2>/dev/null || true
+        cp -a "$OLD_LIB_DIR" "$TARGET_LIB_DIR" 2>/dev/null || true
+    elif ! $HAD_OLD_LIB; then
+        rm -rf "$TARGET_LIB_DIR" 2>/dev/null || true
     fi
 
     if $SSH_CHANGED && [[ -f "$OLD_SSHD_CONFIG" ]]; then
@@ -216,11 +239,35 @@ prepare_payload() {
     else
         download_file "$BRIDGE_URL" "$PAYLOAD_BRIDGE" || rm -f "$PAYLOAD_BRIDGE"
     fi
+
+    local source_file payload_file source_url
+    while IFS='|' read -r source_file payload_file source_url; do
+        if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/$source_file" ]]; then
+            cp "$SCRIPT_DIR/$source_file" "$payload_file"
+        else
+            download_file "$source_url" "$payload_file"
+        fi
+        [[ -s "$payload_file" ]] || return 1
+    done <<EOF
+openvpn_module.sh|$PAYLOAD_OVPN_MODULE|$OVPN_MODULE_URL
+tdz_openvpn_gateway.py|$PAYLOAD_OVPN_GATEWAY|$OVPN_GATEWAY_URL
+tdz_openvpn_portal.py|$PAYLOAD_OVPN_PORTAL|$OVPN_PORTAL_URL
+tdz_openvpn_runtime.py|$PAYLOAD_OVPN_RUNTIME|$OVPN_RUNTIME_URL
+EOF
+    bash -n "$PAYLOAD_OVPN_MODULE"
+    if command -v python3 >/dev/null 2>&1 &&
+       python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 7))'; then
+        PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
+            "$PAYLOAD_OVPN_GATEWAY" "$PAYLOAD_OVPN_PORTAL" "$PAYLOAD_OVPN_RUNTIME"
+    fi
 }
 
 backup_current_state() {
     if [[ -f "$TARGET_MENU" ]]; then
         cp "$TARGET_MENU" "$OLD_MENU"
+    fi
+    if [[ -d "$TARGET_LIB_DIR" ]]; then
+        cp -a "$TARGET_LIB_DIR" "$OLD_LIB_DIR"
     fi
     [[ -f "$SSHD_CONFIG" ]] || return 1
     cp "$SSHD_CONFIG" "$OLD_SSHD_CONFIG"
@@ -234,6 +281,11 @@ install_core() {
     if [[ -s "$PAYLOAD_BRIDGE" ]]; then
         install -m 755 "$PAYLOAD_BRIDGE" "$TARGET_BRIDGE"
     fi
+    install -d -m 755 "$TARGET_LIB_DIR"
+    install -m 644 "$PAYLOAD_OVPN_MODULE" "$TARGET_OVPN_MODULE"
+    install -m 755 "$PAYLOAD_OVPN_GATEWAY" "$TARGET_OVPN_GATEWAY"
+    install -m 755 "$PAYLOAD_OVPN_PORTAL" "$TARGET_OVPN_PORTAL"
+    install -m 755 "$PAYLOAD_OVPN_RUNTIME" "$TARGET_OVPN_RUNTIME"
 }
 
 configure_ssh() {
