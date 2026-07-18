@@ -3901,6 +3901,7 @@ auto_backup_status() {
     local latest_display="Never" latest_size="0B" latest_bytes=0
     local -a recent_archives=()
     local archive_index archive_file archive_name archive_epoch archive_display archive_bytes archive_size
+    local archive_number archive_name_cell archive_date_cell archive_size_cell archive_header
 
     if auto_backup_load_conf; then
         configured=true
@@ -3955,6 +3956,9 @@ auto_backup_status() {
     if (( ${#recent_archives[@]} > 0 )); then
         tdz_box_divider
         tdz_row "${C_BOLD}${C_WHITE}RECENT BACKUP FILES${C_RESET}"
+        printf -v archive_header "%-3s %-29s %-18s %8s" "#" "FILE" "DATE" "SIZE"
+        tdz_row "${C_GRAY}${archive_header}${C_RESET}"
+        tdz_box_divider
         for archive_index in "${!recent_archives[@]}"; do
             archive_file="${recent_archives[$archive_index]}"
             archive_name=$(basename "$archive_file")
@@ -3962,8 +3966,12 @@ auto_backup_status() {
             archive_display=$(tdz_format_epoch_datetime_display "$archive_epoch")
             archive_bytes=$(stat -c %s "$archive_file" 2>/dev/null || echo 0)
             archive_size=$(tdz_format_file_size "$archive_bytes")
-            tdz_row "${C_CHOICE}[$((archive_index + 1))]${C_RESET} ${C_WHITE}${archive_name}${C_RESET}"
-            tdz_kv2 "DATE" "$archive_display" "SIZE" "$archive_size"
+            archive_name=$(_tdz_fit "$archive_name" 29)
+            printf -v archive_number "%-3s" "[$((archive_index + 1))]"
+            printf -v archive_name_cell "%-29s" "$archive_name"
+            printf -v archive_date_cell "%-18s" "$archive_display"
+            printf -v archive_size_cell "%8s" "$archive_size"
+            tdz_row "${C_CHOICE}${archive_number}${C_RESET} ${C_WHITE}${archive_name_cell}${C_RESET} ${C_GRAY}${archive_date_cell}${C_RESET} ${C_GREEN}${archive_size_cell}${C_RESET}"
         done
     fi
     tdz_box_bot
