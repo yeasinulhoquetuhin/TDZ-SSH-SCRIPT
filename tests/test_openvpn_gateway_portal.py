@@ -372,7 +372,7 @@ class PortalTests(ProcessCase):
             self.assertEqual(secure_response.read(), b"TDZ tunnel portal")
             self.assertEqual(
                 secure_response.getheader("Strict-Transport-Security"),
-                "max-age=31536000",
+                "max-age=0",
             )
             secure.close()
 
@@ -433,6 +433,10 @@ class PortalTests(ProcessCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 200)
             self.assertEqual(response.read(), b"TDZ portal")
+            self.assertEqual(
+                response.getheader("Strict-Transport-Security"),
+                "max-age=31536000",
+            )
             self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
             self.assertIn(
                 "script-src 'self'", response.getheader("Content-Security-Policy")

@@ -95,7 +95,12 @@ class PortalHandler(BaseHTTPRequestHandler):
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         )
         if isinstance(self.connection, ssl.SSLSocket):
-            self.send_header("Strict-Transport-Security", "max-age=31536000")
+            hsts_age = (
+                "0"
+                if self.server.allow_http  # type: ignore[attr-defined]
+                else "31536000"
+            )
+            self.send_header("Strict-Transport-Security", f"max-age={hsts_age}")
 
     def _redirect(self, location: str) -> None:
         self.send_response(HTTPStatus.FOUND)
