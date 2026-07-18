@@ -203,6 +203,8 @@ class ModuleTests(unittest.TestCase):
 
             direct_profile = (root / "portal/ovpn-configs/tdz-openvpn-tcp.ovpn").read_text()
             self.assertIn("data-ciphers AES-256-GCM:AES-128-GCM", direct_profile)
+            self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", direct_profile)
+            self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", profile)
             for adapter_name in (
                 "tdz-openvpn-ws-injector.ovpn",
                 "tdz-openvpn-wss-injector.ovpn",
@@ -211,6 +213,10 @@ class ModuleTests(unittest.TestCase):
                 adapter_profile = (root / "portal/ovpn-configs" / adapter_name).read_text()
                 self.assertIn("cipher AES-256-GCM", adapter_profile)
                 self.assertNotIn("data-ciphers", adapter_profile)
+                self.assertIn(
+                    "route vpn.example.com 255.255.255.255 net_gateway",
+                    adapter_profile,
+                )
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
             self.assertIn("TDZ <span>•</span><br>OVPN PORTAL", portal)

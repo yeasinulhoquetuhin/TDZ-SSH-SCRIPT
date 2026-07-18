@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-18.10"
+TDZ_OVPN_MODULE_VERSION="2026-07-18.11"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -771,10 +771,17 @@ EOF
 
 tdz_openvpn_write_profile() {
     local file=$1 proto=$2 remote_port=$3 header=${4:-} compatibility=${5:-modern}
+    local protect_outer_route=${6:-false}
     {
         [[ -n "$header" ]] && printf '# %s\n' "$header"
         echo "proto $proto"
         echo "remote $TDZ_OVPN_HOST $remote_port"
+        if [[ "$protect_outer_route" == "true" ]]; then
+            # Injector apps create an outer WS/TLS socket before OpenVPN adds
+            # its default route. Pin that public endpoint to the original
+            # gateway so the carrier socket cannot be routed back into tun.
+            echo "route $TDZ_OVPN_HOST 255.255.255.255 net_gateway"
+        fi
         tdz_openvpn_profile_common "$compatibility"
     } > "$TDZ_OVPN_PROFILES/$file"
     chmod 644 "$TDZ_OVPN_PROFILES/$file"
@@ -796,9 +803,9 @@ tdz_openvpn_generate_profiles_into() {
     } > "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn"
     chmod 644 "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn"
 
-    tdz_openvpn_write_profile "tdz-openvpn-ws-injector.ovpn" "tcp-client" "$TDZ_OVPN_HTTP_PORT" "Injector adapter required: HTTP Payload or WebSocket" "adapter"
-    tdz_openvpn_write_profile "tdz-openvpn-wss-injector.ovpn" "tcp-client" "$TDZ_OVPN_WSS_PORT" "Injector adapter required: TLS WebSocket; SNI is the portal host" "adapter"
-    tdz_openvpn_write_profile "tdz-openvpn-ssl-injector.ovpn" "tcp-client" "$TDZ_OVPN_SSL_PORT" "External SSL/TLS adapter required; SNI is the portal host" "adapter"
+    tdz_openvpn_write_profile "tdz-openvpn-ws-injector.ovpn" "tcp-client" "$TDZ_OVPN_HTTP_PORT" "Injector adapter required: HTTP Payload or WebSocket" "adapter" "true"
+    tdz_openvpn_write_profile "tdz-openvpn-wss-injector.ovpn" "tcp-client" "$TDZ_OVPN_WSS_PORT" "Injector adapter required: TLS WebSocket; SNI is the portal host" "adapter" "true"
+    tdz_openvpn_write_profile "tdz-openvpn-ssl-injector.ovpn" "tcp-client" "$TDZ_OVPN_SSL_PORT" "External SSL/TLS adapter required; SNI is the portal host" "adapter" "true"
 
     cp "$TDZ_OVPN_PKI/ca.crt" "$TDZ_OVPN_PROFILES/tdz-openvpn-ca.crt"
     cat > "$TDZ_OVPN_PROFILES/connection-guide.txt" <<EOF
