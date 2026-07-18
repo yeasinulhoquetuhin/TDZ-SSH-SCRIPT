@@ -229,6 +229,9 @@ class ModuleTests(unittest.TestCase):
             self.assertIn(':root[data-theme="dark"]', css)
             self.assertIn("@media(prefers-color-scheme:dark)", css)
             self.assertIn("backdrop-filter:blur", css)
+            self.assertIn(".theme-toggle{display:inline-flex;align-items:center;gap:5px;min-height:32px", css)
+            self.assertIn(".developer-line .developer-link", css)
+            self.assertIn("color:#1267d6", css)
             portal_js = (root / "portal/ovpn-configs/portal.js").read_text()
             self.assertIn("navigator.clipboard.writeText", portal_js)
             self.assertIn("window.localStorage", portal_js)
@@ -248,12 +251,18 @@ class ModuleTests(unittest.TestCase):
                 "/openvpn/assets/portal.css",
                 "/openvpn/assets/portal.js",
                 "https://tuhinbro.com/",
+                "https://t.me/TuhinBroh",
             }
             for page_name in ("index.html", "docs.html", "download.html"):
                 page_text = (public / page_name).read_text()
                 self.assertIn("<title>TDZ • OVPN PORTAL</title>", page_text)
                 self.assertIn("Developed By:", page_text)
                 self.assertIn("Yeasinul Hoque Tuhin", page_text)
+                self.assertIn('class="developer-link" href="https://tuhinbro.com/"', page_text)
+                self.assertIn("Telegram:", page_text)
+                self.assertIn('href="https://t.me/TuhinBroh"', page_text)
+                self.assertNotIn("<h2>Developer</h2>", page_text)
+                self.assertNotIn("Designed and developed", page_text)
                 self.assertNotIn("© 2026", page_text)
                 self.assertNotIn("All rights reserved", page_text)
                 self.assertIn('src="/openvpn/assets/portal.js"', page_text)
