@@ -664,17 +664,6 @@ def management_command(instance: str, command: str) -> bool:
         return False
 
 
-def kill_session(session: Session, reason: str) -> bool:
-    print(
-        "TDZ OpenVPN disconnect: "
-        f"user={session.username} instance={session.instance} "
-        f"client={session.client_id} reason={reason}",
-        file=sys.stderr,
-        flush=True,
-    )
-    return management_command(session.instance, f"client-kill {session.client_id}")
-
-
 def command_sync(print_rows: bool = True) -> int:
     sessions = sync_usage(live_sessions())
     write_session_snapshot(sessions)
@@ -715,13 +704,29 @@ def write_session_snapshot(sessions: Iterable[Session]) -> None:
         raise
 
 
-def command_kill_user(username: str) -> int:
-    if not _safe_username(username):
+def command_kill_user(username: str, reason: str = "policy") -> int:
+    if not _safe_username(username) or not reason or len(reason) > 40 or not all(
+        character.isascii() and (character.isalnum() or character in "_-")
+        for character in reason
+    ):
         return 2
     killed = False
     for session in live_sessions():
-        if session.username == username and management_command(
-            session.instance, f"client-kill {session.client_id}"
+        if session.username != username:
+            continue
+        print(
+            "TDZ OpenVPN disconnect: "
+            f"user={session.username} instance={session.instance} "
+            f"client={session.client_id} reason={reason}",
+            file=sys.stderr,
+            flush=True,
+        )
+        # The message is intentionally included in RESTART.  If an intended
+        # policy action ever disconnects a client, the exact reason is visible
+        # in the client log instead of the ambiguous empty ("") message.
+        if management_command(
+            session.instance,
+            f"client-kill {session.client_id} RESTART,[P]TDZ-{reason}",
         ):
             killed = True
     return 0 if killed else 1
@@ -733,63 +738,25 @@ def command_kill_client(instance: str, client_id: str) -> int:
     return 0 if management_command(instance, f"client-kill {client_id}") else 1
 
 
-def lock_linux_account(username: str) -> None:
-    if TEST_MODE:
-        return
-    subprocess.run(
-        ["usermod", "-L", username],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=8,
-        check=False,
-    )
-    subprocess.run(
-        ["pkill", "-KILL", "-u", username],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=8,
-        check=False,
-    )
+def accounting_cycle() -> list[Session]:
+    """Account traffic and publish sessions without terminating a tunnel.
 
+    Connection admission is atomic in ``command_connect``.  Expiry, quota and
+    manual lock actions are handled by the main TDZ limiter, which also owns
+    the Linux account state.  Keeping this watcher accounting-only prevents
+    two independent policy loops from racing and sending an unsolicited
+    management ``client-kill`` to an already established adapter tunnel.
+    """
 
-def enforce_sessions(sessions: list[Session]) -> None:
-    accounts = read_accounts()
-    grouped: dict[str, list[Session]] = {}
-    for session in sessions:
-        grouped.setdefault(session.username, []).append(session)
-
-    for username, user_sessions in grouped.items():
-        account = accounts.get(username)
-        invalid = account is None
-        should_lock = False
-        if account is not None:
-            expired = account_expired(account)
-            over_quota = quota_exceeded(account)
-            locked = account_locked(username)
-            invalid = expired or over_quota or locked
-            should_lock = expired or over_quota
-        if invalid:
-            if should_lock:
-                lock_linux_account(username)
-            for session in user_sessions:
-                kill_session(session, "account-policy")
-            continue
-
-        # Do not asynchronously evict a valid established tunnel here.
-        # Injector clients can expose overlapping transport rows while moving
-        # from HTTP/TLS/WebSocket setup into the OpenVPN data channel.  The
-        # client-connect hook already performs atomic combined SSH + OpenVPN
-        # admission under the shared state lock, so a second real login is
-        # rejected before it becomes active.  Account expiry, lock and quota
-        # are still enforced above on every watcher pass.
+    sessions = sync_usage(live_sessions())
+    write_session_snapshot(sessions)
+    return sessions
 
 
 def command_watch(interval: float) -> int:
     while True:
         try:
-            sessions = sync_usage(live_sessions())
-            write_session_snapshot(sessions)
-            enforce_sessions(sessions)
+            accounting_cycle()
         except Exception as exc:  # keep accounting alive across transient files/service restarts
             print(f"TDZ OpenVPN runtime warning: {exc}", file=sys.stderr, flush=True)
         time.sleep(interval)
@@ -806,6 +773,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--interval", type=float, default=1.0)
     kill_user = sub.add_parser("kill-user")
     kill_user.add_argument("username")
+    kill_user.add_argument("reason", nargs="?", default="policy")
     kill_client = sub.add_parser("kill-client")
     kill_client.add_argument("instance", choices=("tcp", "udp"))
     kill_client.add_argument("client_id")
@@ -829,7 +797,7 @@ def main() -> int:
             return 2
         return command_watch(args.interval)
     if args.command == "kill-user":
-        return command_kill_user(args.username)
+        return command_kill_user(args.username, args.reason)
     if args.command == "kill-client":
         return command_kill_client(args.instance, args.client_id)
     return 2

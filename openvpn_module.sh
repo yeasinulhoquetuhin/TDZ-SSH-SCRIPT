@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-18.9"
+TDZ_OVPN_MODULE_VERSION="2026-07-18.10"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -1665,7 +1665,7 @@ tdz_openvpn_append_client_details() {
 }
 
 tdz_openvpn_kill_user() {
-    local username=${1:-}
+    local username=${1:-} reason=${2:-policy}
     [[ -x "$TDZ_OVPN_RUNTIME" && -n "$username" ]] || return 0
-    "$TDZ_OVPN_RUNTIME" kill-user "$username" >/dev/null 2>&1 || true
+    "$TDZ_OVPN_RUNTIME" kill-user "$username" "$reason" >/dev/null 2>&1 || true
 }

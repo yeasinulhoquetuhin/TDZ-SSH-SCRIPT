@@ -1249,7 +1249,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-18.4
+# TDZ SSH TUNNEL limiter version 2026-07-18.5
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1638,7 +1638,7 @@ while true; do
             if ! $user_locked; then
                 usermod -L "$user" &>/dev/null
                 killall -u "$user" -9 &>/dev/null
-                [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" >/dev/null 2>&1 || true
+                [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" expired >/dev/null 2>&1 || true
                 locked_users["$user"]=1
             fi
             continue
@@ -1731,7 +1731,7 @@ while true; do
                 if ! $user_locked; then
                     usermod -L "$user" &>/dev/null
                     killall -u "$user" -9 &>/dev/null
-                    [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" >/dev/null 2>&1 || true
+                    [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" quota >/dev/null 2>&1 || true
                     locked_users["$user"]=1
                 fi
             fi
@@ -1779,7 +1779,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-18.4"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-18.5"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)

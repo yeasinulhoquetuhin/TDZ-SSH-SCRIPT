@@ -403,8 +403,10 @@ class ModuleTests(unittest.TestCase):
 
     def test_limiter_preserves_established_openvpn_sessions(self):
         menu = (REPO / "menu.sh").read_text()
-        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-18.4", menu)
+        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-18.5", menu)
         self.assertIn("if (( online_count > limit )); then", menu)
+        self.assertIn('kill-user "$user" expired', menu)
+        self.assertIn('kill-user "$user" quota', menu)
         self.assertNotIn(
             'if (( online_count > limit )) && (( ${ovpn_online[$user]:-0} == 0 )); then',
             menu,

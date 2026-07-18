@@ -146,7 +146,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((admissions / "stale.json").exists())
 
-    def test_valid_adapter_sessions_are_not_asynchronously_evicted(self):
+    def test_accounting_cycle_never_issues_a_management_kill(self):
         script = textwrap.dedent(
             """
             import importlib.util
@@ -155,21 +155,17 @@ class RuntimeTests(unittest.TestCase):
             runtime = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = runtime
             spec.loader.exec_module(runtime)
-            runtime.read_accounts = lambda: {{
-                "alice": runtime.Account("alice", "secret", "2099-12-31", 1, 0)
-            }}
-            runtime.account_expired = lambda account: False
-            runtime.quota_exceeded = lambda account: False
-            runtime.account_locked = lambda username: False
-            killed = []
-            runtime.kill_session = lambda session, reason: killed.append((session.client_id, reason)) or True
-            first = runtime.Session("tcp", "alice", "1", 100, 0)
-            retry = runtime.Session("tcp", "alice", "2", 101, 0)
-            runtime.enforce_sessions([first, retry])
-            print(killed)
-            runtime.account_expired = lambda account: True
-            runtime.enforce_sessions([first])
-            print(killed)
+            session = runtime.Session("tcp", "alice", "1", 100, 0)
+            runtime.live_sessions = lambda: [session]
+            runtime.sync_usage = lambda sessions: list(sessions)
+            snapshots = []
+            runtime.write_session_snapshot = lambda sessions: snapshots.extend(sessions)
+            runtime.management_command = lambda *args: (_ for _ in ()).throw(
+                AssertionError("accounting must not kill a client")
+            )
+            result = runtime.accounting_cycle()
+            print([(item.client_id, item.username) for item in result])
+            print([(item.client_id, item.username) for item in snapshots])
             """.format(runtime_path=str(RUNTIME))
         )
         result = subprocess.run(
@@ -181,8 +177,36 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
-        self.assertEqual(lines[0], "[]")
-        self.assertEqual(lines[1], "[('1', 'account-policy')]")
+        self.assertEqual(lines[0], "[('1', 'alice')]")
+        self.assertEqual(lines[1], "[('1', 'alice')]")
+
+    def test_intended_disconnect_has_a_visible_policy_reason(self):
+        script = textwrap.dedent(
+            """
+            import importlib.util
+            import sys
+            spec = importlib.util.spec_from_file_location("runtime", {runtime_path!r})
+            runtime = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = runtime
+            spec.loader.exec_module(runtime)
+            session = runtime.Session("tcp", "alice", "7", 100, 0)
+            runtime.live_sessions = lambda: [session]
+            commands = []
+            runtime.management_command = lambda instance, command: commands.append((instance, command)) or True
+            print(runtime.command_kill_user("alice", "quota"))
+            print(commands)
+            """.format(runtime_path=str(RUNTIME))
+        )
+        result = subprocess.run(
+            ["python3", "-c", script],
+            env=self.env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[0], "0")
+        self.assertIn("client-kill 7 RESTART,[P]TDZ-quota", result.stdout)
 
     def test_status_accounting_adds_only_deltas(self):
         self.db.write_text("alice:secret:2099-12-31:3:5\n")
