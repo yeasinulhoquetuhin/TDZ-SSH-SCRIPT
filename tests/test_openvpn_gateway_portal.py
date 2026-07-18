@@ -86,6 +86,16 @@ def wait_tls_port(port: int, timeout=5.0) -> None:
     raise AssertionError(f"TLS port {port} did not open")
 
 
+def recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise AssertionError("socket closed before the expected payload arrived")
+        data.extend(chunk)
+    return bytes(data)
+
+
 class EchoServer:
     def __init__(self):
         self.port = free_port()
@@ -277,6 +287,46 @@ class GatewayTests(ProcessCase):
                 self.assertEqual(first, 0x82)
                 self.assertEqual(length, len(payload))
                 self.assertEqual(client.recv(length), payload)
+
+    def test_large_websocket_frame_is_streamed_without_data_loss(self):
+        with EchoServer() as backend:
+            port = self.start_gateway(backend.port)
+            key = base64.b64encode(os.urandom(16)).decode()
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                request = (
+                    "GET / HTTP/1.1\r\nHost: vpn.example\r\nUpgrade: websocket\r\n"
+                    f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                    "Sec-WebSocket-Version: 13\r\n\r\n"
+                )
+                client.sendall(request.encode())
+                self.assertIn(b"Sec-WebSocket-Accept:", client.recv(4096))
+
+                payload = os.urandom(512 * 1024)
+                mask = b"\x11\x22\x33\x44"
+                masked = bytes(
+                    value ^ mask[index % 4]
+                    for index, value in enumerate(payload)
+                )
+                frame = (
+                    b"\x82\xff"
+                    + struct.pack("!Q", len(payload))
+                    + mask
+                    + masked
+                )
+                client.sendall(frame)
+
+                echoed = bytearray()
+                while len(echoed) < len(payload):
+                    first, second = recv_exact(client, 2)
+                    self.assertEqual(first, 0x82)
+                    self.assertFalse(second & 0x80)
+                    length = second & 0x7F
+                    if length == 126:
+                        length = struct.unpack("!H", recv_exact(client, 2))[0]
+                    elif length == 127:
+                        length = struct.unpack("!Q", recv_exact(client, 8))[0]
+                    echoed.extend(recv_exact(client, length))
+                self.assertEqual(bytes(echoed), payload)
 
     def test_websocket_key_with_raw_injector_stream_is_relayed(self):
         """Android injectors may send a WS key but not frame tunnel bytes."""

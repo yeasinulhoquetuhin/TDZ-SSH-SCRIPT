@@ -34,9 +34,21 @@ MAX_HEADER_BYTES = 32 * 1024
 # backlog.  A 32 KiB chunk still saturates fast links while letting interactive
 # packets reach the socket between bulk-transfer chunks.
 COPY_BUFFER = 32 * 1024
+# Injector apps often add another userspace TCP/TLS/WebSocket adapter in front
+# of OpenVPN.  Smaller bursts keep that extra adapter responsive without
+# changing the native HTTP CONNECT path, which already performs well.
+ADAPTER_COPY_BUFFER = 8 * 1024
+ADAPTER_WRITE_HIGH = 16 * 1024
+ADAPTER_WRITE_LOW = 4 * 1024
 TCP_NOTSENT_LIMIT = 32 * 1024
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 HTTP_METHOD_PREFIXES = (b"GET ", b"POST ", b"HEAD ", b"OPTIONS ")
+# bytes.translate performs WebSocket XOR masking in C.  The previous Python
+# per-byte loop could monopolise the single gateway event loop during a large
+# upload frame, delaying ping and every other active adapter connection.
+WS_XOR_TABLES = tuple(
+    bytes(value ^ mask for value in range(256)) for mask in range(256)
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +108,19 @@ def tune_socket(writer: asyncio.StreamWriter) -> None:
                 sock.setsockopt(socket.IPPROTO_TCP, option, value)
 
 
+def tune_adapter_buffer(writer: asyncio.StreamWriter) -> None:
+    """Bound only the asyncio queue added by an external adapter relay."""
+
+    transport = getattr(writer, "transport", None)
+    if transport is None:
+        return
+    with contextlib.suppress(AttributeError, NotImplementedError, ValueError):
+        transport.set_write_buffer_limits(
+            high=ADAPTER_WRITE_HIGH,
+            low=ADAPTER_WRITE_LOW,
+        )
+
+
 async def close_writer(writer: Optional[asyncio.StreamWriter]) -> None:
     if writer is None:
         return
@@ -108,12 +133,13 @@ async def pipe(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     initial: bytes = b"",
+    buffer_size: int = COPY_BUFFER,
 ) -> None:
     if initial:
         writer.write(initial)
         await writer.drain()
     while True:
-        chunk = await reader.read(COPY_BUFFER)
+        chunk = await reader.read(buffer_size)
         if not chunk:
             return
         writer.write(chunk)
@@ -126,11 +152,17 @@ async def relay_raw(
     backend_reader: asyncio.StreamReader,
     backend_writer: asyncio.StreamWriter,
     initial_client_data: bytes = b"",
+    buffer_size: int = COPY_BUFFER,
 ) -> None:
+    if buffer_size == ADAPTER_COPY_BUFFER:
+        tune_adapter_buffer(client_writer)
+        tune_adapter_buffer(backend_writer)
     to_backend = asyncio.create_task(
-        pipe(client_reader, backend_writer, initial_client_data)
+        pipe(client_reader, backend_writer, initial_client_data, buffer_size)
     )
-    to_client = asyncio.create_task(pipe(backend_reader, client_writer))
+    to_client = asyncio.create_task(
+        pipe(backend_reader, client_writer, buffer_size=buffer_size)
+    )
     done, pending = await asyncio.wait(
         (to_backend, to_client), return_when=asyncio.FIRST_COMPLETED
     )
@@ -235,6 +267,17 @@ def ws_frame(payload: bytes, opcode: int = 0x2) -> bytes:
     return bytes((first, 127)) + struct.pack("!Q", length) + payload
 
 
+def websocket_unmask(payload: bytes, mask: bytes, offset: int = 0) -> bytes:
+    """Unmask a frame chunk without a latency-heavy Python byte loop."""
+
+    output = bytearray(len(payload))
+    for local_index in range(4):
+        source = payload[local_index::4]
+        mask_byte = mask[(offset + local_index) % 4]
+        output[local_index::4] = source.translate(WS_XOR_TABLES[mask_byte])
+    return bytes(output)
+
+
 async def probe_websocket_framing(
     reader: asyncio.StreamReader,
     initial: bytes,
@@ -296,33 +339,43 @@ async def websocket_to_backend(
             raise ValueError("WebSocket frame is too large")
         if opcode >= 0x8 and (not (first & 0x80) or length > 125):
             raise ValueError("invalid WebSocket control frame")
-        mask = await client.readexactly(4) if masked else b""
-        payload = await client.readexactly(length)
-        if masked:
-            payload = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
-
-        if opcode == 0x8:  # close
-            client_writer.write(ws_frame(payload[:125], 0x8))
-            await client_writer.drain()
-            return
-        if opcode == 0x9:  # ping
-            client_writer.write(ws_frame(payload[:125], 0xA))
-            await client_writer.drain()
-            continue
-        if opcode == 0xA:  # pong
-            continue
         if opcode not in (0x0, 0x1, 0x2):
-            raise ValueError("unsupported WebSocket opcode")
-        if payload:
-            backend_writer.write(payload)
+            if opcode not in (0x8, 0x9, 0xA):
+                raise ValueError("unsupported WebSocket opcode")
+
+        mask = await client.readexactly(4)
+        if opcode >= 0x8:
+            payload = websocket_unmask(await client.readexactly(length), mask)
+            if opcode == 0x8:  # close
+                client_writer.write(ws_frame(payload[:125], 0x8))
+                await client_writer.drain()
+                return
+            if opcode == 0x9:  # ping
+                client_writer.write(ws_frame(payload[:125], 0xA))
+                await client_writer.drain()
+            # A pong needs no reply.
+            continue
+
+        # Stream large data frames instead of buffering and unmasking the
+        # entire frame synchronously.  This yields to OpenVPN ping/control
+        # traffic between chunks and bounds per-connection memory use.
+        remaining = length
+        offset = 0
+        while remaining:
+            chunk = await client.readexactly(
+                min(remaining, ADAPTER_COPY_BUFFER)
+            )
+            backend_writer.write(websocket_unmask(chunk, mask, offset))
             await backend_writer.drain()
+            offset += len(chunk)
+            remaining -= len(chunk)
 
 
 async def backend_to_websocket(
     backend_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
 ) -> None:
     while True:
-        chunk = await backend_reader.read(COPY_BUFFER)
+        chunk = await backend_reader.read(ADAPTER_COPY_BUFFER)
         if not chunk:
             return
         client_writer.write(ws_frame(chunk))
@@ -336,6 +389,8 @@ async def relay_websocket(
     backend_writer: asyncio.StreamWriter,
     initial: bytes,
 ) -> None:
+    tune_adapter_buffer(client_writer)
+    tune_adapter_buffer(backend_writer)
     buffered = BufferedStream(client_reader, initial)
     to_backend = asyncio.create_task(
         websocket_to_backend(buffered, client_writer, backend_writer)
@@ -400,6 +455,10 @@ async def relay_http_upgrade(
             client_reader, remainder, probe_timeout
         )
         if framed:
+            LOG.info(
+                "Adapter relay selected: websocket-framed peer=%r",
+                client_writer.get_extra_info("peername"),
+            )
             await relay_websocket(
                 client_reader,
                 client_writer,
@@ -410,12 +469,17 @@ async def relay_http_upgrade(
         else:
             # Injector compatibility: some apps request a standards-compliant
             # handshake but carry unframed OpenVPN bytes afterward.
+            LOG.info(
+                "Adapter relay selected: websocket-raw-with-key peer=%r",
+                client_writer.get_extra_info("peername"),
+            )
             await relay_raw(
                 client_reader,
                 client_writer,
                 backend_reader,
                 backend_writer,
                 buffered,
+                ADAPTER_COPY_BUFFER,
             )
         return
 
@@ -430,12 +494,18 @@ async def relay_http_upgrade(
     )
     client_writer.write(status)
     await client_writer.drain()
+    LOG.info(
+        "Adapter relay selected: %s peer=%r",
+        "websocket-raw" if upgrade == "websocket" else "http-payload-raw",
+        client_writer.get_extra_info("peername"),
+    )
     await relay_raw(
         client_reader,
         client_writer,
         backend_reader,
         backend_writer,
         remainder,
+        ADAPTER_COPY_BUFFER,
     )
 
 
@@ -471,6 +541,10 @@ async def handle_http(
                     settings.handshake_timeout,
                 )
                 return
+            LOG.info(
+                "Relay selected: native-http-connect peer=%r",
+                client_writer.get_extra_info("peername"),
+            )
             await relay_raw(
                 client_reader,
                 client_writer,
@@ -516,8 +590,16 @@ async def serve_client(
             if settings.mode == "raw":
                 backend_reader, backend_writer = await open_backend(settings)
                 try:
+                    LOG.info(
+                        "Adapter relay selected: tls-raw peer=%r",
+                        peer,
+                    )
                     await relay_raw(
-                        client_reader, client_writer, backend_reader, backend_writer
+                        client_reader,
+                        client_writer,
+                        backend_reader,
+                        backend_writer,
+                        buffer_size=ADAPTER_COPY_BUFFER,
                     )
                 finally:
                     await close_writer(backend_writer)

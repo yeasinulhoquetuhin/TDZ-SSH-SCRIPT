@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-19.19"
+TDZ_OVPN_MODULE_VERSION="2026-07-19.20"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
