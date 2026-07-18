@@ -243,6 +243,7 @@ class PortalTests(ProcessCase):
             (public / "docs.html").write_text("TDZ docs")
             (public / "download.html").write_text("TDZ downloads")
             (public / "portal.css").write_text("body{}")
+            (public / "portal.js").write_text("void 0;")
             (public / "client.ovpn").write_text("client\n")
             (public / ".secret").write_text("hidden")
             (root / "outside.ovpn").write_text("must not be served\n")
@@ -278,6 +279,9 @@ class PortalTests(ProcessCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(response.read(), b"TDZ portal")
             self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
+            self.assertIn(
+                "script-src 'self'", response.getheader("Content-Security-Policy")
+            )
 
             for path, expected in (
                 ("/openvpn/docs", b"TDZ docs"),
@@ -285,6 +289,7 @@ class PortalTests(ProcessCase):
                 ("/openvpn/download", b"TDZ downloads"),
                 ("/openvpn/download/", b"TDZ downloads"),
                 ("/openvpn/assets/portal.css", b"body{}"),
+                ("/openvpn/assets/portal.js", b"void 0;"),
             ):
                 connection.request("GET", path)
                 page = connection.getresponse()

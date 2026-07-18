@@ -26,6 +26,7 @@ PAGE_ROUTES = {
     f"{PUBLIC_PREFIX}/download": "download.html",
     f"{PUBLIC_PREFIX}/download/": "download.html",
     f"{PUBLIC_PREFIX}/assets/portal.css": "portal.css",
+    f"{PUBLIC_PREFIX}/assets/portal.js": "portal.js",
 }
 
 
@@ -71,7 +72,8 @@ class PortalHandler(BaseHTTPRequestHandler):
         )
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'self'; img-src 'self'; "
+            "default-src 'none'; style-src 'self'; script-src 'self'; "
+            "img-src 'self'; connect-src 'none'; object-src 'none'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         )
 

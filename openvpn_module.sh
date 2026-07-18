@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-18.5"
+TDZ_OVPN_MODULE_VERSION="2026-07-18.6"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -841,46 +841,50 @@ tdz_openvpn_generate_profiles() {
 
 tdz_openvpn_generate_portal_html() {
     cat > "$TDZ_OVPN_PROFILES/portal.css" <<'EOF'
-:root{color-scheme:dark;--bg:#121212;--surface:#191919;--surface-soft:rgba(25,25,25,.74);--glass:rgba(255,255,255,.035);--glass-strong:rgba(255,255,255,.055);--border:rgba(102,102,102,.20);--border-strong:rgba(255,255,255,.12);--accent:#25dbf4;--accent-soft:rgba(37,219,244,.10);--accent-line:rgba(37,219,244,.32);--text:#ebebeb;--muted:#9e9e9e;--green:#55e6a5;--yellow:#f7c96b;--red:#ff777f;--radius:12px;--radius-lg:22px;--shadow:0 24px 90px rgba(0,0,0,.34)}
+:root{color-scheme:light;--bg:#f2f0eb;--surface:#fafaf8;--surface-soft:rgba(250,250,248,.78);--glass:rgba(255,255,255,.60);--glass-strong:rgba(255,255,255,.84);--border:rgba(0,0,0,.08);--border-strong:rgba(0,0,0,.14);--accent:#1ac9a0;--accent-hover:#10b88f;--accent-soft:rgba(26,201,160,.11);--accent-line:rgba(26,201,160,.36);--text:#111411;--text-soft:#3e4741;--muted:#68716b;--green:#12ad80;--yellow:#bd8618;--red:#d8515d;--nav:rgba(242,240,235,.88);--footer:#fafaf8;--control:#fff;--code-bg:#e8e7e2;--code-text:#202622;--hero-bg:linear-gradient(135deg,rgba(255,255,255,.86),rgba(250,250,248,.62));--hero-side:rgba(250,250,248,.68);--stat-bg:rgba(255,255,255,.58);--table-head:rgba(0,0,0,.025);--button-on-accent:#fff;--glow-a:rgba(26,201,160,.18);--glow-b:rgba(106,180,153,.11);--inset:rgba(255,255,255,.72);--radius:12px;--radius-lg:24px;--shadow:0 24px 80px rgba(31,46,39,.10)}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#121412;--surface:#191c1a;--surface-soft:rgba(25,28,26,.78);--glass:rgba(255,255,255,.045);--glass-strong:rgba(255,255,255,.075);--border:rgba(255,255,255,.10);--border-strong:rgba(255,255,255,.16);--accent:#35d8ae;--accent-hover:#63e5c2;--accent-soft:rgba(53,216,174,.11);--accent-line:rgba(53,216,174,.34);--text:#f0f2ef;--text-soft:#c2c8c4;--muted:#989f9a;--green:#55e6a5;--yellow:#f2c76a;--red:#ff7b84;--nav:rgba(18,20,18,.86);--footer:#151715;--control:#202421;--code-bg:#0d100e;--code-text:#dce2de;--hero-bg:linear-gradient(135deg,rgba(255,255,255,.06),rgba(255,255,255,.018));--hero-side:rgba(18,20,18,.58);--stat-bg:rgba(0,0,0,.14);--table-head:rgba(255,255,255,.028);--button-on-accent:#07110d;--glow-a:rgba(53,216,174,.12);--glow-b:rgba(34,99,77,.12);--inset:rgba(255,255,255,.035);--shadow:0 24px 90px rgba(0,0,0,.34)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#121412;--surface:#191c1a;--surface-soft:rgba(25,28,26,.78);--glass:rgba(255,255,255,.045);--glass-strong:rgba(255,255,255,.075);--border:rgba(255,255,255,.10);--border-strong:rgba(255,255,255,.16);--accent:#35d8ae;--accent-hover:#63e5c2;--accent-soft:rgba(53,216,174,.11);--accent-line:rgba(53,216,174,.34);--text:#f0f2ef;--text-soft:#c2c8c4;--muted:#989f9a;--green:#55e6a5;--yellow:#f2c76a;--red:#ff7b84;--nav:rgba(18,20,18,.86);--footer:#151715;--control:#202421;--code-bg:#0d100e;--code-text:#dce2de;--hero-bg:linear-gradient(135deg,rgba(255,255,255,.06),rgba(255,255,255,.018));--hero-side:rgba(18,20,18,.58);--stat-bg:rgba(0,0,0,.14);--table-head:rgba(255,255,255,.028);--button-on-accent:#07110d;--glow-a:rgba(53,216,174,.12);--glow-b:rgba(34,99,77,.12);--inset:rgba(255,255,255,.035);--shadow:0 24px 90px rgba(0,0,0,.34)}}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;background:var(--bg)}
-body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font:16px/1.7 Inter,"Inter Fallback",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-body:before,body:after{content:"";position:fixed;z-index:-1;border-radius:999px;filter:blur(110px);pointer-events:none}
-body:before{width:430px;height:430px;right:-190px;top:-180px;background:rgba(37,219,244,.11)}
-body:after{width:330px;height:330px;left:-180px;bottom:-170px;background:rgba(68,129,255,.08)}
+body{margin:0;min-height:100vh;background:radial-gradient(circle at 100% 0,var(--glow-a),transparent 32rem),radial-gradient(circle at 0 100%,var(--glow-b),transparent 28rem),var(--bg);color:var(--text);font:16px/1.7 Inter,"Inter Fallback",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 a{color:inherit}
+button{font:inherit}
 code,.mono,.filename,.payload{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
 .shell{width:min(1440px,calc(100% - 48px));margin-inline:auto}
-.site-header{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--border);background:rgba(18,18,18,.78);-webkit-backdrop-filter:blur(20px) saturate(135%);backdrop-filter:blur(20px) saturate(135%)}
+.site-header{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--border);background:var(--nav);-webkit-backdrop-filter:blur(20px) saturate(135%);backdrop-filter:blur(20px) saturate(135%)}
 .nav{min-height:76px;display:flex;align-items:center;justify-content:space-between;gap:28px}
-.brand{display:inline-flex;align-items:center;gap:12px;color:var(--text);font-size:.98rem;font-weight:720;letter-spacing:.025em;text-decoration:none;white-space:nowrap}
-.brand-mark{display:grid;place-items:center;width:34px;height:34px;border:1px solid var(--accent-line);border-radius:9px;background:linear-gradient(145deg,rgba(37,219,244,.20),rgba(37,219,244,.035));color:var(--accent);box-shadow:inset 0 1px rgba(255,255,255,.10),0 0 28px rgba(37,219,244,.10);font-size:.76rem;font-weight:800}
+.brand{display:inline-flex;align-items:center;gap:8px;color:var(--text);font-size:.93rem;font-weight:760;letter-spacing:.045em;text-decoration:none;white-space:nowrap}
+.brand-main{color:var(--accent);font-size:1.08rem;font-weight:880;letter-spacing:.14em}
 .brand-dot{color:var(--accent)}
+.nav-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px}
 .nav-links{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.nav-links a{border:1px solid transparent;border-radius:8px;color:#a9a9a9;padding:8px 12px;text-decoration:none;transition:background .16s,color .16s,border-color .16s}
+.nav-links a{border:1px solid transparent;border-radius:8px;color:var(--muted);padding:8px 12px;text-decoration:none;transition:background .16s,color .16s,border-color .16s}
 .nav-links a:hover,.nav-links a.active{border-color:var(--border);background:var(--accent-soft);color:var(--accent)}
+.theme-toggle{display:inline-flex;align-items:center;gap:7px;min-height:38px;border:1px solid var(--border);border-radius:10px;background:var(--control);color:var(--text-soft);padding:7px 11px;cursor:pointer;box-shadow:0 5px 20px rgba(30,50,40,.04);transition:border-color .16s,background .16s,color .16s}
+.theme-toggle:hover{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
+.theme-glyph{display:grid;place-items:center;width:17px;height:17px;color:var(--accent);font-size:.88rem;line-height:1}.theme-glyph:before{content:"◐"}.theme-toggle[data-theme-mode="light"] .theme-glyph:before{content:"○"}.theme-toggle[data-theme-mode="dark"] .theme-glyph:before{content:"●"}
 main{padding:46px 0 96px}
-.hero{position:relative;display:grid;grid-template-columns:minmax(0,1.45fr) minmax(330px,.55fr);min-height:540px;overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-lg);background:linear-gradient(135deg,rgba(255,255,255,.055),rgba(255,255,255,.018));box-shadow:var(--shadow);-webkit-backdrop-filter:blur(26px);backdrop-filter:blur(26px)}
-.hero:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,rgba(37,219,244,.08),transparent 36%,transparent 70%,rgba(37,219,244,.035));pointer-events:none}
+.hero{position:relative;display:grid;grid-template-columns:minmax(0,1.45fr) minmax(330px,.55fr);min-height:540px;overflow:hidden;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--hero-bg);box-shadow:var(--shadow);-webkit-backdrop-filter:blur(26px);backdrop-filter:blur(26px)}
+.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 78% 16%,var(--glow-a),transparent 32%),linear-gradient(120deg,var(--accent-soft),transparent 34%);pointer-events:none}
 .hero-copy{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:center;padding:clamp(38px,6vw,88px)}
-.hero-side{position:relative;z-index:1;margin:18px;display:flex;flex-direction:column;justify-content:center;gap:12px;border:1px solid var(--border);border-radius:16px;background:rgba(18,18,18,.52);padding:24px;-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px)}
+.hero-side{position:relative;z-index:1;margin:18px;display:flex;flex-direction:column;justify-content:center;gap:12px;border:1px solid var(--border);border-radius:16px;background:var(--hero-side);padding:24px;-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px)}
 .eyebrow,.kicker,.label{color:var(--accent);font-size:.76rem;font-weight:750;letter-spacing:.15em;text-transform:uppercase}
 .hero h1{max-width:900px;margin:.72rem 0 1.25rem;font-size:clamp(3rem,7vw,6.35rem);font-weight:760;letter-spacing:-.065em;line-height:.94}
-.hero h1 span{color:var(--accent);text-shadow:0 0 34px rgba(37,219,244,.23)}
-.lead{max-width:790px;margin:0;color:#b9b9b9;font-size:clamp(1rem,1.5vw,1.22rem)}
+.hero h1 span{color:var(--accent);text-shadow:0 0 34px var(--accent-soft)}
+.lead{max-width:790px;margin:0;color:var(--text-soft);font-size:clamp(1rem,1.5vw,1.22rem)}
 .actions,.chips{display:flex;flex-wrap:wrap;gap:10px}
 .actions{margin-top:28px}
-.button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;border:1px solid var(--border-strong);border-radius:8px;background:rgba(255,255,255,.025);color:var(--text);padding:9px 15px;font-size:.92rem;font-weight:680;text-decoration:none;transition:transform .16s,background .16s,border-color .16s,color .16s}
+.button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;border:1px solid var(--border-strong);border-radius:8px;background:var(--control);color:var(--text);padding:9px 15px;font-size:.92rem;font-weight:680;text-decoration:none;transition:transform .16s,background .16s,border-color .16s,color .16s}
 .button:hover{transform:translateY(-1px);border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
-.button.primary{border-color:rgba(37,219,244,.42);background:var(--accent);color:#071012;box-shadow:0 10px 32px rgba(37,219,244,.13)}
-.button.primary:hover{background:#74eafb;color:#071012}
-.status-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:#bcbcbc;font-size:.78rem;text-transform:uppercase;letter-spacing:.1em}
+.button.primary{border-color:var(--accent-line);background:var(--accent);color:var(--button-on-accent);box-shadow:0 10px 32px var(--accent-soft)}
+.button.primary:hover{background:var(--accent-hover);color:var(--button-on-accent)}
+.status-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:var(--text-soft);font-size:.78rem;text-transform:uppercase;letter-spacing:.1em}
 .live-dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--green);box-shadow:0 0 14px rgba(85,230,165,.65)}
 .status-row{display:grid;grid-template-columns:95px minmax(0,1fr);gap:12px;border-top:1px solid var(--border);padding:13px 0;color:var(--muted)}
 .status-row strong{color:var(--text);font-weight:600;overflow-wrap:anywhere}
 .status-row code{color:var(--accent)}
 .hero-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:30px}
-.stat{border:1px solid var(--border);border-radius:10px;background:rgba(0,0,0,.13);padding:14px}
+.stat{border:1px solid var(--border);border-radius:10px;background:var(--stat-bg);padding:14px}
 .stat strong{display:block;color:var(--text);font-size:1.2rem}.stat span{color:var(--muted);font-size:.78rem}
 .section{margin-top:76px;scroll-margin-top:100px}
 .section-head{display:flex;align-items:end;justify-content:space-between;gap:28px;margin-bottom:24px}
@@ -888,13 +892,13 @@ main{padding:46px 0 96px}
 .section-head p{max-width:620px;margin:0;color:var(--muted)}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 .grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
-.glass,.card,.panel{border:1px solid var(--border);border-radius:var(--radius);background:var(--glass);box-shadow:inset 0 1px rgba(255,255,255,.025);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px)}
+.glass,.card,.panel{border:1px solid var(--border);border-radius:var(--radius);background:var(--glass);box-shadow:inset 0 1px var(--inset);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px)}
 .card{position:relative;min-width:0;padding:24px;transition:border-color .18s,background .18s,transform .18s}
 .card:hover{transform:translateY(-2px);border-color:var(--accent-line);background:var(--glass-strong)}
 .card h3{margin:8px 0 6px;font-size:1.04rem;font-weight:680}.card p{margin:.45rem 0;color:var(--muted)}
 .card-index{display:grid;place-items:center;width:34px;height:34px;border:1px solid var(--border);border-radius:8px;background:var(--surface-soft);color:var(--accent);font:700 .78rem/1 "SFMono-Regular",Consolas,monospace}
 .status{color:var(--accent);font-size:.72rem;font-weight:720;letter-spacing:.09em;text-transform:uppercase}
-.port{float:right;border:1px solid var(--border);border-radius:999px;background:rgba(0,0,0,.15);color:#cecece;padding:2px 8px;font:600 .76rem/1.6 "SFMono-Regular",Consolas,monospace}
+.port{float:right;border:1px solid var(--border);border-radius:999px;background:var(--stat-bg);color:var(--text-soft);padding:2px 8px;font:600 .76rem/1.6 "SFMono-Regular",Consolas,monospace}
 .note,.muted{color:var(--muted)}.note{font-size:.91rem}
 .panel{padding:26px}.panel p:last-child{margin-bottom:0}
 .policy{border-left:2px solid var(--green)}.warning{border-left:2px solid var(--yellow)}.danger{border-left:2px solid var(--red)}
@@ -902,29 +906,148 @@ main{padding:46px 0 96px}
 .flow-step{position:relative;border-right:1px solid var(--border);padding:25px}.flow-step:last-child{border-right:0}.flow-step strong{display:block;margin-bottom:5px}.flow-step span{color:var(--muted);font-size:.88rem}.flow-step:not(:last-child):after{content:"›";position:absolute;z-index:2;right:-8px;top:50%;transform:translateY(-50%);color:var(--accent);background:var(--surface);padding:0 3px;font-size:1.3rem}
 .docs-layout{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:38px;align-items:start}
 .article{min-width:0}
-.page-intro{border-bottom:1px solid var(--border);padding:18px 0 34px}.page-intro h1{margin:.4rem 0 .85rem;font-size:clamp(2.3rem,5vw,4.5rem);font-weight:740;letter-spacing:-.055em;line-height:1}.page-intro h1 span{color:var(--accent)}.page-intro p{max-width:850px;margin:0;color:#b9b9b9;font-size:1.08rem}
-.toc{position:sticky;top:102px;border-left:1px solid var(--border);padding:6px 0 6px 20px}.toc-title{margin-bottom:10px;color:#d2d2d2;font-size:.82rem;font-weight:680}.toc a{display:block;border-left:1px solid transparent;color:var(--muted);margin-left:-21px;padding:6px 0 6px 20px;font-size:.87rem;text-decoration:none}.toc a:hover{border-left-color:var(--accent);color:var(--accent)}
-.content-section{margin-top:54px;scroll-margin-top:100px}.content-section>p{color:#b8b8b8}
+.page-intro{border-bottom:1px solid var(--border);padding:18px 0 34px}.page-intro h1{margin:.4rem 0 .85rem;font-size:clamp(2.3rem,5vw,4.5rem);font-weight:740;letter-spacing:-.055em;line-height:1}.page-intro h1 span{color:var(--accent)}.page-intro p{max-width:850px;margin:0;color:var(--text-soft);font-size:1.08rem}
+.toc{position:sticky;top:102px;border-left:1px solid var(--border);padding:6px 0 6px 20px}.toc-title{margin-bottom:10px;color:var(--text-soft);font-size:.82rem;font-weight:680}.toc a{display:block;border-left:1px solid transparent;color:var(--muted);margin-left:-21px;padding:6px 0 6px 20px;font-size:.87rem;text-decoration:none}.toc a:hover{border-left-color:var(--accent);color:var(--accent)}
+.content-section{margin-top:54px;scroll-margin-top:100px}.content-section>p{color:var(--text-soft)}
 .chips{margin-top:22px}.chip{border:1px solid var(--border);border-radius:8px;background:var(--glass);color:var(--muted);padding:8px 11px;font-size:.84rem}.chip strong{color:var(--accent);margin-right:5px}
 .table-wrap{overflow:auto;border:1px solid var(--border);border-radius:var(--radius);background:var(--glass)}
-table{width:100%;min-width:800px;border-collapse:collapse}th,td{border-bottom:1px solid var(--border);padding:14px 16px;text-align:left;vertical-align:top}tr:last-child td{border-bottom:0}th{background:rgba(255,255,255,.025);color:#cfcfcf;font-size:.75rem;font-weight:720;letter-spacing:.07em;text-transform:uppercase}td{color:#b7b7b7}td:first-child{color:var(--text);font-weight:620}td code{color:var(--accent)}
-.payload{min-height:142px;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--border);border-radius:9px;background:#0c0c0c;color:#d8d8d8;margin:12px 0 0;padding:17px;font-size:.83rem;line-height:1.65}
+table{width:100%;min-width:800px;border-collapse:collapse}th,td{border-bottom:1px solid var(--border);padding:14px 16px;text-align:left;vertical-align:top}tr:last-child td{border-bottom:0}th{background:var(--table-head);color:var(--text-soft);font-size:.75rem;font-weight:720;letter-spacing:.07em;text-transform:uppercase}td{color:var(--text-soft)}td:first-child{color:var(--text);font-weight:620}td code{color:var(--accent)}
+.payload-card{display:flex;flex-direction:column}.payload-head{display:flex;align-items:center;justify-content:space-between;gap:14px}.copy-button{flex:0 0 auto;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft);color:var(--accent);padding:6px 11px;font-size:.78rem;font-weight:740;cursor:pointer;transition:background .16s,color .16s,border-color .16s}.copy-button:hover,.copy-button.is-copied{border-color:var(--accent);background:var(--accent);color:var(--button-on-accent)}.copy-button:focus-visible,.theme-toggle:focus-visible,.button:focus-visible,.nav-links a:focus-visible{outline:3px solid var(--accent-line);outline-offset:2px}
+.payload{min-height:142px;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--border);border-radius:9px;background:var(--code-bg);color:var(--code-text);margin:12px 0 0;padding:17px;font-size:.83rem;line-height:1.65;user-select:text}
 .callout{display:flex;gap:15px;border:1px solid var(--border);border-radius:var(--radius);background:var(--glass);padding:20px}.callout-mark{flex:0 0 auto;display:grid;place-items:center;width:30px;height:30px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft);color:var(--accent);font-size:.78rem;font-weight:800}.callout strong{display:block;margin-bottom:3px}.callout p{margin:0;color:var(--muted)}.spaced-panel{margin-top:14px}
-.download-card{display:flex;flex-direction:column;min-height:270px}.download-card .filename{margin-top:auto;color:#bdbdbd;font-size:.78rem;overflow-wrap:anywhere}.download-card .button{margin-top:12px}
+.download-card{display:flex;flex-direction:column;min-height:270px}.download-card .filename{margin-top:auto;color:var(--text-soft);font-size:.78rem;overflow-wrap:anywhere}.download-card .button{margin-top:12px}
 .bundle{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:14px}.bundle .panel{min-height:190px;display:flex;flex-direction:column;align-items:flex-start}.bundle .button{margin-top:auto}
-.footer{border-top:1px solid var(--border);background:rgba(18,18,18,.72);color:var(--muted);padding:28px 0 38px}.footer-row{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}.footer a{color:var(--text);font-weight:620;text-decoration:none}.footer a:hover{color:var(--accent)}
+.footer{border-top:1px solid var(--border);background:var(--footer);color:var(--muted);padding:54px 0 24px}.footer-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(150px,.55fr) minmax(230px,.7fr);gap:58px}.footer-profile p,.footer-column p{max-width:510px;margin:.85rem 0 0}.footer-brand{display:inline-flex;align-items:center;gap:8px;color:var(--text);font-weight:760;letter-spacing:.045em;text-decoration:none}.footer-column h2{margin:0 0 12px;color:var(--text);font-size:.78rem;font-weight:760;letter-spacing:.13em;text-transform:uppercase}.footer-column a{display:block;width:max-content;max-width:100%;color:var(--text-soft);margin:6px 0;text-decoration:none}.footer a:hover{color:var(--accent)}.developer-line{color:var(--muted);margin:0!important}.developer-line a{display:inline;color:var(--text);font-size:1.04rem;font-weight:680}.footer-bottom{display:flex;align-items:center;justify-content:space-between;gap:20px;border-top:1px solid var(--border);margin-top:42px;padding-top:20px;font-size:.82rem}.footer-bottom span:last-child{color:var(--text-soft)}
 @media(max-width:1060px){.hero{grid-template-columns:1fr;min-height:0}.hero-side{margin:0 24px 24px}.docs-layout{grid-template-columns:1fr}.toc{position:static;display:flex;gap:6px;overflow:auto;border:0;border-bottom:1px solid var(--border);padding:0 0 14px;order:-1}.toc-title{display:none}.toc a{flex:0 0 auto;margin:0;border:1px solid var(--border);border-radius:8px;padding:6px 10px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.flow{grid-template-columns:repeat(2,minmax(0,1fr))}.flow-step:nth-child(2){border-right:0}.flow-step:nth-child(-n+2){border-bottom:1px solid var(--border)}.flow-step:nth-child(2):after{display:none}}
-@media(max-width:680px){body{font-size:15px}.shell{width:min(100% - 24px,1440px)}.site-header{position:static}.nav{min-height:0;display:block;padding:14px 0}.brand{margin-bottom:12px}.nav-links{gap:5px}.nav-links a{padding:7px 9px;font-size:.85rem}main{padding:24px 0 68px}.hero-copy{padding:34px 24px}.hero h1{font-size:clamp(2.65rem,15vw,4rem)}.hero-side{margin:0 12px 12px;padding:18px}.hero-stats{grid-template-columns:1fr}.section{margin-top:52px}.section-head{display:block}.section-head p{margin-top:10px}.grid,.grid.two,.bundle{grid-template-columns:1fr}.flow{grid-template-columns:1fr}.flow-step{border-right:0;border-bottom:1px solid var(--border)}.flow-step:last-child{border-bottom:0}.flow-step:not(:last-child):after{content:"⌄";display:block;right:50%;top:auto;bottom:-13px;transform:translateX(50%)}.page-intro{padding-top:4px}.card,.panel{padding:20px}.status-row{grid-template-columns:82px minmax(0,1fr)}.footer-row{display:block}.footer-row span{display:block;margin-top:5px}}
+@media(max-width:900px){.nav{align-items:flex-start;flex-direction:column;padding:15px 0;gap:12px}.nav-actions{width:100%;justify-content:space-between}.footer-grid{grid-template-columns:1.25fr .75fr;gap:36px}.footer-column:last-child{grid-column:1/-1}}
+@media(max-width:680px){body{font-size:15px}.shell{width:min(100% - 24px,1440px)}.site-header{position:static}.nav{min-height:0;padding:14px 0}.nav-actions{align-items:flex-start;flex-direction:column}.nav-links{gap:5px}.nav-links a{padding:7px 9px;font-size:.85rem}.theme-toggle{min-height:34px;padding:5px 9px}main{padding:24px 0 68px}.hero-copy{padding:34px 24px}.hero h1{font-size:clamp(2.65rem,15vw,4rem)}.hero-side{margin:0 12px 12px;padding:18px}.hero-stats{grid-template-columns:1fr}.section{margin-top:52px}.section-head{display:block}.section-head p{margin-top:10px}.grid,.grid.two,.bundle{grid-template-columns:1fr}.flow{grid-template-columns:1fr}.flow-step{border-right:0;border-bottom:1px solid var(--border)}.flow-step:last-child{border-bottom:0}.flow-step:not(:last-child):after{content:"⌄";display:block;right:50%;top:auto;bottom:-13px;transform:translateX(50%)}.page-intro{padding-top:4px}.card,.panel{padding:20px}.status-row{grid-template-columns:82px minmax(0,1fr)}.footer{padding-top:42px}.footer-grid{grid-template-columns:1fr;gap:30px}.footer-column:last-child{grid-column:auto}.footer-bottom{align-items:flex-start;flex-direction:column;margin-top:32px}.payload-head{align-items:flex-start}.copy-button{margin-top:-3px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.card,.button{transition:none}}
+EOF
+
+    cat > "$TDZ_OVPN_PROFILES/portal.js" <<'EOF'
+(function () {
+    "use strict";
+
+    var storageKey = "tdz-ovpn-theme";
+    var modes = ["system", "light", "dark"];
+
+    function readTheme() {
+        try {
+            var stored = window.localStorage.getItem(storageKey);
+            return modes.indexOf(stored) === -1 ? "system" : stored;
+        } catch (error) {
+            return "system";
+        }
+    }
+
+    function applyTheme(mode) {
+        if (mode === "light" || mode === "dark") {
+            document.documentElement.setAttribute("data-theme", mode);
+        } else {
+            document.documentElement.removeAttribute("data-theme");
+        }
+    }
+
+    var activeTheme = readTheme();
+    applyTheme(activeTheme);
+
+    function saveTheme(mode) {
+        try {
+            window.localStorage.setItem(storageKey, mode);
+        } catch (error) {
+            return;
+        }
+    }
+
+    function updateThemeControls() {
+        var labels = { system: "System", light: "Light", dark: "Dark" };
+        document.querySelectorAll("[data-theme-toggle]").forEach(function (button) {
+            button.setAttribute("data-theme-mode", activeTheme);
+            button.setAttribute("aria-label", "Theme: " + labels[activeTheme] + ". Select next theme.");
+            var label = button.querySelector("[data-theme-label]");
+            if (label) label.textContent = labels[activeTheme];
+        });
+    }
+
+    function fallbackCopy(text) {
+        var field = document.createElement("textarea");
+        field.value = text;
+        field.setAttribute("readonly", "");
+        field.style.position = "fixed";
+        field.style.opacity = "0";
+        document.body.appendChild(field);
+        field.select();
+        var copied = document.execCommand("copy");
+        field.remove();
+        if (!copied) throw new Error("Copy command was rejected");
+    }
+
+    function copyText(text) {
+        if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function (resolve, reject) {
+            try {
+                fallbackCopy(text);
+                resolve();
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    function showCopyResult(button, message, success) {
+        window.clearTimeout(button._tdzResetTimer);
+        button.textContent = message;
+        button.classList.toggle("is-copied", success);
+        button._tdzResetTimer = window.setTimeout(function () {
+            button.textContent = "Copy";
+            button.classList.remove("is-copied");
+        }, 1600);
+    }
+
+    function ready() {
+        updateThemeControls();
+        document.addEventListener("click", function (event) {
+            var themeButton = event.target.closest("[data-theme-toggle]");
+            if (themeButton) {
+                activeTheme = modes[(modes.indexOf(activeTheme) + 1) % modes.length];
+                applyTheme(activeTheme);
+                saveTheme(activeTheme);
+                updateThemeControls();
+                return;
+            }
+
+            var copyButton = event.target.closest("[data-copy-target]");
+            if (!copyButton) return;
+            var target = document.getElementById(copyButton.getAttribute("data-copy-target"));
+            if (!target) {
+                showCopyResult(copyButton, "Unavailable", false);
+                return;
+            }
+            copyText(target.textContent.trim()).then(function () {
+                showCopyResult(copyButton, "Copied", true);
+            }).catch(function () {
+                showCopyResult(copyButton, "Copy failed", false);
+            });
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", ready);
+    } else {
+        ready();
+    }
+}());
 EOF
 
     cat > "$TDZ_OVPN_PROFILES/index.html" <<EOF
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="TDZ SSH TUNNEL OpenVPN transport portal"><title>TDZ • OVPN PORTAL</title><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
-<header class="site-header"><div class="shell nav"><a class="brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-mark">TDZ</span><span>TDZ <span class="brand-dot">•</span> OVPN PORTAL</span></a><nav class="nav-links" aria-label="Portal navigation"><a class="active" href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></nav></div></header>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="TDZ SSH TUNNEL OpenVPN transport portal"><title>TDZ • OVPN PORTAL</title><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
+<header class="site-header"><div class="shell nav"><a class="brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-main">TDZ</span><span class="brand-dot">•</span><span>OVPN PORTAL</span></a><div class="nav-actions"><nav class="nav-links" aria-label="Portal navigation"><a class="active" href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></nav><button class="theme-toggle" type="button" data-theme-toggle data-theme-mode="system"><span class="theme-glyph" aria-hidden="true"></span><span data-theme-label>System</span></button></div></div></header>
 <main class="shell">
 <section class="hero"><div class="hero-copy"><div class="eyebrow">TDZ SSH TUNNEL • OpenVPN transport suite</div><h1>TDZ <span>•</span><br>OVPN PORTAL</h1><p class="lead">A focused OpenVPN hub for TDZ SSH TUNNEL—six connection modes, ready-to-import profiles, clear setup references and one shared account policy.</p><div class="actions"><a class="button primary" href="$TDZ_OVPN_PUBLIC_PATH/download">Download profiles</a><a class="button" href="$TDZ_OVPN_PUBLIC_PATH/docs">Open documentation</a></div><div class="hero-stats"><div class="stat"><strong>6</strong><span>connection modes</span></div><div class="stat"><strong>1</strong><span>shared TDZ account</span></div><div class="stat"><strong>TLS</strong><span>protected portal</span></div></div></div>
-<aside class="hero-side"><div class="status-head"><span>Current gateway</span><span><i class="live-dot"></i> Ready</span></div><div class="status-row"><span>Server</span><strong>$TDZ_OVPN_HOST</strong></div><div class="status-row"><span>Portal</span><strong><code>:$TDZ_OVPN_PORTAL_PORT/openvpn</code></strong></div><div class="status-row"><span>Identity</span><strong>Existing TDZ account</strong></div><div class="status-row"><span>Policies</span><strong>Expiry • quota • limit • lock</strong></div><div class="status-row"><span>Profiles</span><strong>No embedded credentials</strong></div></aside></section>
+<aside class="hero-side"><div class="status-head"><span>Current gateway</span><span><i class="live-dot"></i> Ready</span></div><div class="status-row"><span>Server</span><strong>$TDZ_OVPN_HOST</strong></div><div class="status-row"><span>Delivery</span><strong>HTTPS protected</strong></div><div class="status-row"><span>Identity</span><strong>Existing TDZ account</strong></div><div class="status-row"><span>Policies</span><strong>Expiry • quota • limit • lock</strong></div><div class="status-row"><span>Profiles</span><strong>No embedded credentials</strong></div></aside></section>
 
 <section class="section"><div class="section-head"><div><div class="kicker">Unified access</div><h2>One identity across every transport</h2></div><p>The same TDZ account controls SSH and OpenVPN. Changing the transport does not create a second user database or bypass an existing limit.</p></div><div class="grid">
 <article class="card"><div class="card-index">01</div><h3>Shared expiry</h3><p>Expired accounts are rejected consistently, regardless of the selected OpenVPN path.</p></article>
@@ -948,15 +1071,15 @@ EOF
 
 <section class="section grid two"><div class="panel policy"><span class="label">Start here</span><h3>Test direct transport first</h3><p>Confirm Direct TCP or UDP before testing payload and TLS adapter modes. This keeps transport errors separate from account errors.</p><a class="button" href="$TDZ_OVPN_PUBLIC_PATH/docs">Read the complete setup guide</a></div><div class="panel warning"><span class="label">Certificate note</span><h3>Self-signed is encrypted, not publicly trusted</h3><p>A self-signed portal may show a browser warning. A trusted certificate for the selected domain removes the warning without changing the portal routes.</p></div></section>
 </main>
-<footer class="footer"><div class="shell footer-row"><span>Developed By: <a href="https://tuhinbro.com/" target="_blank" rel="noopener noreferrer">Yeasinul Hoque Tuhin</a></span><span>TDZ SSH TUNNEL • OpenVPN Suite</span></div></footer>
+<footer class="footer"><div class="shell footer-grid"><section class="footer-profile"><a class="footer-brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-main">TDZ</span><span class="brand-dot">•</span><span>OVPN PORTAL</span></a><p>Secure OpenVPN transport access for TDZ SSH TUNNEL, with unified account policy and ready-to-import profiles.</p></section><section class="footer-column"><h2>Explore</h2><a href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></section><section class="footer-column"><h2>Developer</h2><p class="developer-line">Developed By: <a href="https://tuhinbro.com/" target="_blank" rel="noopener noreferrer">Yeasinul Hoque Tuhin</a></p><p>Designed and developed for the TDZ SSH TUNNEL ecosystem.</p></section></div><div class="shell footer-bottom"><span>© 2026 Yeasinul Hoque Tuhin. All rights reserved.</span><span>TDZ SSH TUNNEL • OpenVPN Suite</span></div></footer>
 </body></html>
 EOF
 
     cat > "$TDZ_OVPN_PROFILES/docs.html" <<EOF
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="TDZ OpenVPN configuration documentation"><title>TDZ • OVPN PORTAL</title><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
-<header class="site-header"><div class="shell nav"><a class="brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-mark">TDZ</span><span>TDZ <span class="brand-dot">•</span> OVPN PORTAL</span></a><nav class="nav-links" aria-label="Portal navigation"><a href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a class="active" href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></nav></div></header>
-<main class="shell docs-layout"><article class="article"><header class="page-intro"><div class="eyebrow">TDZ • OVPN PORTAL</div><h1>Configuration <span>guide.</span></h1><p>Every field, payload, SNI value and verification step in one place. All modes authenticate with the same TDZ username and password.</p><div class="chips"><span class="chip"><strong>HOST</strong>$TDZ_OVPN_HOST</span><span class="chip"><strong>PORTAL</strong>$TDZ_OVPN_PORTAL_PORT</span><span class="chip"><strong>SNI</strong>$TDZ_OVPN_HOST</span></div></header>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="TDZ OpenVPN configuration documentation"><title>TDZ • OVPN PORTAL</title><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
+<header class="site-header"><div class="shell nav"><a class="brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-main">TDZ</span><span class="brand-dot">•</span><span>OVPN PORTAL</span></a><div class="nav-actions"><nav class="nav-links" aria-label="Portal navigation"><a href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a class="active" href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></nav><button class="theme-toggle" type="button" data-theme-toggle data-theme-mode="system"><span class="theme-glyph" aria-hidden="true"></span><span data-theme-label>System</span></button></div></div></header>
+<main class="shell docs-layout"><article class="article"><header class="page-intro"><div class="eyebrow">TDZ • OVPN PORTAL</div><h1>Configuration <span>guide.</span></h1><p>Every field, payload, SNI value and verification step in one place. All modes authenticate with the same TDZ username and password.</p><div class="chips"><span class="chip"><strong>HOST</strong>$TDZ_OVPN_HOST</span><span class="chip"><strong>ACCOUNT</strong>Existing TDZ login</span><span class="chip"><strong>SNI</strong>$TDZ_OVPN_HOST</span></div></header>
 
 <section class="content-section" id="modes"><div class="kicker">Client fields</div><h2>Mode-by-mode setup</h2><p>Select the profile and client mode as one pair. Mixing a direct profile with an adapter mode will not create a valid connection.</p><div class="table-wrap"><table><thead><tr><th>Profile</th><th>Client mode</th><th>Host</th><th>Port</th><th>Extra setting</th></tr></thead><tbody>
 <tr><td>Direct UDP</td><td><code>DIRECT</code></td><td>$TDZ_OVPN_HOST</td><td><code>$TDZ_OVPN_UDP_PORT / UDP</code></td><td>No payload or proxy</td></tr>
@@ -967,24 +1090,24 @@ EOF
 <tr><td>SSL</td><td><code>SSL/TLS</code></td><td>$TDZ_OVPN_HOST</td><td><code>$TDZ_OVPN_SSL_PORT</code></td><td>SNI: $TDZ_OVPN_HOST; payload and proxy remain empty</td></tr>
 </tbody></table></div></section>
 
-<section class="content-section" id="payloads"><div class="kicker">Payload reference</div><h2>Use the gateway and backend correctly</h2><div class="grid two"><article class="card"><span class="label">HTTP CONNECT payload</span><div class="payload">CONNECT $TDZ_OVPN_HOST:$TDZ_OVPN_TCP_PORT HTTP/1.1[crlf]Host: $TDZ_OVPN_HOST[crlf]Connection: keep-alive[crlf][crlf]</div><p class="note">Gateway: $TDZ_OVPN_HOST:$TDZ_OVPN_HTTP_PORT • Backend: $TDZ_OVPN_HOST:$TDZ_OVPN_TCP_PORT</p></article><article class="card"><span class="label">WebSocket payload</span><div class="payload">GET / HTTP/1.1[crlf]Host: $TDZ_OVPN_HOST[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]</div><p class="note">Use port $TDZ_OVPN_HTTP_PORT for WS or $TDZ_OVPN_WSS_PORT for WSS with SNI.</p></article></div></section>
+<section class="content-section" id="payloads"><div class="kicker">Payload reference</div><h2>Use the gateway and backend correctly</h2><div class="grid two"><article class="card payload-card"><div class="payload-head"><span class="label">HTTP CONNECT payload</span><button class="copy-button" type="button" data-copy-target="http-connect-payload">Copy</button></div><div class="payload" id="http-connect-payload">CONNECT $TDZ_OVPN_HOST:$TDZ_OVPN_TCP_PORT HTTP/1.1[crlf]Host: $TDZ_OVPN_HOST[crlf]Connection: keep-alive[crlf][crlf]</div><p class="note">Gateway: $TDZ_OVPN_HOST:$TDZ_OVPN_HTTP_PORT • Backend: $TDZ_OVPN_HOST:$TDZ_OVPN_TCP_PORT</p></article><article class="card payload-card"><div class="payload-head"><span class="label">WebSocket payload</span><button class="copy-button" type="button" data-copy-target="websocket-payload">Copy</button></div><div class="payload" id="websocket-payload">GET / HTTP/1.1[crlf]Host: $TDZ_OVPN_HOST[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]</div><p class="note">Use port $TDZ_OVPN_HTTP_PORT for WS or $TDZ_OVPN_WSS_PORT for WSS with SNI.</p></article></div></section>
 
 <section class="content-section" id="verification"><div class="kicker">Verification order</div><h2>Test without mixing failure layers</h2><p>Start with the shortest route. Add the HTTP or TLS adapter only after direct OpenVPN authentication succeeds.</p><div class="grid"><article class="card"><div class="card-index">01</div><h3>Direct TCP / UDP</h3><p>Confirms the OpenVPN core, certificate and TDZ authentication.</p></article><article class="card"><div class="card-index">02</div><h3>HTTP CONNECT / WS</h3><p>Confirms the HTTP adapter listening on port $TDZ_OVPN_HTTP_PORT.</p></article><article class="card"><div class="card-index">03</div><h3>SSL / WSS</h3><p>Confirms outer TLS, SNI and the selected adapter client.</p></article></div></section>
 
 <section class="content-section" id="policy"><div class="kicker">Account policy</div><h2>What the same TDZ login enforces</h2><div class="grid two"><div class="callout"><span class="callout-mark">ID</span><div><strong>One username and password</strong><p>Profiles never contain credentials. Enter the existing TDZ account after import.</p></div></div><div class="callout"><span class="callout-mark">BW</span><div><strong>Shared usage accounting</strong><p>OpenVPN traffic is reconciled against the account bandwidth limit.</p></div></div><div class="callout"><span class="callout-mark">EX</span><div><strong>Expiry and first use</strong><p>Pending activation and expiry follow the same account lifecycle.</p></div></div><div class="callout"><span class="callout-mark">CN</span><div><strong>Connection admission</strong><p>Session limits are checked atomically before a connection is admitted.</p></div></div></div></section>
 
-<section class="content-section" id="troubleshooting"><div class="kicker">Troubleshooting</div><h2>Understand the client log</h2><div class="table-wrap"><table><thead><tr><th>Log or symptom</th><th>Meaning</th><th>Check</th></tr></thead><tbody><tr><td><code>AUTH_FAILED</code></td><td>The transport reached OpenVPN, but account authentication failed.</td><td>Username/password, expiry, lock, quota and connection limit</td></tr><tr><td><code>Connection refused</code></td><td>No listener is reachable on that port.</td><td>Selected mode, VPS service and provider firewall/security group</td></tr><tr><td><code>TLS Error</code></td><td>The endpoint answered, but TLS or profile validation failed.</td><td>Correct profile, SNI, CA and device time</td></tr><tr><td><code>HTTP 200</code> or <code>101</code></td><td>The HTTP or WS adapter accepted the request.</td><td>Continue to the later OpenVPN authentication lines</td></tr></tbody></table></div><div class="panel warning spaced-panel"><span class="label">External firewall</span><p>The installer opens the local VPS firewall. If the provider has a separate firewall or security group, allow TCP $TDZ_OVPN_SSL_PORT, $TDZ_OVPN_TCP_PORT, $TDZ_OVPN_HTTP_PORT, $TDZ_OVPN_WSS_PORT and $TDZ_OVPN_PORTAL_PORT, plus UDP $TDZ_OVPN_UDP_PORT.</p></div></section>
+<section class="content-section" id="troubleshooting"><div class="kicker">Troubleshooting</div><h2>Understand the client log</h2><div class="table-wrap"><table><thead><tr><th>Log or symptom</th><th>Meaning</th><th>Check</th></tr></thead><tbody><tr><td><code>AUTH_FAILED</code></td><td>The transport reached OpenVPN, but account authentication failed.</td><td>Username/password, expiry, lock, quota and connection limit</td></tr><tr><td><code>Connection refused</code></td><td>No listener is reachable on that port.</td><td>Selected mode, VPS service and provider firewall/security group</td></tr><tr><td><code>TLS Error</code></td><td>The endpoint answered, but TLS or profile validation failed.</td><td>Correct profile, SNI, CA and device time</td></tr><tr><td><code>HTTP 200</code> or <code>101</code></td><td>The HTTP or WS adapter accepted the request.</td><td>Continue to the later OpenVPN authentication lines</td></tr></tbody></table></div><div class="panel warning spaced-panel"><span class="label">External firewall</span><p>The installer opens the local VPS firewall. If the provider has a separate firewall or security group, allow TCP $TDZ_OVPN_SSL_PORT, $TDZ_OVPN_TCP_PORT, $TDZ_OVPN_HTTP_PORT and $TDZ_OVPN_WSS_PORT, plus UDP $TDZ_OVPN_UDP_PORT.</p></div></section>
 </article>
 <aside class="toc" aria-label="On this page"><div class="toc-title">On this page</div><a href="#modes">Mode-by-mode setup</a><a href="#payloads">Payload reference</a><a href="#verification">Verification order</a><a href="#policy">Account policy</a><a href="#troubleshooting">Troubleshooting</a></aside>
 </main>
-<footer class="footer"><div class="shell footer-row"><span>Developed By: <a href="https://tuhinbro.com/" target="_blank" rel="noopener noreferrer">Yeasinul Hoque Tuhin</a></span><a href="$TDZ_OVPN_PUBLIC_PATH/download">Open download center</a></div></footer>
+<footer class="footer"><div class="shell footer-grid"><section class="footer-profile"><a class="footer-brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-main">TDZ</span><span class="brand-dot">•</span><span>OVPN PORTAL</span></a><p>Secure OpenVPN transport access for TDZ SSH TUNNEL, with unified account policy and ready-to-import profiles.</p></section><section class="footer-column"><h2>Explore</h2><a href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></section><section class="footer-column"><h2>Developer</h2><p class="developer-line">Developed By: <a href="https://tuhinbro.com/" target="_blank" rel="noopener noreferrer">Yeasinul Hoque Tuhin</a></p><p>Designed and developed for the TDZ SSH TUNNEL ecosystem.</p></section></div><div class="shell footer-bottom"><span>© 2026 Yeasinul Hoque Tuhin. All rights reserved.</span><span>TDZ SSH TUNNEL • OpenVPN Suite</span></div></footer>
 </body></html>
 EOF
 
     cat > "$TDZ_OVPN_PROFILES/download.html" <<EOF
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Download TDZ OpenVPN profiles"><title>TDZ • OVPN PORTAL</title><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
-<header class="site-header"><div class="shell nav"><a class="brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-mark">TDZ</span><span>TDZ <span class="brand-dot">•</span> OVPN PORTAL</span></a><nav class="nav-links" aria-label="Portal navigation"><a href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a class="active" href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></nav></div></header>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Download TDZ OpenVPN profiles"><title>TDZ • OVPN PORTAL</title><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
+<header class="site-header"><div class="shell nav"><a class="brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-main">TDZ</span><span class="brand-dot">•</span><span>OVPN PORTAL</span></a><div class="nav-actions"><nav class="nav-links" aria-label="Portal navigation"><a href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a class="active" href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></nav><button class="theme-toggle" type="button" data-theme-toggle data-theme-mode="system"><span class="theme-glyph" aria-hidden="true"></span><span data-theme-label>System</span></button></div></div></header>
 <main class="shell"><header class="page-intro"><div class="eyebrow">TDZ • OVPN PORTAL</div><h1>Profile <span>downloads.</span></h1><p>Choose one transport or take the complete package. After import, sign in with the existing TDZ account—no credential is embedded in a profile.</p><div class="actions"><a class="button primary" href="$TDZ_OVPN_PUBLIC_PATH/download/openvpn-profiles.zip">Download complete ZIP</a><a class="button" href="$TDZ_OVPN_PUBLIC_PATH/docs">Read configuration guide</a></div></header>
 
 <section class="section"><div class="section-head"><div><div class="kicker">Official clients</div><h2>Direct OpenVPN profiles</h2></div><p>These profiles import directly into standard OpenVPN-compatible clients without an external payload adapter.</p></div><div class="grid">
@@ -1003,11 +1126,12 @@ EOF
 
 <section class="section"><div class="section-head"><div><div class="kicker">Choose confidently</div><h2>Which file should you start with?</h2></div></div><div class="table-wrap"><table><thead><tr><th>Network condition</th><th>Start with</th><th>Why</th></tr></thead><tbody><tr><td>Normal mobile or Wi-Fi</td><td><code>Direct UDP</code></td><td>Lowest overhead and usually the best performance</td></tr><tr><td>UDP blocked or unstable</td><td><code>Direct TCP</code></td><td>Uses a standard TCP OpenVPN connection</td></tr><tr><td>HTTP proxy client required</td><td><code>HTTP CONNECT</code></td><td>Contains the native OpenVPN HTTP proxy directive</td></tr><tr><td>Injector with custom payload</td><td><code>Payload / WS</code></td><td>Designed for the external HTTP or WebSocket adapter</td></tr><tr><td>TLS adapter with SNI</td><td><code>WSS or SSL</code></td><td>Matches the selected outer-TLS client mode</td></tr></tbody></table></div></section>
 </main>
-<footer class="footer"><div class="shell footer-row"><span>Developed By: <a href="https://tuhinbro.com/" target="_blank" rel="noopener noreferrer">Yeasinul Hoque Tuhin</a></span><span>Generated for $TDZ_OVPN_HOST</span></div></footer>
+<footer class="footer"><div class="shell footer-grid"><section class="footer-profile"><a class="footer-brand" href="$TDZ_OVPN_PUBLIC_PATH/"><span class="brand-main">TDZ</span><span class="brand-dot">•</span><span>OVPN PORTAL</span></a><p>Secure OpenVPN transport access for TDZ SSH TUNNEL, with unified account policy and ready-to-import profiles.</p></section><section class="footer-column"><h2>Explore</h2><a href="$TDZ_OVPN_PUBLIC_PATH/">Overview</a><a href="$TDZ_OVPN_PUBLIC_PATH/docs">Documentation</a><a href="$TDZ_OVPN_PUBLIC_PATH/download">Downloads</a></section><section class="footer-column"><h2>Developer</h2><p class="developer-line">Developed By: <a href="https://tuhinbro.com/" target="_blank" rel="noopener noreferrer">Yeasinul Hoque Tuhin</a></p><p>Designed and developed for the TDZ SSH TUNNEL ecosystem.</p></section></div><div class="shell footer-bottom"><span>© 2026 Yeasinul Hoque Tuhin. All rights reserved.</span><span>TDZ SSH TUNNEL • OpenVPN Suite</span></div></footer>
 </body></html>
 EOF
     chmod 644 "$TDZ_OVPN_PROFILES/index.html" "$TDZ_OVPN_PROFILES/docs.html" \
-        "$TDZ_OVPN_PROFILES/download.html" "$TDZ_OVPN_PROFILES/portal.css"
+        "$TDZ_OVPN_PROFILES/download.html" "$TDZ_OVPN_PROFILES/portal.css" \
+        "$TDZ_OVPN_PROFILES/portal.js"
 }
 
 tdz_openvpn_stop_services() {

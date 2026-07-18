@@ -22,6 +22,9 @@ class LinkCollector(HTMLParser):
         attributes = dict(attrs)
         if "id" in attributes:
             self.ids.add(attributes["id"])
+        if tag == "script" and "src" in attributes:
+            self.links.append(attributes["src"])
+            return
         if tag not in {"a", "link"}:
             return
         if "href" in attributes:
@@ -138,20 +141,35 @@ class ModuleTests(unittest.TestCase):
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
             self.assertIn("TDZ <span>•</span><br>OVPN PORTAL", portal)
-            self.assertIn(":1180/openvpn", portal)
+            self.assertIn('<span class="brand-main">TDZ</span>', portal)
+            self.assertIn("HTTPS protected", portal)
             self.assertIn('href="/openvpn/docs"', portal)
             self.assertIn('href="/openvpn/download"', portal)
             docs = (root / "portal/ovpn-configs/docs.html").read_text()
             self.assertIn("CONNECT vpn.example.com:447 HTTP/1.1", docs)
             self.assertIn("Mode-by-mode setup", docs)
+            self.assertIn('data-copy-target="http-connect-payload"', docs)
+            self.assertIn('data-copy-target="websocket-payload"', docs)
+            self.assertIn('id="http-connect-payload"', docs)
+            self.assertIn('id="websocket-payload"', docs)
             downloads = (root / "portal/ovpn-configs/download.html").read_text()
             self.assertIn("/openvpn/download/openvpn-profiles.zip", downloads)
             css = (root / "portal/ovpn-configs/portal.css").read_text()
-            self.assertIn("--bg:#121212", css)
-            self.assertIn("--surface:#191919", css)
-            self.assertIn("--accent:#25dbf4", css)
+            self.assertIn("--bg:#f2f0eb", css)
+            self.assertIn("--accent:#1ac9a0", css)
+            self.assertIn(':root[data-theme="dark"]', css)
+            self.assertIn("@media(prefers-color-scheme:dark)", css)
             self.assertIn("backdrop-filter:blur", css)
+            portal_js = (root / "portal/ovpn-configs/portal.js").read_text()
+            self.assertIn("navigator.clipboard.writeText", portal_js)
+            self.assertIn("window.localStorage", portal_js)
+            self.assertIn('document.documentElement.setAttribute("data-theme"', portal_js)
             self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
+
+            visitor_pages = portal + docs + downloads
+            self.assertNotIn("1180", visitor_pages)
+            self.assertNotIn("brand-mark", visitor_pages)
+            self.assertNotIn("<strong>PORTAL</strong>", visitor_pages)
 
             public = root / "portal/ovpn-configs"
             valid_pages = {
@@ -159,6 +177,7 @@ class ModuleTests(unittest.TestCase):
                 "/openvpn/docs",
                 "/openvpn/download",
                 "/openvpn/assets/portal.css",
+                "/openvpn/assets/portal.js",
                 "https://tuhinbro.com/",
             }
             for page_name in ("index.html", "docs.html", "download.html"):
@@ -166,6 +185,9 @@ class ModuleTests(unittest.TestCase):
                 self.assertIn("<title>TDZ • OVPN PORTAL</title>", page_text)
                 self.assertIn("Developed By:", page_text)
                 self.assertIn("Yeasinul Hoque Tuhin", page_text)
+                self.assertIn("© 2026 Yeasinul Hoque Tuhin", page_text)
+                self.assertIn('src="/openvpn/assets/portal.js"', page_text)
+                self.assertIn("data-theme-toggle", page_text)
                 self.assertNotIn("Powered By", page_text)
                 parser = LinkCollector()
                 parser.feed(page_text)
