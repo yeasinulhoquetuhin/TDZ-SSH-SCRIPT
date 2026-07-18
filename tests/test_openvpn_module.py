@@ -16,11 +16,14 @@ class LinkCollector(HTMLParser):
     def __init__(self):
         super().__init__()
         self.links = []
+        self.ids = set()
 
     def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if "id" in attributes:
+            self.ids.add(attributes["id"])
         if tag not in {"a", "link"}:
             return
-        attributes = dict(attrs)
         if "href" in attributes:
             self.links.append(attributes["href"])
 
@@ -134,7 +137,8 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("auth-nocache", profile)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
-            self.assertIn("HTTPS Portal • :1180", portal)
+            self.assertIn("TDZ <span>•</span><br>OVPN PORTAL", portal)
+            self.assertIn(":1180/openvpn", portal)
             self.assertIn('href="/openvpn/docs"', portal)
             self.assertIn('href="/openvpn/download"', portal)
             docs = (root / "portal/ovpn-configs/docs.html").read_text()
@@ -142,7 +146,11 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("Mode-by-mode setup", docs)
             downloads = (root / "portal/ovpn-configs/download.html").read_text()
             self.assertIn("/openvpn/download/openvpn-profiles.zip", downloads)
-            self.assertTrue((root / "portal/ovpn-configs/portal.css").is_file())
+            css = (root / "portal/ovpn-configs/portal.css").read_text()
+            self.assertIn("--bg:#121212", css)
+            self.assertIn("--surface:#191919", css)
+            self.assertIn("--accent:#25dbf4", css)
+            self.assertIn("backdrop-filter:blur", css)
             self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
 
             public = root / "portal/ovpn-configs"
@@ -151,11 +159,20 @@ class ModuleTests(unittest.TestCase):
                 "/openvpn/docs",
                 "/openvpn/download",
                 "/openvpn/assets/portal.css",
+                "https://tuhinbro.com/",
             }
             for page_name in ("index.html", "docs.html", "download.html"):
+                page_text = (public / page_name).read_text()
+                self.assertIn("<title>TDZ • OVPN PORTAL</title>", page_text)
+                self.assertIn("Developed By:", page_text)
+                self.assertIn("Yeasinul Hoque Tuhin", page_text)
+                self.assertNotIn("Powered By", page_text)
                 parser = LinkCollector()
-                parser.feed((public / page_name).read_text())
+                parser.feed(page_text)
                 for link in parser.links:
+                    if link.startswith("#"):
+                        self.assertIn(link[1:], parser.ids, f"broken anchor in {page_name}: {link}")
+                        continue
                     if link.startswith("/openvpn/download/"):
                         self.assertTrue(
                             (public / link.rsplit("/", 1)[-1]).is_file(),
