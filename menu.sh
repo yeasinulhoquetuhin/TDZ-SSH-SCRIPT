@@ -478,6 +478,19 @@ tdz_format_epoch_datetime_display() {
     LC_TIME=C date -d "@${epoch}" '+%d-%m-%Y • %H:%M' 2>/dev/null || printf 'Unknown'
 }
 
+tdz_format_file_size() {
+    local bytes="${1:-0}"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+    awk -v bytes="$bytes" 'BEGIN {
+        if (bytes >= 1073741824) { value = bytes / 1073741824; unit = "GB" }
+        else if (bytes >= 1048576) { value = bytes / 1048576; unit = "MB" }
+        else if (bytes >= 1024) { value = bytes / 1024; unit = "KB" }
+        else { printf "%dB", bytes; exit }
+        if (value == int(value)) printf "%d%s", value, unit
+        else printf "%.2f%s", value, unit
+    }'
+}
+
 # Bandwidth values are stored as bytes for usage and GB for account limits.
 # Keep every screen consistent and promote values to TB at 1024GB.
 tdz_quota_is_unlimited() {
@@ -3885,7 +3898,9 @@ auto_backup_status() {
     local bot_status="Stopped" bot_color="$C_RED" bot_pid=""
     local interval_display="Not Set" chat_display="Not Set" token_display="Not Set"
     local archive_count=0 latest_archive="" latest_epoch=0
-    local latest_display="Never" latest_size="0B"
+    local latest_display="Never" latest_size="0B" latest_bytes=0
+    local -a recent_archives=()
+    local archive_index archive_file archive_name archive_epoch archive_display archive_bytes archive_size
 
     if auto_backup_load_conf; then
         configured=true
@@ -3907,13 +3922,15 @@ auto_backup_status() {
         latest_archive=$(find "$AUTO_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' \
             ! -name 'last-backup.tar.gz' \
             -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)
+        mapfile -t recent_archives < <(find "$AUTO_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' \
+            -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 5 | cut -d' ' -f2-)
     fi
     [[ "$archive_count" =~ ^[0-9]+$ ]] || archive_count=0
     if [[ -n "$latest_archive" && -s "$latest_archive" ]]; then
         latest_epoch=$(stat -c %Y "$latest_archive" 2>/dev/null || echo 0)
         latest_display=$(tdz_format_epoch_datetime_display "$latest_epoch")
-        latest_size=$(du -h "$latest_archive" 2>/dev/null | awk '{print $1}')
-        latest_size=${latest_size:-Unknown}
+        latest_bytes=$(stat -c %s "$latest_archive" 2>/dev/null || echo 0)
+        latest_size=$(tdz_format_file_size "$latest_bytes")
     fi
 
     echo
@@ -3932,6 +3949,22 @@ auto_backup_status() {
         tdz_kv2 "LAST" "$latest_display" "SIZE" "$latest_size"
     else
         tdz_row "${C_GRAY}No backup archives have been created yet.${C_RESET}"
+    fi
+    tdz_box_divider
+    tdz_row "${C_GRAY}LOCATION${C_RESET} ${C_GREEN}${AUTO_BACKUP_DIR}${C_RESET}"
+    if (( ${#recent_archives[@]} > 0 )); then
+        tdz_box_divider
+        tdz_row "${C_BOLD}${C_WHITE}RECENT BACKUP FILES${C_RESET}"
+        for archive_index in "${!recent_archives[@]}"; do
+            archive_file="${recent_archives[$archive_index]}"
+            archive_name=$(basename "$archive_file")
+            archive_epoch=$(stat -c %Y "$archive_file" 2>/dev/null || echo 0)
+            archive_display=$(tdz_format_epoch_datetime_display "$archive_epoch")
+            archive_bytes=$(stat -c %s "$archive_file" 2>/dev/null || echo 0)
+            archive_size=$(tdz_format_file_size "$archive_bytes")
+            tdz_row "${C_CHOICE}[$((archive_index + 1))]${C_RESET} ${C_WHITE}${archive_name}${C_RESET}"
+            tdz_kv2 "DATE" "$archive_display" "SIZE" "$archive_size"
+        done
     fi
     tdz_box_bot
 
