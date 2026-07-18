@@ -264,6 +264,9 @@ class ModuleTests(unittest.TestCase):
                 "color:#1267d6;font-size:.94rem;font-weight:650",
                 css,
             )
+            self.assertIn(".project-spotlight{position:relative;display:grid", css)
+            self.assertIn(".footer-repo{display:inline-flex", css)
+            self.assertIn(".footer-bottom .footer-repo span{color:var(--accent)}", css)
             portal_js = (root / "portal/ovpn-configs/portal.js").read_text()
             self.assertIn("navigator.clipboard.writeText", portal_js)
             self.assertIn("window.localStorage", portal_js)
@@ -284,7 +287,12 @@ class ModuleTests(unittest.TestCase):
                 "/openvpn/assets/portal.js",
                 "https://tuhinbro.com/",
                 "https://t.me/TuhinBroh",
+                "https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT",
             }
+            self.assertIn('class="section project-spotlight"', portal)
+            self.assertIn("Part of TDZ SSH TUNNEL.", portal)
+            self.assertIn("View GitHub repository", portal)
+            self.assertNotIn('class="section project-spotlight"', docs + downloads)
             for page_name in ("index.html", "docs.html", "download.html"):
                 page_text = (public / page_name).read_text()
                 self.assertIn("<title>TDZ • OVPN PORTAL</title>", page_text)
@@ -293,6 +301,11 @@ class ModuleTests(unittest.TestCase):
                 self.assertIn('class="developer-link" href="https://tuhinbro.com/"', page_text)
                 self.assertIn("Telegram:", page_text)
                 self.assertIn('href="https://t.me/TuhinBroh"', page_text)
+                self.assertIn(
+                    'class="footer-repo" '
+                    'href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT"',
+                    page_text,
+                )
                 self.assertNotIn("<h2>Developer</h2>", page_text)
                 self.assertNotIn("Designed and developed", page_text)
                 self.assertNotIn("© 2026", page_text)
