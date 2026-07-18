@@ -329,6 +329,41 @@ class GatewayTests(ProcessCase):
 
 
 class PortalTests(ProcessCase):
+    def test_plain_http_is_served_inside_trusted_vpn_subnet(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            public = root / "ovpn-configs"
+            public.mkdir()
+            (public / "index.html").write_text("TDZ tunnel portal")
+            cert, key = generate_self_signed_cert(root)
+            port = free_port()
+            self.start(
+                str(PORTAL),
+                "--listen",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--public-host",
+                "vpn.example",
+                "--trusted-subnet",
+                "127.0.0.0/8",
+                "--root",
+                str(root),
+                "--tls-cert",
+                str(cert),
+                "--tls-key",
+                str(key),
+            )
+            wait_tls_port(port)
+
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            connection.request("GET", "/openvpn/")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"TDZ tunnel portal")
+            self.assertIsNone(response.getheader("Strict-Transport-Security"))
+            connection.close()
+
     def test_https_portal_routes_downloads_and_blocks_private_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

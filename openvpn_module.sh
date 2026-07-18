@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-19.13"
+TDZ_OVPN_MODULE_VERSION="2026-07-19.14"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -559,7 +559,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 $TDZ_OVPN_PORTAL --listen 0.0.0.0 --port $TDZ_OVPN_PORTAL_PORT --public-host $TDZ_OVPN_HOST --root $TDZ_OVPN_PORTAL_BASE --tls-cert $TDZ_OVPN_PKI/gateway.crt --tls-key $TDZ_OVPN_PKI/gateway.key
+ExecStart=/usr/bin/python3 $TDZ_OVPN_PORTAL --listen 0.0.0.0 --port $TDZ_OVPN_PORTAL_PORT --public-host $TDZ_OVPN_HOST --trusted-subnet $TDZ_OVPN_TCP_SUBNET/24 --trusted-subnet $TDZ_OVPN_UDP_SUBNET/24 --root $TDZ_OVPN_PORTAL_BASE --tls-cert $TDZ_OVPN_PKI/gateway.crt --tls-key $TDZ_OVPN_PKI/gateway.key
 Restart=on-failure
 RestartSec=3
 User=$TDZ_OVPN_SERVICE_USER
@@ -755,13 +755,6 @@ auth-user-pass
 auth-retry interact
 cipher AES-256-GCM
 EOF
-    if [[ "$compatibility" == "adapter" ]]; then
-        cat <<EOF
-# Leave headroom for HTTP/WebSocket/TLS encapsulation on mobile networks.
-tun-mtu 1400
-mssfix 1360
-EOF
-    fi
     if [[ "$compatibility" != "adapter" ]]; then
         cat <<EOF
 data-ciphers AES-256-GCM:AES-128-GCM
@@ -802,6 +795,8 @@ tdz_openvpn_write_profile() {
 }
 
 tdz_openvpn_generate_profiles_into() {
+    local tcp_gateway="${TDZ_OVPN_TCP_SUBNET%.*}.1"
+    local udp_gateway="${TDZ_OVPN_UDP_SUBNET%.*}.1"
     mkdir -p "$TDZ_OVPN_PROFILES"
     rm -f "$TDZ_OVPN_PROFILES"/*.ovpn "$TDZ_OVPN_PROFILES"/*.zip \
         "$TDZ_OVPN_PROFILES"/*.txt "$TDZ_OVPN_PROFILES"/*.crt 2>/dev/null || true
@@ -829,6 +824,8 @@ Server: $TDZ_OVPN_HOST
 Portal: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/
 Online documentation: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/docs
 Download page: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/download
+Inside TCP/WS/WSS/SSL VPN: http://$tcp_gateway:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/
+Inside UDP VPN: http://$udp_gateway:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/
 
 Official OpenVPN compatible
 - UDP: $TDZ_OVPN_UDP_PORT

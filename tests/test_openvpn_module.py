@@ -172,6 +172,8 @@ class ModuleTests(unittest.TestCase):
             TDZ_OVPN_HTTP_PORT=449
             TDZ_OVPN_WSS_PORT=450
             TDZ_OVPN_SSL_PORT=446
+            TDZ_OVPN_TCP_SUBNET=10.100.10.0
+            TDZ_OVPN_UDP_SUBNET=10.101.11.0
             mkdir -p "$TDZ_OVPN_PKI" "$TDZ_OVPN_RUN" "$TDZ_OVPN_HOOKS"
             printf '%s\n' 'TEST CA' > "$TDZ_OVPN_PKI/ca.crt"
             printf '%s\n' 'TEST TLS KEY' > "$TDZ_OVPN_PKI/tls-crypt.key"
@@ -224,8 +226,8 @@ class ModuleTests(unittest.TestCase):
                     "route vpn.example.com 255.255.255.255 net_gateway",
                     adapter_profile,
                 )
-                self.assertIn("tun-mtu 1400", adapter_profile)
-                self.assertIn("mssfix 1360", adapter_profile)
+                self.assertNotIn("tun-mtu 1400", adapter_profile)
+                self.assertNotIn("mssfix 1360", adapter_profile)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
             self.assertIn("TDZ <span>•</span><br>OVPN PORTAL", portal)
@@ -304,6 +306,8 @@ class ModuleTests(unittest.TestCase):
             guide = (public / "connection-guide.txt").read_text()
             self.assertIn("https://vpn.example.com:1180/openvpn/docs", guide)
             self.assertIn("https://vpn.example.com:1180/openvpn/download", guide)
+            self.assertIn("Inside TCP/WS/WSS/SSL VPN: http://10.100.10.1:1180/openvpn/", guide)
+            self.assertIn("Inside UDP VPN: http://10.101.11.1:1180/openvpn/", guide)
             self.assertIn("gateway:PANEL_PORT", guide)
             self.assertIn("public\nadapter endpoint remains outside the tunnel", guide)
             self.assertNotIn("/ovpn-configs", portal + docs + downloads + guide)
@@ -376,6 +380,8 @@ class ModuleTests(unittest.TestCase):
             portal = (root / "systemd/tdz-openvpn-portal.service").read_text()
             self.assertIn("--port 1180", portal)
             self.assertIn("--public-host", portal)
+            self.assertIn("--trusted-subnet 10.100.10.0/24", portal)
+            self.assertIn("--trusted-subnet 10.101.11.0/24", portal)
             self.assertIn("--tls-cert", portal)
             self.assertIn("--tls-key", portal)
             if shutil.which("systemd-analyze"):

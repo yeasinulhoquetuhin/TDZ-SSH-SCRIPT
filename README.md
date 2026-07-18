@@ -191,6 +191,8 @@ https://VPS-IP-OR-HOST:1180/openvpn/
 
 The landing page summarizes every transport. Full client fields, copyable payloads, SNI values, firewall requirements, verification order, and troubleshooting are available at `/openvpn/docs`; individual profiles, the complete ZIP, and the server CA are available at `/openvpn/download`. Plain HTTP requests on the same portal address are redirected safely to HTTPS. The offline text guide remains inside the ZIP but is no longer required to understand the setup. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
 
+While connected to OpenVPN, the portal and other services on the same VPS can be reached through the lowercase `route-gateway` shown in `PUSH_REPLY`. The portal is served directly at `http://ROUTE-GATEWAY:1180/openvpn/` only for authenticated tunnel subnets; public HTTP requests continue to redirect to HTTPS.
+
 The portal uses the same validated outer certificate as WSS and SSL. A matching certificate applied through **Domain & SSL Cert** is reused automatically across all three services; if it does not cover the saved OpenVPN host, the last working adapter certificate is preserved and the menu reports the mismatch. The private OpenVPN CA remains separate and embedded in every profile.
 
 ### Shared account enforcement
