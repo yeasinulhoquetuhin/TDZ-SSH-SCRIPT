@@ -4,11 +4,25 @@ import subprocess
 import shutil
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
 MODULE = REPO / "openvpn_module.sh"
+
+
+class LinkCollector(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in {"a", "link"}:
+            return
+        attributes = dict(attrs)
+        if "href" in attributes:
+            self.links.append(attributes["href"])
 
 
 class ModuleTests(unittest.TestCase):
@@ -120,8 +134,40 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("auth-nocache", profile)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
-            self.assertIn("http://vpn.example.com:1180/ovpn-configs/", portal)
+            self.assertIn("HTTPS Portal • :1180", portal)
+            self.assertIn('href="/openvpn/docs"', portal)
+            self.assertIn('href="/openvpn/download"', portal)
+            docs = (root / "portal/ovpn-configs/docs.html").read_text()
+            self.assertIn("CONNECT vpn.example.com:447 HTTP/1.1", docs)
+            self.assertIn("Mode-by-mode setup", docs)
+            downloads = (root / "portal/ovpn-configs/download.html").read_text()
+            self.assertIn("/openvpn/download/openvpn-profiles.zip", downloads)
+            self.assertTrue((root / "portal/ovpn-configs/portal.css").is_file())
             self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
+
+            public = root / "portal/ovpn-configs"
+            valid_pages = {
+                "/openvpn/",
+                "/openvpn/docs",
+                "/openvpn/download",
+                "/openvpn/assets/portal.css",
+            }
+            for page_name in ("index.html", "docs.html", "download.html"):
+                parser = LinkCollector()
+                parser.feed((public / page_name).read_text())
+                for link in parser.links:
+                    if link.startswith("/openvpn/download/"):
+                        self.assertTrue(
+                            (public / link.rsplit("/", 1)[-1]).is_file(),
+                            f"broken generated link in {page_name}: {link}",
+                        )
+                    else:
+                        self.assertIn(link, valid_pages, f"unexpected link in {page_name}: {link}")
+
+            guide = (public / "connection-guide.txt").read_text()
+            self.assertIn("https://vpn.example.com:1180/openvpn/docs", guide)
+            self.assertIn("https://vpn.example.com:1180/openvpn/download", guide)
+            self.assertNotIn("/ovpn-configs", portal + docs + downloads + guide)
 
             (root / "portal/ovpn-configs/stale.ovpn").write_text("stale\n")
             regenerated = self.run_bash(script)
@@ -183,6 +229,10 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("NoNewPrivileges=true", gateway)
             self.assertIn("CapabilityBoundingSet=CAP_NET_BIND_SERVICE", gateway)
             self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", gateway)
+            portal = (root / "systemd/tdz-openvpn-portal.service").read_text()
+            self.assertIn("--port 1180", portal)
+            self.assertIn("--tls-cert", portal)
+            self.assertIn("--tls-key", portal)
             if shutil.which("systemd-analyze"):
                 verified = subprocess.run(
                     ["systemd-analyze", "verify", *map(str, units)],

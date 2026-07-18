@@ -8147,7 +8147,7 @@ main_menu() {
         tdz_box_divider
         tdz_row "${pill_haprx} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}   ${pill_nginx} Nginx ${NGINX_INTERNAL_TLS_PORT}   ${pill_ws} WS-Bridge ${WS_SSH_BRIDGE_PORT}"
         if declare -F tdz_openvpn_is_installed >/dev/null 2>&1 && tdz_openvpn_is_installed; then
-            tdz_row "${pill_openvpn} OpenVPN Suite   ${C_DIM}Profiles :${TDZ_OVPN_PORTAL_PORT}/ovpn-configs${C_RESET}"
+            tdz_row "${pill_openvpn} OpenVPN Suite   ${C_DIM}Portal :${TDZ_OVPN_PORTAL_PORT}/openvpn${C_RESET}"
         fi
         tdz_box_bot
 

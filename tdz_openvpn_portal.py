@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal, read-only download server for TDZ OpenVPN profiles."""
+"""Read-only HTTPS documentation and download portal for TDZ OpenVPN."""
 
 from __future__ import annotations
 
@@ -7,11 +7,26 @@ import argparse
 import html
 import mimetypes
 import os
-import posixpath
+import re
+import ssl
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
+
+
+PUBLIC_PREFIX = "/openvpn"
+LEGACY_PREFIX = "/ovpn-configs"
+DOWNLOAD_SUFFIXES = {".ovpn", ".zip", ".conf", ".txt", ".crt", ".pem"}
+DOWNLOAD_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+PAGE_ROUTES = {
+    f"{PUBLIC_PREFIX}/": "index.html",
+    f"{PUBLIC_PREFIX}/docs": "docs.html",
+    f"{PUBLIC_PREFIX}/docs/": "docs.html",
+    f"{PUBLIC_PREFIX}/download": "download.html",
+    f"{PUBLIC_PREFIX}/download/": "download.html",
+    f"{PUBLIC_PREFIX}/assets/portal.css": "portal.css",
+}
 
 
 class PortalServer(ThreadingHTTPServer):
@@ -19,10 +34,16 @@ class PortalServer(ThreadingHTTPServer):
     allow_reuse_address = True
     request_queue_size = 128
 
-    def __init__(self, address: tuple[str, int], root: Path) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        root: Path,
+        tls_context: ssl.SSLContext,
+    ) -> None:
         super().__init__(address, PortalHandler)
         self.portal_root = root.resolve()
         self.public_root = (self.portal_root / "ovpn-configs").resolve()
+        self.socket = tls_context.wrap_socket(self.socket, server_side=True)
 
     def get_request(self):
         request, client_address = super().get_request()
@@ -31,7 +52,7 @@ class PortalServer(ThreadingHTTPServer):
 
 
 class PortalHandler(BaseHTTPRequestHandler):
-    server_version = "TDZ-OpenVPN-Portal/1.0"
+    server_version = "TDZ-OpenVPN-Portal/2.0"
     sys_version = ""
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -43,9 +64,14 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=()",
+        )
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; "
+            "default-src 'none'; style-src 'self'; img-src 'self'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         )
 
@@ -70,61 +96,63 @@ class PortalHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _resolve_request(self) -> Path | None:
-        request_path = unquote(urlsplit(self.path).path)
-        if "\x00" in request_path:
-            raise PermissionError
-        if request_path == "/":
-            return None
-        if not request_path.startswith("/ovpn-configs/"):
-            raise PermissionError
-
-        relative = posixpath.normpath(request_path[len("/ovpn-configs/") :])
-        if relative.startswith("../") or "/../" in relative:
-            raise PermissionError
+    def _public_target(self, name: str) -> Path:
         root = self.server.public_root  # type: ignore[attr-defined]
-        target = (root / relative).resolve()
+        target = (root / name).resolve()
         try:
-            target.relative_to(root)
+            relative = target.relative_to(root)
         except ValueError as exc:
             raise PermissionError from exc
-        if any(part.startswith(".") for part in target.relative_to(root).parts):
+        if not relative.parts or any(part.startswith(".") for part in relative.parts):
             raise PermissionError
         return target
 
-    def _validate_public_target(self, target: Path) -> Path:
-        root = self.server.public_root  # type: ignore[attr-defined]
-        resolved = target.resolve()
-        try:
-            relative = resolved.relative_to(root)
-        except ValueError as exc:
-            raise PermissionError from exc
-        if any(part.startswith(".") for part in relative.parts):
+    @staticmethod
+    def _safe_download_name(value: str) -> str:
+        if not DOWNLOAD_NAME_PATTERN.fullmatch(value):
             raise PermissionError
-        return resolved
+        if Path(value).suffix.lower() not in DOWNLOAD_SUFFIXES:
+            raise PermissionError
+        return value
+
+    def _resolve_request(self) -> tuple[Path | None, bool, str | None]:
+        request_path = unquote(urlsplit(self.path).path)
+        if "\x00" in request_path:
+            raise PermissionError
+        if request_path in {"/", PUBLIC_PREFIX}:
+            return None, False, f"{PUBLIC_PREFIX}/"
+        if request_path in {LEGACY_PREFIX, f"{LEGACY_PREFIX}/"}:
+            return None, False, f"{PUBLIC_PREFIX}/"
+        if request_path in PAGE_ROUTES:
+            return self._public_target(PAGE_ROUTES[request_path]), False, None
+
+        download_prefix = f"{PUBLIC_PREFIX}/download/"
+        if request_path.startswith(download_prefix):
+            name = self._safe_download_name(request_path[len(download_prefix) :])
+            return self._public_target(name), True, None
+
+        legacy_download_prefix = f"{LEGACY_PREFIX}/"
+        if request_path.startswith(legacy_download_prefix):
+            name = self._safe_download_name(request_path[len(legacy_download_prefix) :])
+            legacy_target = self._public_target(name)
+            if not legacy_target.is_file():
+                raise PermissionError
+            return None, False, f"{PUBLIC_PREFIX}/download/{quote(name)}"
+        raise PermissionError
 
     def _serve(self) -> None:
         try:
-            target = self._resolve_request()
+            target, force_download, redirect = self._resolve_request()
         except PermissionError:
             self._error(HTTPStatus.NOT_FOUND, "The requested page was not found.")
             return
 
-        if target is None:
-            self._redirect("/ovpn-configs/")
+        if redirect is not None:
+            self._redirect(redirect)
             return
-        if target.is_dir():
-            if not self.path.endswith("/"):
-                self._redirect(urlsplit(self.path).path + "/")
-                return
-            try:
-                # Re-resolve the directory index as well. This prevents an
-                # otherwise in-tree directory from exposing an out-of-tree
-                # index through a symlink.
-                target = self._validate_public_target(target / "index.html")
-            except PermissionError:
-                self._error(HTTPStatus.NOT_FOUND, "The requested page was not found.")
-                return
+        if target is None:
+            self._error(HTTPStatus.NOT_FOUND, "The requested page was not found.")
+            return
         if not target.is_file():
             self._error(HTTPStatus.NOT_FOUND, "The requested file was not found.")
             return
@@ -136,7 +164,7 @@ class PortalHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", content_type)
             self._security_headers()
             self.send_header("Content-Length", str(size))
-            if target.suffix.lower() in {".ovpn", ".zip", ".conf", ".txt", ".crt", ".pem"}:
+            if force_download:
                 safe_name = target.name.replace('"', "")
                 self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
             self.end_headers()
@@ -169,20 +197,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--listen", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=1180)
     parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--tls-cert", required=True, type=Path)
+    parser.add_argument("--tls-key", required=True, type=Path)
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
     if not args.root.is_dir():
         parser.error("portal root does not exist")
+    if not args.tls_cert.is_file():
+        parser.error("TLS certificate does not exist")
+    if not args.tls_key.is_file():
+        parser.error("TLS private key does not exist")
     return args
+
+
+def build_tls_context(certificate: Path, private_key: Path) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.options |= ssl.OP_NO_COMPRESSION
+    context.load_cert_chain(certificate, private_key)
+    return context
 
 
 def main() -> None:
     args = parse_args()
     os.chdir("/")
-    server = PortalServer((args.listen, args.port), args.root)
+    tls_context = build_tls_context(args.tls_cert, args.tls_key)
+    server = PortalServer((args.listen, args.port), args.root, tls_context)
     try:
-        print(f"TDZ OpenVPN portal listening on {args.listen}:{args.port}", flush=True)
+        print(f"TDZ OpenVPN HTTPS portal listening on {args.listen}:{args.port}", flush=True)
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass

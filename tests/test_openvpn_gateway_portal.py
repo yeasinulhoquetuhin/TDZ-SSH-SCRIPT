@@ -37,6 +37,55 @@ def wait_port(port: int, timeout=5.0) -> None:
     raise AssertionError(f"port {port} did not open")
 
 
+def generate_self_signed_cert(directory: Path) -> tuple[Path, Path]:
+    cert = directory / "gateway.crt"
+    key = directory / "gateway.key"
+    generated = subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=vpn.example",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if generated.returncode != 0:
+        raise AssertionError("could not generate test certificate")
+    return cert, key
+
+
+def unverified_tls_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def wait_tls_port(port: int, timeout=5.0) -> None:
+    deadline = time.monotonic() + timeout
+    context = unverified_tls_context()
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2) as plain:
+                with context.wrap_socket(plain, server_hostname="vpn.example"):
+                    return
+        except OSError:
+            time.sleep(0.05)
+    raise AssertionError(f"TLS port {port} did not open")
+
+
 class EchoServer:
     def __init__(self):
         self.port = free_port()
@@ -158,30 +207,7 @@ class GatewayTests(ProcessCase):
 
     def test_raw_ssl_gateway_relays_encrypted_transport(self):
         with EchoServer() as backend, tempfile.TemporaryDirectory() as temp:
-            cert = Path(temp) / "gateway.crt"
-            key = Path(temp) / "gateway.key"
-            generated = subprocess.run(
-                [
-                    "openssl",
-                    "req",
-                    "-x509",
-                    "-newkey",
-                    "rsa:2048",
-                    "-nodes",
-                    "-days",
-                    "1",
-                    "-subj",
-                    "/CN=vpn.example",
-                    "-keyout",
-                    str(key),
-                    "-out",
-                    str(cert),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            self.assertEqual(generated.returncode, 0)
+            cert, key = generate_self_signed_cert(Path(temp))
             port = free_port()
             self.start(
                 str(GATEWAY),
@@ -199,9 +225,7 @@ class GatewayTests(ProcessCase):
                 str(key),
             )
             wait_port(port)
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
+            context = unverified_tls_context()
             with socket.create_connection(("127.0.0.1", port), timeout=3) as plain:
                 with context.wrap_socket(plain, server_hostname="vpn.example") as client:
                     self.assertGreaterEqual(client.version(), "TLSv1.2")
@@ -210,44 +234,91 @@ class GatewayTests(ProcessCase):
 
 
 class PortalTests(ProcessCase):
-    def test_portal_serves_only_the_public_prefix(self):
+    def test_https_portal_routes_downloads_and_blocks_private_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             public = root / "ovpn-configs"
             public.mkdir()
             (public / "index.html").write_text("TDZ portal")
+            (public / "docs.html").write_text("TDZ docs")
+            (public / "download.html").write_text("TDZ downloads")
+            (public / "portal.css").write_text("body{}")
             (public / "client.ovpn").write_text("client\n")
             (public / ".secret").write_text("hidden")
             (root / "outside.ovpn").write_text("must not be served\n")
             (public / "linked.ovpn").symlink_to(root / "outside.ovpn")
-            linked_directory = public / "linked-directory"
-            linked_directory.mkdir()
-            (linked_directory / "index.html").symlink_to(root / "outside.ovpn")
+            cert, key = generate_self_signed_cert(root)
             port = free_port()
             self.start(
-                str(PORTAL), "--listen", "127.0.0.1", "--port", str(port), "--root", str(root)
+                str(PORTAL),
+                "--listen",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--root",
+                str(root),
+                "--tls-cert",
+                str(cert),
+                "--tls-key",
+                str(key),
             )
-            wait_port(port)
+            wait_tls_port(port)
 
-            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
-            connection.request("GET", "/ovpn-configs/")
+            connection = http.client.HTTPSConnection(
+                "127.0.0.1", port, timeout=3, context=unverified_tls_context()
+            )
+            connection.request("GET", "/")
+            root_redirect = connection.getresponse()
+            self.assertEqual(root_redirect.status, 302)
+            self.assertEqual(root_redirect.getheader("Location"), "/openvpn/")
+            root_redirect.read()
+
+            connection.request("GET", "/openvpn/")
             response = connection.getresponse()
             self.assertEqual(response.status, 200)
             self.assertEqual(response.read(), b"TDZ portal")
             self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
 
-            connection.request("GET", "/ovpn-configs/client.ovpn")
+            for path, expected in (
+                ("/openvpn/docs", b"TDZ docs"),
+                ("/openvpn/docs/", b"TDZ docs"),
+                ("/openvpn/download", b"TDZ downloads"),
+                ("/openvpn/download/", b"TDZ downloads"),
+                ("/openvpn/assets/portal.css", b"body{}"),
+            ):
+                connection.request("GET", path)
+                page = connection.getresponse()
+                self.assertEqual(page.status, 200)
+                self.assertEqual(page.read(), expected)
+                self.assertIsNone(page.getheader("Content-Disposition"))
+
+            connection.request("GET", "/openvpn/download/client.ovpn")
             profile = connection.getresponse()
             self.assertEqual(profile.status, 200)
             self.assertIn("attachment", profile.getheader("Content-Disposition"))
             profile.read()
 
+            connection.request("GET", "/ovpn-configs/client.ovpn")
+            legacy_file = connection.getresponse()
+            self.assertEqual(legacy_file.status, 302)
+            self.assertEqual(legacy_file.getheader("Location"), "/openvpn/download/client.ovpn")
+            legacy_file.read()
+
+            connection.request("GET", "/ovpn-configs/")
+            legacy_root = connection.getresponse()
+            self.assertEqual(legacy_root.status, 302)
+            self.assertEqual(legacy_root.getheader("Location"), "/openvpn/")
+            legacy_root.read()
+
             for path in (
                 "/etc/passwd",
-                "/ovpn-configs/.secret",
-                "/ovpn-configs/../.secret",
+                "/openvpn/download/.secret",
+                "/openvpn/download/../.secret",
+                "/openvpn/download/client%0d%0aX-Test.ovpn",
+                "/openvpn/download/linked.ovpn",
+                "/openvpn/download/index.html",
+                "/openvpn/assets/../client.ovpn",
                 "/ovpn-configs/linked.ovpn",
-                "/ovpn-configs/linked-directory/",
             ):
                 connection.request("GET", path)
                 denied = connection.getresponse()

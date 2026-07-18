@@ -183,13 +183,15 @@ The optional suite requires Python 3.7 or newer. On an older distribution the co
 | **WSS / SNI** | Compatible TLS WebSocket adapter | Injector profile; use the configured host as SNI |
 | **SSL / SNI** | Compatible external SSL/TLS adapter | Injector profile; use the configured host as SNI |
 
-The public download page is generated automatically:
+The OpenVPN HTTPS portal is generated automatically:
 
 ```text
-http://VPS-IP-OR-HOST:1180/ovpn-configs/
+https://VPS-IP-OR-HOST:1180/openvpn/
 ```
 
-It includes individual profiles, one ZIP containing all profiles, the server CA, protocol details, SNI values, and payload templates. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
+The landing page summarizes every transport. Full client fields, payloads, SNI values, firewall requirements, verification order, and troubleshooting are available at `/openvpn/docs`; individual profiles, the complete ZIP, and the server CA are available at `/openvpn/download`. The offline text guide remains inside the ZIP but is no longer required to understand the setup. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
+
+The portal uses the same validated gateway certificate as WSS and SSL. A self-signed certificate still encrypts the connection but may show a browser trust warning; configuring a publicly trusted certificate for the selected host removes that warning.
 
 ### Shared account enforcement
 
@@ -251,7 +253,7 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 | 448 | UDP | OpenVPN direct UDP transport |
 | 449 | HTTP / WS | OpenVPN HTTP CONNECT, HTTP Payload, and WebSocket gateway |
 | 450 | WSS | OpenVPN TLS WebSocket / SNI gateway |
-| 1180 | HTTP | OpenVPN profile download portal (when the optional suite is installed) |
+| 1180 | HTTPS | OpenVPN documentation and profile portal (when the optional suite is installed) |
 
 ## Supported Platforms
 
