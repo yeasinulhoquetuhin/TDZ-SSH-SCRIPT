@@ -168,7 +168,7 @@ After installation, type **`menu`** to launch the management interface.
 
 ## OpenVPN Protocol Suite
 
-Open **`menu → 13) Protocol Manager → 12) OpenVPN Protocol Suite`** to install or manage OpenVPN. The component is optional: installing or removing it does not remove TDZ users or change the existing SSH, HAProxy, Nginx, DNSTT, BadVPN, ZiVPN, banner, certificate, or backup configuration.
+Open **`menu → 13) Protocol Manager → 10) OpenVPN Protocol Suite`** to install or manage OpenVPN. The component is optional: installing or removing it does not remove TDZ users or change the existing SSH, HAProxy, Nginx, DNSTT, BadVPN, ZiVPN, banner, certificate, or backup configuration.
 
 During first installation, TDZ asks for the public VPS IP or domain. It then applies the fixed OpenVPN transport layout (`446–450`), creates fresh server cryptographic material, applies isolated VPN subnets, starts the required services, and verifies that every listener is active. Re-running the installer repairs the suite while preserving account data; installations created with the earlier random-port layout are migrated transactionally and restored automatically if any new listener cannot be started.
 
@@ -186,7 +186,7 @@ The optional suite requires Python 3.7 or newer. On an older distribution the co
 The public download page is generated automatically:
 
 ```text
-http://VPS-IP-OR-HOST:4071/ovpn-configs/
+http://VPS-IP-OR-HOST:1200/ovpn-configs/
 ```
 
 It includes individual profiles, one ZIP containing all profiles, the server CA, protocol details, SNI values, and payload templates. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
@@ -246,12 +246,12 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 | 8770 | HTTP | Nginx internal proxy |
 | 8442 | HTTPS | Nginx internal TLS proxy |
 | 8890 | TCP | WS-to-SSH bridge |
-| 4071 | HTTP | OpenVPN profile download portal (when the optional suite is installed) |
 | 446 | TLS | OpenVPN SSL / SNI adapter |
 | 447 | TCP | OpenVPN direct TCP backend |
 | 448 | UDP | OpenVPN direct UDP transport |
 | 449 | HTTP / WS | OpenVPN HTTP CONNECT, HTTP Payload, and WebSocket gateway |
 | 450 | WSS | OpenVPN TLS WebSocket / SNI gateway |
+| 1200 | HTTP | OpenVPN profile download portal (when the optional suite is installed) |
 
 ## Supported Platforms
 

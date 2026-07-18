@@ -7166,12 +7166,12 @@ protocol_menu() {
         tdz_menu_status "[ 8]" "Install ZiVPN (UDP 5667)" "$zivpn_status" "$zivpn_color"
         tdz_menu1 "[ 9]" "Uninstall ZiVPN"
         if declare -F tdz_openvpn_menu >/dev/null 2>&1; then
-            tdz_menu_status "[12]" "OpenVPN Protocol Suite" "$openvpn_status" "$openvpn_color"
+            tdz_menu_status "[10]" "OpenVPN Protocol Suite" "$openvpn_status" "$openvpn_color"
         fi
         tdz_box_divider
         tdz_row "${C_GRAY}MANAGEMENT PANELS${C_RESET}"
-        tdz_menu_status "[10]" "Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status" "$xui_color"
-        tdz_menu1 "[11]" "Uninstall X-UI Panel"
+        tdz_menu_status "[11]" "Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status" "$xui_color"
+        tdz_menu1 "[12]" "Uninstall X-UI Panel"
         tdz_box_divider
         tdz_menu1 "[ 0]" "Return to Main Menu"
         tdz_box_bot
@@ -7186,8 +7186,8 @@ protocol_menu() {
             5) install_dnstt; press_enter ;; 6) uninstall_dnstt; press_enter ;;
             7) nginx_proxy_menu ;;
             8) install_zivpn; press_enter ;; 9) uninstall_zivpn; press_enter ;;
-            10) install_xui_panel; press_enter ;; 11) uninstall_xui_panel; press_enter ;;
-            12) if declare -F tdz_openvpn_menu >/dev/null 2>&1; then tdz_openvpn_menu; else invalid_option; fi ;;
+            10) if declare -F tdz_openvpn_menu >/dev/null 2>&1; then tdz_openvpn_menu; else invalid_option; fi ;;
+            11) install_xui_panel; press_enter ;; 12) uninstall_xui_panel; press_enter ;;
             0) return ;;
             *) invalid_option ;;
         esac

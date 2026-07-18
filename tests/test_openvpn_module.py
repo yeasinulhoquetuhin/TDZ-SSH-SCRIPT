@@ -30,7 +30,7 @@ class ModuleTests(unittest.TestCase):
             ! tdz_openvpn_valid_host '-bad.example' || exit 14
             ! tdz_openvpn_valid_host '.bad.example' || exit 17
             ! tdz_openvpn_valid_host 'bad.example.' || exit 18
-            for port in 80 443 442 8443 2080 2086 2096 2053 1080 8080 8880 8888 4071; do
+            for port in 80 443 442 8443 2080 2086 2096 2053 1080 1200 8080 8880 8888; do
                 tdz_openvpn_forbidden_port "$port" || exit 15
             done
             ! tdz_openvpn_forbidden_port 35001 || exit 16
@@ -120,7 +120,7 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("auth-nocache", profile)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
-            self.assertIn("http://vpn.example.com:4071/ovpn-configs/", portal)
+            self.assertIn("http://vpn.example.com:1200/ovpn-configs/", portal)
             self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
 
             (root / "portal/ovpn-configs/stale.ovpn").write_text("stale\n")
@@ -227,6 +227,20 @@ class ModuleTests(unittest.TestCase):
         self.assertIn('exec 8>"$USAGE_LOCK"', activation)
         self.assertIn("flock -x 8", activation)
         self.assertIn("active:*", activation)
+
+    def test_protocol_manager_numbering_is_sequential(self):
+        menu = (REPO / "menu.sh").read_text()
+        start = menu.index("protocol_menu() {")
+        end = menu.index("\n}\n\nuninstall_script()", start)
+        protocol = menu[start:end]
+        openvpn = protocol.index('tdz_menu_status "[10]" "OpenVPN Protocol Suite"')
+        install_xui = protocol.index('tdz_menu_status "[11]" "Install X-UI')
+        uninstall_xui = protocol.index('tdz_menu1 "[12]" "Uninstall X-UI Panel"')
+        self.assertLess(openvpn, install_xui)
+        self.assertLess(install_xui, uninstall_xui)
+        self.assertIn("10) if declare -F tdz_openvpn_menu", protocol)
+        self.assertIn("11) install_xui_panel", protocol)
+        self.assertIn("12) uninstall_xui_panel", protocol)
 
 
 if __name__ == "__main__":
