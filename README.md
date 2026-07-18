@@ -204,7 +204,7 @@ The portal uses the same validated outer certificate as WSS and SSL. A matching 
 - Expired or quota-exhausted accounts are disconnected and locked automatically
 - VPN clients are isolated from one another and cannot use the transport gateway as an open proxy
 
-Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores; modern clients prefer AES-128-GCM for lower mobile CPU cost while AES-256-GCM remains available as the compatibility fallback.
+Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores; modern TCP adapter clients prefer AES-128-GCM for lower mobile CPU cost while AES-256-GCM remains available as the compatibility fallback. Direct UDP retains AES-256-GCM priority.
 
 Compatibility follows the official OpenVPN transport model: the core protocol runs over TCP or UDP, while HTTP proxy mode uses TCP. Session status and forced disconnects use the local OpenVPN management interface. See the [OpenVPN protocol reference](https://openvpn.net/community-docs/openvpn-protocol.html), [HTTP proxy guide](https://openvpn.net/community-docs/connecting-to-an-openvpn-server-via-an-http-proxy.html), and [management interface reference](https://openvpn.net/community-docs/management-interface.html).
 

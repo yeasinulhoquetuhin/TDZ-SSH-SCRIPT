@@ -208,6 +208,7 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("fast-io", udp_server)
             self.assertNotIn("tun-mtu 1400", udp_server)
             self.assertNotIn("tcp-queue-limit", udp_server)
+            self.assertIn("AES-256-GCM:AES-128-GCM", udp_server)
 
             profile = (root / "portal/ovpn-configs/tdz-openvpn-http-connect.ovpn").read_text()
             self.assertIn("remote vpn.example.com 447", profile)
@@ -224,6 +225,9 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("mssfix 1360", direct_profile)
             self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", direct_profile)
             self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", profile)
+            udp_profile = (root / "portal/ovpn-configs/tdz-openvpn-udp.ovpn").read_text()
+            self.assertIn("data-ciphers AES-256-GCM:AES-128-GCM", udp_profile)
+            self.assertNotIn("tun-mtu 1400", udp_profile)
             for adapter_name in (
                 "tdz-openvpn-ws-injector.ovpn",
                 "tdz-openvpn-wss-injector.ovpn",

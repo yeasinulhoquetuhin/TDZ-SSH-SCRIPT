@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-19.18"
+TDZ_OVPN_MODULE_VERSION="2026-07-19.19"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -464,8 +464,10 @@ EOF
 }
 
 tdz_openvpn_write_server_config() {
-    local instance=$1 proto=$2 port=$3 subnet=$4 pam_plugin=$5 config
+    local instance=$1 proto=$2 port=$3 subnet=$4 pam_plugin=$5 config cipher_order
     config="$TDZ_OVPN_ROOT/server-${instance}.conf"
+    cipher_order="AES-256-GCM:AES-128-GCM"
+    [[ "$proto" == "tcp-server" ]] && cipher_order="AES-128-GCM:AES-256-GCM"
     {
         echo "port $port"
         echo "proto $proto"
@@ -496,11 +498,11 @@ tdz_openvpn_write_server_config() {
         if tdz_openvpn_has_modern_cipher_option; then
             # Modern clients negotiate AES-128-GCM first for lower mobile CPU
             # cost. AES-256-GCM remains available and is the legacy fallback.
-            echo "data-ciphers AES-128-GCM:AES-256-GCM"
+            echo "data-ciphers $cipher_order"
             echo "data-ciphers-fallback AES-256-GCM"
             echo "allow-compression no"
         else
-            echo "ncp-ciphers AES-128-GCM:AES-256-GCM"
+            echo "ncp-ciphers $cipher_order"
         fi
         echo "auth SHA256"
         echo "keepalive 10 60"
@@ -761,6 +763,7 @@ EOF
 
 tdz_openvpn_profile_common() {
     local compatibility=${1:-modern}
+    local cipher_order=${2:-AES-256-GCM:AES-128-GCM}
     local cipher_compatibility
     if [[ "$compatibility" == "adapter" ]]; then
         # Embedded OpenVPN cores in injector apps can identify themselves as
@@ -787,7 +790,7 @@ cipher AES-256-GCM
 EOF
     if [[ "$compatibility" != "adapter" ]]; then
         cat <<EOF
-data-ciphers AES-128-GCM:AES-256-GCM
+data-ciphers $cipher_order
 data-ciphers-fallback AES-256-GCM
 EOF
     fi
@@ -809,6 +812,8 @@ EOF
 tdz_openvpn_write_profile() {
     local file=$1 proto=$2 remote_port=$3 header=${4:-} compatibility=${5:-modern}
     local protect_outer_route=${6:-false}
+    local cipher_order="AES-256-GCM:AES-128-GCM"
+    [[ "$proto" == "tcp-client" ]] && cipher_order="AES-128-GCM:AES-256-GCM"
     {
         [[ -n "$header" ]] && printf '# %s\n' "$header"
         echo "proto $proto"
@@ -820,7 +825,7 @@ tdz_openvpn_write_profile() {
             # gateway so the carrier socket cannot be routed back into tun.
             echo "route $TDZ_OVPN_HOST 255.255.255.255 net_gateway"
         fi
-        tdz_openvpn_profile_common "$compatibility"
+        tdz_openvpn_profile_common "$compatibility" "$cipher_order"
     } > "$TDZ_OVPN_PROFILES/$file"
     chmod 644 "$TDZ_OVPN_PROFILES/$file"
 }
@@ -838,7 +843,7 @@ tdz_openvpn_generate_profiles_into() {
         echo "http-proxy $TDZ_OVPN_HOST $TDZ_OVPN_HTTP_PORT"
         echo "http-proxy-option VERSION 1.1"
         echo "tun-mtu $TDZ_OVPN_TCP_TUN_MTU"
-        tdz_openvpn_profile_common
+        tdz_openvpn_profile_common modern "AES-128-GCM:AES-256-GCM"
     } > "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn"
     chmod 644 "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn"
 
