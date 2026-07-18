@@ -176,6 +176,7 @@ class ModuleTests(unittest.TestCase):
             printf '%s\n' 'TEST CA' > "$TDZ_OVPN_PKI/ca.crt"
             printf '%s\n' 'TEST TLS KEY' > "$TDZ_OVPN_PKI/tls-crypt.key"
             tdz_openvpn_write_server_config tcp tcp-server 447 10.100.10.0 /pam-plugin.so
+            tdz_openvpn_write_server_config udp udp 448 10.101.11.0 /pam-plugin.so
             tdz_openvpn_generate_profiles
             """
             result = self.run_bash(script)
@@ -191,7 +192,11 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("auth-gen-token", server)
             self.assertIn("max-clients 250", server)
             self.assertIn("tls-version-min 1.2", server)
+            self.assertIn("tcp-nodelay", server)
             self.assertNotIn("comp-lzo", server)
+
+            udp_server = (root / "openvpn/server-udp.conf").read_text()
+            self.assertNotIn("tcp-nodelay", udp_server)
 
             profile = (root / "portal/ovpn-configs/tdz-openvpn-http-connect.ovpn").read_text()
             self.assertIn("remote vpn.example.com 447", profile)
@@ -344,8 +349,19 @@ class ModuleTests(unittest.TestCase):
             self.assertIn('HTTP_PORT="449"', firewall)
             self.assertIn('WSS_PORT="450"', firewall)
             self.assertIn('SSL_PORT="446"', firewall)
+            self.assertIn('SSH_PORT=22', firewall)
             self.assertIn("MASQUERADE", firewall)
             self.assertIn("tun-tdz-tcp", firewall)
+            tcp_drop = firewall.index("filter_add INPUT -i tun-tdz-tcp -j DROP")
+            tcp_ssh = firewall.index(
+                'filter_add INPUT -i tun-tdz-tcp -p tcp --dport "$SSH_PORT" -j ACCEPT'
+            )
+            udp_drop = firewall.index("filter_add INPUT -i tun-tdz-udp -j DROP")
+            udp_ssh = firewall.index(
+                'filter_add INPUT -i tun-tdz-udp -p tcp --dport "$SSH_PORT" -j ACCEPT'
+            )
+            self.assertLess(tcp_drop, tcp_ssh)
+            self.assertLess(udp_drop, udp_ssh)
             units = list((root / "systemd").glob("tdz-openvpn-*.service"))
             self.assertEqual(len(units), 8)
             for unit in units:
@@ -409,8 +425,13 @@ class ModuleTests(unittest.TestCase):
 
     def test_limiter_preserves_established_openvpn_sessions(self):
         menu = (REPO / "menu.sh").read_text()
-        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-18.5", menu)
+        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-18.6", menu)
         self.assertIn("if (( online_count > limit )); then", menu)
+        self.assertIn("banner_session_count=$((online_count + 1))", menu)
+        self.assertIn(
+            "Active Session:</b> $banner_session_count/$limit",
+            menu,
+        )
         self.assertIn('kill-user "$user" expired', menu)
         self.assertIn('kill-user "$user" quota', menu)
         self.assertNotIn(

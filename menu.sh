@@ -1249,7 +1249,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-18.5
+# TDZ SSH TUNNEL limiter version 2026-07-18.6
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1597,6 +1597,12 @@ while true; do
         # --- Generate dynamic banner based on status ---
         if $dynamic_banners_enabled; then
             SEP="---------------------------------"
+            # OpenSSH sends Banner files before authentication, so the login
+            # currently reading this file cannot appear in who/sshd session
+            # accounting yet. Display the existing shared SSH+OpenVPN total
+            # plus this incoming SSH login; enforcement keeps using the
+            # authoritative online_count above.
+            banner_session_count=$((online_count + 1))
 
             if $pending_activation; then
                 STATUS_TEXT="Waiting for First Use"
@@ -1620,7 +1626,7 @@ while true; do
             banner_content+="<b>[-] Status:</b> ${STATUS_TEXT}<br>"
             banner_content+="<b>[-] Expiration:</b> $expiry_display<br>${SEP}<br>"
             banner_content+="<b>[-] Traffic Usage:</b> $bw_display<br>"
-            banner_content+="<b>[-] Active Session:</b> $online_count/$limit<br>"
+            banner_content+="<b>[-] Active Session:</b> $banner_session_count/$limit<br>"
 
             if [[ -n "$MSG_BLOCK" ]]; then
                 banner_content+="${SEP}<br>${MSG_BLOCK}<br>"
