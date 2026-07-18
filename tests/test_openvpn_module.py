@@ -38,6 +38,46 @@ class ModuleTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_fixed_openvpn_port_mapping_and_legacy_state_detection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self.run_bash(
+                f"""
+                tdz_openvpn_apply_fixed_port_mapping
+                [[ "$TDZ_OVPN_SSL_PORT" == 446 ]] || exit 20
+                [[ "$TDZ_OVPN_TCP_PORT" == 447 ]] || exit 21
+                [[ "$TDZ_OVPN_UDP_PORT" == 448 ]] || exit 22
+                [[ "$TDZ_OVPN_HTTP_PORT" == 449 ]] || exit 23
+                [[ "$TDZ_OVPN_WSS_PORT" == 450 ]] || exit 24
+                tdz_openvpn_ports_match_fixed_mapping || exit 25
+                tdz_openvpn_valid_saved_port 446 || exit 26
+                tdz_openvpn_valid_saved_port 25001 || exit 27
+                ! tdz_openvpn_valid_saved_port 1024 || exit 28
+
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                mkdir -p "$TDZ_OVPN_PKI"
+                printf 'test\n' > "$TDZ_OVPN_PKI/ca.crt"
+                printf 'test\n' > "$TDZ_OVPN_PKI/server.key"
+                TDZ_OVPN_HOST=vpn.example.com
+                TDZ_OVPN_TCP_PORT=25001
+                TDZ_OVPN_UDP_PORT=25002
+                TDZ_OVPN_HTTP_PORT=25003
+                TDZ_OVPN_WSS_PORT=25004
+                TDZ_OVPN_SSL_PORT=25005
+                TDZ_OVPN_TCP_SUBNET=10.100.10.0
+                TDZ_OVPN_UDP_SUBNET=10.101.11.0
+                tdz_openvpn_save_state || exit 29
+                tdz_openvpn_needs_refresh || exit 30
+
+                tdz_openvpn_apply_fixed_port_mapping
+                tdz_openvpn_save_state || exit 31
+                ! tdz_openvpn_needs_refresh || exit 32
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_profiles_and_server_config_are_generated_without_credentials(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -49,15 +89,15 @@ class ModuleTests(unittest.TestCase):
             TDZ_OVPN_PROFILES={root}/portal/ovpn-configs
             TDZ_OVPN_RUNTIME=/runtime-helper
             TDZ_OVPN_HOST=vpn.example.com
-            TDZ_OVPN_TCP_PORT=25001
-            TDZ_OVPN_UDP_PORT=25002
-            TDZ_OVPN_HTTP_PORT=25003
-            TDZ_OVPN_WSS_PORT=25004
-            TDZ_OVPN_SSL_PORT=25005
+            TDZ_OVPN_TCP_PORT=447
+            TDZ_OVPN_UDP_PORT=448
+            TDZ_OVPN_HTTP_PORT=449
+            TDZ_OVPN_WSS_PORT=450
+            TDZ_OVPN_SSL_PORT=446
             mkdir -p "$TDZ_OVPN_PKI" "$TDZ_OVPN_RUN" "$TDZ_OVPN_HOOKS"
             printf '%s\n' 'TEST CA' > "$TDZ_OVPN_PKI/ca.crt"
             printf '%s\n' 'TEST TLS KEY' > "$TDZ_OVPN_PKI/tls-crypt.key"
-            tdz_openvpn_write_server_config tcp tcp-server 25001 10.100.10.0 /pam-plugin.so
+            tdz_openvpn_write_server_config tcp tcp-server 447 10.100.10.0 /pam-plugin.so
             tdz_openvpn_generate_profiles
             """
             result = self.run_bash(script)
@@ -72,7 +112,8 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("comp-lzo", server)
 
             profile = (root / "portal/ovpn-configs/tdz-openvpn-http-connect.ovpn").read_text()
-            self.assertIn("http-proxy vpn.example.com 25003", profile)
+            self.assertIn("remote vpn.example.com 447", profile)
+            self.assertIn("http-proxy vpn.example.com 449", profile)
             self.assertIn("setenv CLIENT_CERT 0", profile)
             self.assertIn("<tls-crypt>", profile)
             self.assertNotIn("password", profile.lower())
@@ -107,11 +148,11 @@ class ModuleTests(unittest.TestCase):
             TDZ_OVPN_PORTAL=/bin/true
             TDZ_OVPN_SERVICE_USER=root
             TDZ_OVPN_BIN=/bin/true
-            TDZ_OVPN_TCP_PORT=25001
-            TDZ_OVPN_UDP_PORT=25002
-            TDZ_OVPN_HTTP_PORT=25003
-            TDZ_OVPN_WSS_PORT=25004
-            TDZ_OVPN_SSL_PORT=25005
+            TDZ_OVPN_TCP_PORT=447
+            TDZ_OVPN_UDP_PORT=448
+            TDZ_OVPN_HTTP_PORT=449
+            TDZ_OVPN_WSS_PORT=450
+            TDZ_OVPN_SSL_PORT=446
             TDZ_OVPN_TCP_SUBNET=10.100.10.0
             TDZ_OVPN_UDP_SUBNET=10.101.11.0
             mkdir -p "$TDZ_OVPN_PKI"
@@ -124,7 +165,11 @@ class ModuleTests(unittest.TestCase):
             result = self.run_bash(script)
             self.assertEqual(result.returncode, 0, result.stderr)
             firewall = (root / "libexec/tdz-openvpn-firewall").read_text()
-            self.assertIn('TCP_PORT="25001"', firewall)
+            self.assertIn('TCP_PORT="447"', firewall)
+            self.assertIn('UDP_PORT="448"', firewall)
+            self.assertIn('HTTP_PORT="449"', firewall)
+            self.assertIn('WSS_PORT="450"', firewall)
+            self.assertIn('SSL_PORT="446"', firewall)
             self.assertIn("MASQUERADE", firewall)
             self.assertIn("tun-tdz-tcp", firewall)
             units = list((root / "systemd").glob("tdz-openvpn-*.service"))
@@ -136,7 +181,8 @@ class ModuleTests(unittest.TestCase):
             gateway = (root / "systemd/tdz-openvpn-wss.service").read_text()
             self.assertIn("User=root", gateway)
             self.assertIn("NoNewPrivileges=true", gateway)
-            self.assertIn("CapabilityBoundingSet=", gateway)
+            self.assertIn("CapabilityBoundingSet=CAP_NET_BIND_SERVICE", gateway)
+            self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", gateway)
             if shutil.which("systemd-analyze"):
                 verified = subprocess.run(
                     ["systemd-analyze", "verify", *map(str, units)],
@@ -154,11 +200,11 @@ class ModuleTests(unittest.TestCase):
                 TDZ_OVPN_ROOT={root}/openvpn
                 TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
                 TDZ_OVPN_HOST=vpn.example.com
-                TDZ_OVPN_TCP_PORT=25001
-                TDZ_OVPN_UDP_PORT=25002
-                TDZ_OVPN_HTTP_PORT=25003
-                TDZ_OVPN_WSS_PORT=25004
-                TDZ_OVPN_SSL_PORT=25005
+                TDZ_OVPN_TCP_PORT=447
+                TDZ_OVPN_UDP_PORT=448
+                TDZ_OVPN_HTTP_PORT=449
+                TDZ_OVPN_WSS_PORT=450
+                TDZ_OVPN_SSL_PORT=446
                 TDZ_OVPN_TCP_SUBNET=10.100.10.0
                 TDZ_OVPN_UDP_SUBNET=10.101.11.0
                 TDZ_OVPN_SERVICE_USER_CREATED=1
