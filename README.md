@@ -236,12 +236,6 @@ The installer automatically detects an existing installation, operating environm
 menu → 99) Uninstall
 ```
 
-Or directly:
-
-```bash
-bash /usr/local/bin/menu --uninstall
-```
-
 ## Credits & License
 
 - **Developer:** [Yeasinul Hoque Tuhin](https://tuhinbro.com)

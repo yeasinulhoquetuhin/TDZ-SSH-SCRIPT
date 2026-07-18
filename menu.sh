@@ -458,6 +458,26 @@ tdz_message() {
     printf "\n  %s[%s]%s %s\n" "$color" "$label" "$C_RESET" "$message"
 }
 
+# Store account dates in ISO format for Linux tools, but keep every
+# user-facing TDZ screen consistent and easy to scan.
+tdz_format_date_display() {
+    local value="${1:-}"
+    if [[ -z "$value" || "$value" == "Never" ]]; then
+        printf '%s' "${value:-Unknown}"
+        return
+    fi
+    LC_TIME=C date -d "$value" '+%d-%m-%Y' 2>/dev/null || printf '%s' "$value"
+}
+
+tdz_format_epoch_datetime_display() {
+    local epoch="${1:-0}"
+    if ! [[ "$epoch" =~ ^[0-9]+$ ]] || (( epoch <= 0 )); then
+        printf 'Unknown'
+        return
+    fi
+    LC_TIME=C date -d "@${epoch}" '+%d-%m-%Y • %H:%M' 2>/dev/null || printf 'Unknown'
+}
+
 # Bandwidth values are stored as bytes for usage and GB for account limits.
 # Keep every screen consistent and promote values to TB at 1024GB.
 tdz_quota_is_unlimited() {
@@ -2494,7 +2514,7 @@ create_user() {
     local expire_date stored_expiry metadata_suffix="" expiry_display activation_display="Immediately"
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
     stored_expiry="$expire_date"
-    expiry_display="$expire_date"
+    expiry_display=$(tdz_format_date_display "$expire_date")
     if $first_use_activation; then
         stored_expiry="Never"
         metadata_suffix=":pending:${days}"
@@ -2577,7 +2597,8 @@ edit_user() {
         [[ "$cur_bw" =~ ^[0-9]+\.?[0-9]*$ ]] || cur_bw="0"
         local cur_bw_display
         cur_bw_display=$(tdz_format_quota_gb "$cur_bw")
-        local cur_expiry_display="$cur_expiry"
+        local cur_expiry_display
+        cur_expiry_display=$(tdz_format_date_display "$cur_expiry")
         local pending_first_use=false pending_validity_days=""
         if [[ "$cur_metadata" =~ ^pending:([1-9][0-9]*) ]]; then
             pending_first_use=true
@@ -2664,7 +2685,7 @@ edit_user() {
                        local new_expire_date; new_expire_date=$(date -d "+$days days" +%Y-%m-%d)
                        chage -E "$new_expire_date" "$username"
                        sed -i "s/^$username:.*/$username:$cur_pass:$new_expire_date:$cur_limit:$cur_bw$cur_metadata_suffix/" "$DB_FILE"
-                       echo -e "\n${C_GREEN}[OK] Validity for '$username' set to ${C_YELLOW}${days} days from today${C_RESET} (${new_expire_date})."
+                       echo -e "\n${C_GREEN}[OK] Validity for '$username' set to ${C_YELLOW}${days} days from today${C_RESET} ($(tdz_format_date_display "$new_expire_date"))."
                    else
                        echo -e "\n${C_RED}[ERROR] Validity must be at least 1 day.${C_RESET}"
                    fi
@@ -2815,10 +2836,10 @@ list_users() {
             time_left="${metadata_value}d after use"
         elif [[ "$account_type" == "trial" && "$metadata_value" =~ ^[0-9]+$ ]] &&
            (( metadata_value > 0 )); then
-            expiry_display=$(LC_TIME=C date -d "@${metadata_value}" '+%d %b %Y • %H:%M' 2>/dev/null || echo "$expiry")
+            expiry_display=$(tdz_format_epoch_datetime_display "$metadata_value")
             expiry_check=$metadata_value
         elif [[ -n "$expiry" && "$expiry" != "Never" ]]; then
-            expiry_display=$(LC_TIME=C date -d "$expiry" '+%d %b %Y' 2>/dev/null || echo "$expiry")
+            expiry_display=$(tdz_format_date_display "$expiry")
             expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
         else
             expiry_display="${expiry:-Unknown}"
@@ -2918,7 +2939,7 @@ renew_user() {
             [[ -n "$metadata_rest" ]] && metadata_suffix+=":$metadata_rest"
             chage -E "$new_expire_date" "$u"
             sed -i "s/^$u:.*/$u:$pass:$new_expire_date:$limit:$bw$metadata_suffix/" "$DB_FILE"
-            echo -e " [OK] ${C_YELLOW}$u${C_RESET} renewed until ${C_GREEN}${new_expire_date}${C_RESET}."
+            echo -e " [OK] ${C_YELLOW}$u${C_RESET} renewed until ${C_GREEN}$(tdz_format_date_display "$new_expire_date")${C_RESET}."
         fi
     done
 }
@@ -3087,7 +3108,7 @@ restore_user_data() {
         usermod -aG "$TDZ_USERS_GROUP" "$user" 2>/dev/null
         echo -e "    ${C_GRAY}Password:${C_RESET} Restored"
         echo "$user:$pass" | chpasswd
-        echo -e "    ${C_GRAY}Expiration:${C_RESET} ${expiry}"
+        echo -e "    ${C_GRAY}Expiration:${C_RESET} $(tdz_format_date_display "$expiry")"
         if [[ "$expiry" == "Never" || -z "$expiry" ]]; then
             chage -E -1 "$user"
         else
@@ -3285,7 +3306,7 @@ do_backup() {
         (( count > 5 )) && rm -f "$f" 2>/dev/null
     done
     local hc
-    hc=$(tg_send_document "$archive" "TDZ Backup - $(date '+%Y-%m-%d %H:%M:%S')")
+    hc=$(tg_send_document "$archive" "TDZ Backup - $(date '+%d-%m-%Y %H:%M:%S')")
     if [ "$hc" = "200" ]; then
         log_msg "Backup sent: $archive"
         tg_send "Backup sent successfully!"
@@ -3408,7 +3429,7 @@ check_auto_backup() {
             (( count > 5 )) && rm -f "$f" 2>/dev/null
         done
         local hc
-        hc=$(tg_send_document "$archive" "TDZ Auto Backup - $(date '+%Y-%m-%d %H:%M:%S')")
+        hc=$(tg_send_document "$archive" "TDZ Auto Backup - $(date '+%d-%m-%Y %H:%M:%S')")
         if [ "$hc" = "200" ]; then
             log_msg "Auto-backup sent: $archive"
         else
@@ -3548,11 +3569,20 @@ Type /cancel to abort."
                 "/status"|"Status"|*"Status"*)
                     RESTORE_STATE="IDLE"
                     local_count=$(ls -1 "$BACKUP_DIR"/*.tar.gz 2>/dev/null | wc -l)
-                    tg_send "Bot Status
-Interval: ${INTERVAL_LABEL:-unknown}
-State: $RESTORE_STATE
-Archives: $local_count files
-Last backup: $(ls -lth "$LAST_FILE" 2>/dev/null | awk '{print $6,$7,$8}')"
+                    last_backup="Never"
+                    if [ -s "$LAST_FILE" ]; then
+                        last_epoch=$(stat -c %Y "$LAST_FILE" 2>/dev/null || echo 0)
+                        if [[ "$last_epoch" =~ ^[0-9]+$ ]] && (( last_epoch > 0 )); then
+                            last_backup=$(date -d "@$last_epoch" '+%d-%m-%Y • %H:%M' 2>/dev/null || echo "Unknown")
+                        fi
+                    fi
+                    tg_send "[•] TDZ BACKUP BOT STATUS
+~--------------------------------~
+• Status - Active
+• Interval - ${INTERVAL_LABEL:-unknown}
+• State - $RESTORE_STATE
+• Backups - $local_count
+• Last Backup - $last_backup"
                     ;;
                 "/cancel"|"cancel"|"Cancel"|*"Cancel"*)
                     RESTORE_STATE="IDLE"
@@ -3839,7 +3869,7 @@ auto_backup_send_now() {
     http_code=$(curl -s -o /dev/null -w '%{http_code}' \
         -F "chat_id=$CHAT_ID" \
         -F "document=@$tmp_archive" \
-        -F "caption=TDZ Manual Backup - $(date '+%Y-%m-%d %H:%M:%S')" \
+        -F "caption=TDZ Manual Backup - $(date '+%d-%m-%Y %H:%M:%S')" \
         "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" 2>/dev/null)
     if [ "$http_code" = "200" ]; then
         echo -e "${C_GREEN}Backup sent successfully!${C_RESET}"
@@ -3851,25 +3881,62 @@ auto_backup_send_now() {
 
 auto_backup_status() {
     clear; show_banner
-    tdz_screen_title "AUTO BACKUP BOT STATUS"
+    local configured=false config_status="Not Connected"
+    local bot_status="Stopped" bot_color="$C_RED" bot_pid=""
+    local interval_display="Not Set" chat_display="Not Set" token_display="Not Set"
+    local archive_count=0 latest_archive="" latest_epoch=0
+    local latest_display="Never" latest_size="0B"
+
     if auto_backup_load_conf; then
-        echo -e "${C_WHITE}Interval:${C_RESET} ${C_GREEN}${INTERVAL_LABEL:-unknown}${C_RESET}"
-        echo -e "${C_WHITE}Chat ID:${C_RESET}  ${C_GREEN}$CHAT_ID${C_RESET}"
-        echo -e "${C_WHITE}Token:${C_RESET}   ${C_GREEN}$(echo "$BOT_TOKEN" | cut -c1-8)...${C_RESET}"
-    else
-        echo -e "${C_YELLOW}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
+        configured=true
+        config_status="Connected"
+        interval_display="${INTERVAL_LABEL:-Unknown}"
+        chat_display="$CHAT_ID"
+        token_display="${BOT_TOKEN:0:8}..."
     fi
-    echo
-    if pm2 list 2>/dev/null | grep -q "$AUTO_BACKUP_PM2_NAME"; then
-        echo -e "${C_WHITE}Status:${C_RESET}   ${C_STATUS_A}Running${C_RESET}"
-        pm2 show "$AUTO_BACKUP_PM2_NAME" 2>/dev/null | grep -E 'status|uptime|cpu|memory' | sed 's/^/  /'
-    else
-        echo -e "${C_WHITE}Status:${C_RESET}   ${C_STATUS_I}Stopped${C_RESET}"
+
+    bot_pid=$(pm2 pid "$AUTO_BACKUP_PM2_NAME" 2>/dev/null | head -n 1 | tr -dc '0-9')
+    if [[ "$bot_pid" =~ ^[1-9][0-9]*$ ]]; then
+        bot_status="Running"
+        bot_color="$C_GREEN"
     fi
+
+    if [[ -d "$AUTO_BACKUP_DIR" ]]; then
+        archive_count=$(find "$AUTO_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' \
+            ! -name 'last-backup.tar.gz' 2>/dev/null | wc -l | tr -d ' ')
+        latest_archive=$(find "$AUTO_BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz' \
+            ! -name 'last-backup.tar.gz' \
+            -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)
+    fi
+    [[ "$archive_count" =~ ^[0-9]+$ ]] || archive_count=0
+    if [[ -n "$latest_archive" && -s "$latest_archive" ]]; then
+        latest_epoch=$(stat -c %Y "$latest_archive" 2>/dev/null || echo 0)
+        latest_display=$(tdz_format_epoch_datetime_display "$latest_epoch")
+        latest_size=$(du -h "$latest_archive" 2>/dev/null | awk '{print $1}')
+        latest_size=${latest_size:-Unknown}
+    fi
+
     echo
-    echo -e "${C_WHITE}Archives:${C_RESET} ${C_GREEN}$AUTO_BACKUP_DIR${C_RESET}"
-    if [ -d "$AUTO_BACKUP_DIR" ]; then
-        ls -lth "$AUTO_BACKUP_DIR"/*.tar.gz 2>/dev/null | head -5 || echo "  (no archives yet)"
+    tdz_box_top
+    tdz_box_header "AUTO BACKUP BOT STATUS"
+    tdz_box_divider
+    tdz_row2 "${C_GRAY}STATUS${C_RESET} ${bot_color}${C_BOLD}${bot_status}${C_RESET}" \
+        "${C_GRAY}CONFIG${C_RESET} ${C_CYAN}${C_BOLD}${config_status}${C_RESET}"
+    tdz_box_divider
+    tdz_kv2 "INTERVAL" "$interval_display" "BACKUPS" "$archive_count"
+    if $configured; then
+        tdz_kv2 "CHAT ID" "$chat_display" "TOKEN" "$token_display"
+    fi
+    tdz_box_divider
+    if (( archive_count > 0 )); then
+        tdz_kv2 "LAST" "$latest_display" "SIZE" "$latest_size"
+    else
+        tdz_row "${C_GRAY}No backup archives have been created yet.${C_RESET}"
+    fi
+    tdz_box_bot
+
+    if ! $configured; then
+        tdz_message INFO "Connect the Telegram bot to enable automatic backups."
     fi
     press_enter
 }
@@ -7102,7 +7169,7 @@ create_trial_account() {
     fi
     local expiry_epoch expiry_timestamp
     expiry_epoch=$(date -d "+${duration_hours} hours" +%s)
-    expiry_timestamp=$(date -d "@${expiry_epoch}" '+%Y-%m-%d %H:%M:%S')
+    expiry_timestamp=$(tdz_format_epoch_datetime_display "$expiry_epoch")
     
     # Create the system user
     ensure_tdztunnel_system_group
@@ -7205,11 +7272,11 @@ list_trial_accounts() {
         connection_string="${online_count}/${limit:-1}"
 
         if [[ "$trial_expiry_epoch" =~ ^[0-9]+$ ]] && (( trial_expiry_epoch > 0 )); then
-            expiry_display=$(LC_TIME=C date -d "@${trial_expiry_epoch}" '+%d %b %Y • %H:%M' 2>/dev/null || echo "$expiry")
+            expiry_display=$(tdz_format_epoch_datetime_display "$trial_expiry_epoch")
             time_left=$(format_trial_time_left "$trial_expiry_epoch")
             expiry_check=$trial_expiry_epoch
         else
-            expiry_display=$(LC_TIME=C date -d "$expiry" '+%d %b %Y' 2>/dev/null || echo "$expiry")
+            expiry_display=$(tdz_format_date_display "$expiry")
             time_left="Unknown"
             expiry_check=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
         fi
@@ -7353,7 +7420,7 @@ bulk_create_users() {
     local expire_date stored_expiry metadata_suffix="" table_expiry activation_display="Immediately"
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
     stored_expiry="$expire_date"
-    table_expiry="$expire_date"
+    table_expiry=$(tdz_format_date_display "$expire_date")
     if $first_use_activation; then
         stored_expiry="Never"
         metadata_suffix=":pending:${days}"
