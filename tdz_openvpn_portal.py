@@ -167,7 +167,7 @@ class PortalHandler(BaseHTTPRequestHandler):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TDZ OpenVPN profile portal")
     parser.add_argument("--listen", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=1200)
+    parser.add_argument("--port", type=int, default=1180)
     parser.add_argument("--root", required=True, type=Path)
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:

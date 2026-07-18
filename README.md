@@ -186,7 +186,7 @@ The optional suite requires Python 3.7 or newer. On an older distribution the co
 The public download page is generated automatically:
 
 ```text
-http://VPS-IP-OR-HOST:1200/ovpn-configs/
+http://VPS-IP-OR-HOST:1180/ovpn-configs/
 ```
 
 It includes individual profiles, one ZIP containing all profiles, the server CA, protocol details, SNI values, and payload templates. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
@@ -251,7 +251,7 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 | 448 | UDP | OpenVPN direct UDP transport |
 | 449 | HTTP / WS | OpenVPN HTTP CONNECT, HTTP Payload, and WebSocket gateway |
 | 450 | WSS | OpenVPN TLS WebSocket / SNI gateway |
-| 1200 | HTTP | OpenVPN profile download portal (when the optional suite is installed) |
+| 1180 | HTTP | OpenVPN profile download portal (when the optional suite is installed) |
 
 ## Supported Platforms
 

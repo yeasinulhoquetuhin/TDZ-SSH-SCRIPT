@@ -30,7 +30,7 @@ class ModuleTests(unittest.TestCase):
             ! tdz_openvpn_valid_host '-bad.example' || exit 14
             ! tdz_openvpn_valid_host '.bad.example' || exit 17
             ! tdz_openvpn_valid_host 'bad.example.' || exit 18
-            for port in 80 443 442 8443 2080 2086 2096 2053 1080 1200 8080 8880 8888; do
+            for port in 80 443 442 8443 2080 2086 2096 2053 1080 1180 8080 8880 8888; do
                 tdz_openvpn_forbidden_port "$port" || exit 15
             done
             ! tdz_openvpn_forbidden_port 35001 || exit 16
@@ -120,7 +120,7 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("auth-nocache", profile)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
-            self.assertIn("http://vpn.example.com:1200/ovpn-configs/", portal)
+            self.assertIn("http://vpn.example.com:1180/ovpn-configs/", portal)
             self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
 
             (root / "portal/ovpn-configs/stale.ovpn").write_text("stale\n")

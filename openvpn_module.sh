@@ -14,7 +14,7 @@ TDZ_OVPN_LIB="${TDZ_OVPN_LIB:-/usr/local/lib/tdz-ssh-tunnel}"
 TDZ_OVPN_RUNTIME="${TDZ_OVPN_RUNTIME:-$TDZ_OVPN_LIB/tdz_openvpn_runtime.py}"
 TDZ_OVPN_GATEWAY="${TDZ_OVPN_GATEWAY:-$TDZ_OVPN_LIB/tdz_openvpn_gateway.py}"
 TDZ_OVPN_PORTAL="${TDZ_OVPN_PORTAL:-$TDZ_OVPN_LIB/tdz_openvpn_portal.py}"
-TDZ_OVPN_PORTAL_PORT=1200
+TDZ_OVPN_PORTAL_PORT=1180
 TDZ_OVPN_FIXED_SSL_PORT=446
 TDZ_OVPN_FIXED_TCP_PORT=447
 TDZ_OVPN_FIXED_UDP_PORT=448
@@ -156,7 +156,7 @@ tdz_openvpn_valid_host() {
 tdz_openvpn_forbidden_port() {
     local port=${1:-} reserved
     case "$port" in
-        22|53|80|442|443|1080|1200|2053|2080|2086|2096|2288|2289|5300|5667|7300|8080|8443|8880|8888|8770|8442|8890|10443) return 0 ;;
+        22|53|80|442|443|1080|1180|2053|2080|2086|2096|2288|2289|5300|5667|7300|8080|8443|8880|8888|8770|8442|8890|10443) return 0 ;;
         *) ;;
     esac
     for reserved in "${EDGE_PUBLIC_HTTP_PORT:-}" "${EDGE_PUBLIC_TLS_PORT:-}" \
