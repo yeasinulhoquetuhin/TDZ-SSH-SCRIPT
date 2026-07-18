@@ -205,7 +205,9 @@ class GatewayTests(ProcessCase):
                     b"Upgrade: websocket\r\n"
                     b"Connection: Upgrade\r\n\r\n"
                 )
-                self.assertIn(b"101 Switching Protocols", client.recv(4096))
+                response = client.recv(4096)
+                self.assertIn(b"101 <b><font color=\"red\"", response)
+                self.assertIn(b"tuhinbro.com", response)
                 client.sendall(b"nested-openvpn")
                 self.assertEqual(client.recv(14), b"nested-openvpn")
 
@@ -219,7 +221,9 @@ class GatewayTests(ProcessCase):
                     b"Upgrade: websocket\r\n"
                     b"Connection: Upgrade\r\n\r\n"
                 )
-                self.assertIn(b"101 Switching Protocols", client.recv(4096))
+                response = client.recv(4096)
+                self.assertIn(b"101 <b><font color=\"red\"", response)
+                self.assertIn(b"tuhinbro.com", response)
                 client.sendall(b"raw-openvpn")
                 self.assertEqual(client.recv(11), b"raw-openvpn")
 
@@ -236,7 +240,9 @@ class GatewayTests(ProcessCase):
                         b"Upgrade: websocket\r\n"
                         b"Connection: Upgrade\r\n\r\n"
                     )
-                    self.assertIn(b"101 Switching Protocols", client.recv(4096))
+                    response = client.recv(4096)
+                    self.assertIn(b"101 <b><font color=\"red\"", response)
+                    self.assertIn(b"tuhinbro.com", response)
                     client.sendall(b"wss-openvpn")
                     self.assertEqual(client.recv(11), b"wss-openvpn")
 
@@ -255,7 +261,8 @@ class GatewayTests(ProcessCase):
                 expected = base64.b64encode(
                     hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
                 )
-                self.assertIn(b"101 Switching Protocols", response)
+                self.assertIn(b"101 <b><font color=\"red\"", response)
+                self.assertIn(b"tuhinbro.com", response)
                 self.assertIn(expected, response)
 
                 payload = b"vpn"

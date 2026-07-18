@@ -184,6 +184,10 @@ class ModuleTests(unittest.TestCase):
             server = (root / "openvpn/server-tcp.conf").read_text()
             self.assertIn("verify-client-cert none", server)
             self.assertIn("plugin /pam-plugin.so tdz-openvpn", server)
+            self.assertIn("username-as-common-name", server)
+            self.assertIn("duplicate-cn", server)
+            self.assertIn("client-connect ", server)
+            self.assertIn("client-disconnect ", server)
             self.assertNotIn("auth-gen-token", server)
             self.assertIn("max-clients 250", server)
             self.assertIn("tls-version-min 1.2", server)
@@ -396,6 +400,15 @@ class ModuleTests(unittest.TestCase):
         self.assertIn('exec 8>"$USAGE_LOCK"', activation)
         self.assertIn("flock -x 8", activation)
         self.assertIn("active:*", activation)
+
+    def test_limiter_preserves_established_openvpn_sessions(self):
+        menu = (REPO / "menu.sh").read_text()
+        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-18.4", menu)
+        self.assertIn("if (( online_count > limit )); then", menu)
+        self.assertNotIn(
+            'if (( online_count > limit )) && (( ${ovpn_online[$user]:-0} == 0 )); then',
+            menu,
+        )
 
     def test_protocol_manager_numbering_is_sequential(self):
         menu = (REPO / "menu.sh").read_text()

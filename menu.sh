@@ -1249,7 +1249,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-18.3
+# TDZ SSH TUNNEL limiter version 2026-07-18.4
 # Fixed: online detection now uses `who` + per-user process scan, not just `ps -C sshd`.
 # This catches users connected via WS-bridge (whose sshd child already exec'd shell).
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1645,7 +1645,10 @@ while true; do
         fi
 
         [[ "$limit" =~ ^[0-9]+$ ]] || limit=1
-        if (( online_count > limit )) && (( ${ovpn_online[$user]:-0} == 0 )); then
+        # OpenVPN performs atomic admission before a VPN session becomes
+        # active.  If a later SSH login pushes the shared total over limit,
+        # close the excess SSH side without resetting a healthy VPN tunnel.
+        if (( online_count > limit )); then
             excess=$((online_count - limit))
             killed=0
             for pid in $(printf "%s\n" "${!unique_sshd_sessions[@]}" | sort -nr); do
@@ -1776,7 +1779,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-18.3"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-18.4"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -5559,7 +5562,7 @@ backend ws_ssh_bridge
     # Removed `option tcp-check` + `check` keyword on server line.
     # These caused HAProxy to open a fresh TCP connection to the bridge every
     # 2 seconds for health checks. Each check made the bridge spawn a thread,
-    # accept the conn, send the 101 Switching Protocols response, then try to
+    # accept the connection, send the branded upgrade response, then try to
     # open an SSH connection that immediately closed. Wasted CPU + file
     # descriptors + created micro-bursts that interfered with active tunnels.
     # systemd already restarts the bridge if it crashes, so HAProxy health

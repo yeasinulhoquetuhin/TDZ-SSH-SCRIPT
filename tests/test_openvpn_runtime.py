@@ -4,7 +4,6 @@ import os
 import subprocess
 import tempfile
 import textwrap
-import time
 import unittest
 from pathlib import Path
 
@@ -101,6 +100,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotEqual(limited.returncode, 0)
         self.assertIn("connection limit", limited.stderr)
 
+        locked = self.run_runtime(
+            "connect",
+            extra_env={"username": "alice", "TDZ_TEST_LOCKED": "1"},
+        )
+        self.assertNotEqual(locked.returncode, 0)
+        self.assertIn("locked", locked.stderr)
+
     def test_pending_account_activates_atomically(self):
         self.db.write_text("alice:secret:Never:2:5:pending:30\n")
         result = self.run_runtime("connect", extra_env={"username": "alice"})
@@ -140,13 +146,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((admissions / "stale.json").exists())
 
-    def test_connection_limit_waits_for_adapter_reconciliation_grace(self):
-        now = int(time.time())
+    def test_valid_adapter_sessions_are_not_asynchronously_evicted(self):
         script = textwrap.dedent(
-            f"""
+            """
             import importlib.util
             import sys
-            spec = importlib.util.spec_from_file_location("runtime", {str(RUNTIME)!r})
+            spec = importlib.util.spec_from_file_location("runtime", {runtime_path!r})
             runtime = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = runtime
             spec.loader.exec_module(runtime)
@@ -156,21 +161,20 @@ class RuntimeTests(unittest.TestCase):
             runtime.account_expired = lambda account: False
             runtime.quota_exceeded = lambda account: False
             runtime.account_locked = lambda username: False
-            runtime.count_ssh_sessions = lambda username: 0
             killed = []
             runtime.kill_session = lambda session, reason: killed.append((session.client_id, reason)) or True
-            old = runtime.Session("tcp", "alice", "1", {now - 30}, 0)
-            fresh = runtime.Session("tcp", "alice", "2", {now}, 0)
-            runtime.enforce_sessions([old, fresh])
+            first = runtime.Session("tcp", "alice", "1", 100, 0)
+            retry = runtime.Session("tcp", "alice", "2", 101, 0)
+            runtime.enforce_sessions([first, retry])
             print(killed)
-            fresh = runtime.Session("tcp", "alice", "2", {now - 10}, 0)
-            runtime.enforce_sessions([old, fresh])
+            runtime.account_expired = lambda account: True
+            runtime.enforce_sessions([first])
             print(killed)
-            """
+            """.format(runtime_path=str(RUNTIME))
         )
         result = subprocess.run(
             ["python3", "-c", script],
-            env={**self.env, "TDZ_OVPN_SESSION_GRACE": "8"},
+            env=self.env,
             text=True,
             capture_output=True,
             check=False,
@@ -178,7 +182,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual(lines[0], "[]")
-        self.assertEqual(lines[1], "[('2', 'connection-limit')]")
+        self.assertEqual(lines[1], "[('1', 'account-policy')]")
 
     def test_status_accounting_adds_only_deltas(self):
         self.db.write_text("alice:secret:2099-12-31:3:5\n")

@@ -59,9 +59,6 @@ def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int
 ADMISSION_TTL_SECONDS = _bounded_env_int(
     "TDZ_OVPN_ADMISSION_TTL", 10, 3, 60
 )
-SESSION_ENFORCEMENT_GRACE_SECONDS = _bounded_env_int(
-    "TDZ_OVPN_SESSION_GRACE", 8, 0, 30
-)
 
 
 @dataclass(frozen=True)
@@ -778,25 +775,13 @@ def enforce_sessions(sessions: list[Session]) -> None:
                 kill_session(session, "account-policy")
             continue
 
-        assert account is not None
-        excess = count_ssh_sessions(username) + len(user_sessions) - account.limit
-        if excess > 0:
-            # Injector clients may briefly overlap the previous transport
-            # socket while switching from payload/TLS setup to the OpenVPN
-            # data channel. Give that transient row a short reconciliation
-            # window, then enforce the configured combined SSH + VPN limit.
-            now = int(time.time())
-            newest_first = sorted(
-                user_sessions, key=lambda item: item.connected_epoch, reverse=True
-            )
-            for session in newest_first[:excess]:
-                if (
-                    session.connected_epoch > 0
-                    and now - session.connected_epoch
-                    < SESSION_ENFORCEMENT_GRACE_SECONDS
-                ):
-                    continue
-                kill_session(session, "connection-limit")
+        # Do not asynchronously evict a valid established tunnel here.
+        # Injector clients can expose overlapping transport rows while moving
+        # from HTTP/TLS/WebSocket setup into the OpenVPN data channel.  The
+        # client-connect hook already performs atomic combined SSH + OpenVPN
+        # admission under the shared state lock, so a second real login is
+        # rejected before it becomes active.  Account expiry, lock and quota
+        # are still enforced above on every watcher pass.
 
 
 def command_watch(interval: float) -> int:

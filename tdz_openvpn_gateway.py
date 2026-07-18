@@ -299,6 +299,12 @@ async def open_backend(settings: Settings) -> Tuple[asyncio.StreamReader, asynci
     return reader, writer
 
 
+BRANDED_WS_STATUS = (
+    "HTTP/1.1 101 <b><font color=\"red\" size=\"7\">Script By:</font> "
+    "<font color=\"#0057B7\" size=\"7\">tuhinbro.com</font></b>\r\n"
+)
+
+
 async def relay_http_upgrade(
     head: bytes,
     remainder: bytes,
@@ -319,10 +325,10 @@ async def relay_http_upgrade(
         except (UnicodeEncodeError, ValueError) as exc:
             raise ValueError("invalid WebSocket key") from exc
         response = (
-            "HTTP/1.1 101 Switching Protocols\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Accept: {accept_value}\r\n\r\n"
+            BRANDED_WS_STATUS
+            + "Upgrade: websocket\r\n"
+            + "Connection: Upgrade\r\n"
+            + f"Sec-WebSocket-Accept: {accept_value}\r\n\r\n"
         )
         client_writer.write(response.encode("ascii"))
         await client_writer.drain()
@@ -338,9 +344,9 @@ async def relay_http_upgrade(
     # Injector-compatible HTTP Upgrade/raw payload mode.  The request target
     # and Host value are display/payload fields only; the backend stays fixed.
     status = (
-        b"HTTP/1.1 101 Switching Protocols\r\n"
-        b"Connection: Upgrade\r\n"
-        b"Upgrade: tdz-openvpn\r\n\r\n"
+        BRANDED_WS_STATUS.encode("ascii")
+        + b"Connection: Upgrade\r\n"
+        + b"Upgrade: websocket\r\n\r\n"
         if upgrade == "websocket"
         else b"HTTP/1.1 200 Connection Established\r\n\r\n"
     )
