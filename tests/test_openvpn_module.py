@@ -255,6 +255,15 @@ class ModuleTests(unittest.TestCase):
             self.assertIn(".theme-toggle{display:inline-flex;align-items:center;gap:5px;min-height:32px", css)
             self.assertIn(".developer-line .developer-link", css)
             self.assertIn("color:#1267d6", css)
+            self.assertIn(
+                ".developer-line>span{color:var(--text);font-size:.94rem;font-weight:700",
+                css,
+            )
+            self.assertIn(
+                ".developer-line .developer-link{display:inline;width:auto;margin:0;"
+                "color:#1267d6;font-size:.94rem;font-weight:650",
+                css,
+            )
             portal_js = (root / "portal/ovpn-configs/portal.js").read_text()
             self.assertIn("navigator.clipboard.writeText", portal_js)
             self.assertIn("window.localStorage", portal_js)
