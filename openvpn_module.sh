@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-19.17"
+TDZ_OVPN_MODULE_VERSION="2026-07-19.18"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -21,6 +21,8 @@ TDZ_OVPN_FIXED_TCP_PORT=447
 TDZ_OVPN_FIXED_UDP_PORT=448
 TDZ_OVPN_FIXED_HTTP_PORT=449
 TDZ_OVPN_FIXED_WSS_PORT=450
+TDZ_OVPN_TCP_TUN_MTU=1400
+TDZ_OVPN_TCP_QUEUE_LIMIT=128
 TDZ_OVPN_SYSTEMD_DIR="${TDZ_OVPN_SYSTEMD_DIR:-/etc/systemd/system}"
 TDZ_OVPN_PAM_SERVICE="${TDZ_OVPN_PAM_SERVICE:-/etc/pam.d/tdz-openvpn}"
 TDZ_OVPN_SYSCTL="${TDZ_OVPN_SYSCTL:-/etc/sysctl.d/99-tdz-openvpn.conf}"
@@ -447,6 +449,18 @@ tdz_openvpn_write_hooks() {
             chmod 700 "$TDZ_OVPN_HOOKS/${action}-${instance}"
         done
     done
+    cat > "$TDZ_OVPN_HOOKS/up-tcp" <<'EOF'
+#!/bin/sh
+# Fair-queue inner flows before they enter the single OpenVPN TCP stream.  This
+# keeps DNS, SSH and ping responsive during a bulk transfer.  The tunnel must
+# remain usable on kernels without fq_codel, so tuning is deliberately optional.
+if [ -n "${dev:-}" ] && command -v tc >/dev/null 2>&1; then
+    tc qdisc replace dev "$dev" root fq_codel \
+        limit 1024 flows 1024 target 5ms interval 100ms >/dev/null 2>&1 || true
+fi
+exit 0
+EOF
+    chmod 700 "$TDZ_OVPN_HOOKS/up-tcp"
 }
 
 tdz_openvpn_write_server_config() {
@@ -473,13 +487,20 @@ tdz_openvpn_write_server_config() {
         echo "script-security 2"
         echo "client-connect $TDZ_OVPN_HOOKS/connect-${instance}"
         echo "client-disconnect $TDZ_OVPN_HOOKS/disconnect-${instance}"
+        [[ "$proto" == "tcp-server" ]] && echo "up $TDZ_OVPN_HOOKS/up-tcp"
+        # Android injector VPN services commonly expose a 1400-byte TUN.  The
+        # TCP backend must use the same value or it can send 1401-1500 byte
+        # packets that those clients visibly drop as "tun packet too large".
+        [[ "$proto" == "tcp-server" ]] && echo "tun-mtu $TDZ_OVPN_TCP_TUN_MTU"
         echo "cipher AES-256-GCM"
         if tdz_openvpn_has_modern_cipher_option; then
-            echo "data-ciphers AES-256-GCM:AES-128-GCM"
+            # Modern clients negotiate AES-128-GCM first for lower mobile CPU
+            # cost. AES-256-GCM remains available and is the legacy fallback.
+            echo "data-ciphers AES-128-GCM:AES-256-GCM"
             echo "data-ciphers-fallback AES-256-GCM"
             echo "allow-compression no"
         else
-            echo "ncp-ciphers AES-256-GCM:AES-128-GCM"
+            echo "ncp-ciphers AES-128-GCM:AES-256-GCM"
         fi
         echo "auth SHA256"
         echo "keepalive 10 60"
@@ -490,6 +511,10 @@ tdz_openvpn_write_server_config() {
         # Nagle on both peers prevents small interactive packets from waiting
         # behind an additional TCP aggregation delay.
         [[ "$proto" == "tcp-server" ]] && echo "tcp-nodelay"
+        # The default queue of 64 packets is easy to exhaust on a variable 4G
+        # path, after which OpenVPN drops tunnel packets before TCP can deliver
+        # them.  Doubling it absorbs short bursts without creating a huge FIFO.
+        [[ "$proto" == "tcp-server" ]] && echo "tcp-queue-limit $TDZ_OVPN_TCP_QUEUE_LIMIT"
         echo "persist-key"
         echo "persist-tun"
         echo "push \"redirect-gateway def1 bypass-dhcp\""
@@ -661,8 +686,10 @@ PORTAL_PORT="$TDZ_OVPN_PORTAL_PORT"
 
 filter_add() { iptables -C "\$@" >/dev/null 2>&1 || iptables -I "\$@"; }
 nat_add() { iptables -t nat -C "\$@" >/dev/null 2>&1 || iptables -t nat -I "\$@"; }
+mangle_add() { iptables -t mangle -C "\$@" >/dev/null 2>&1 || iptables -t mangle -I "\$@"; }
 filter_del() { while iptables -C "\$@" >/dev/null 2>&1; do iptables -D "\$@"; done; }
 nat_del() { while iptables -t nat -C "\$@" >/dev/null 2>&1; do iptables -t nat -D "\$@"; done; }
+mangle_del() { while iptables -t mangle -C "\$@" >/dev/null 2>&1; do iptables -t mangle -D "\$@"; done; }
 
 STARTING=0
 rollback_partial_start() {
@@ -685,6 +712,11 @@ if [ "\$action" = start ]; then
         filter_add FORWARD -d "\$subnet" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
         nat_add POSTROUTING -s "\$subnet" -j MASQUERADE
     done
+    # Clamp inner TCP handshakes to the routed 1400-byte tunnel PMTU.  This is
+    # independent of OpenVPN's UDP-only mssfix option and prevents oversized
+    # return packets on Android injector clients.
+    mangle_add FORWARD -s "\$TCP_SUBNET" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    mangle_add FORWARD -d "\$TCP_SUBNET" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     for source in "\$TCP_SUBNET" "\$UDP_SUBNET"; do
         for destination in "\$TCP_SUBNET" "\$UDP_SUBNET"; do
             filter_add FORWARD -s "\$source" -d "\$destination" -j DROP
@@ -699,6 +731,8 @@ else
         filter_del FORWARD -d "\$subnet" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
         nat_del POSTROUTING -s "\$subnet" -j MASQUERADE
     done
+    mangle_del FORWARD -s "\$TCP_SUBNET" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    mangle_del FORWARD -d "\$TCP_SUBNET" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     for source in "\$TCP_SUBNET" "\$UDP_SUBNET"; do
         for destination in "\$TCP_SUBNET" "\$UDP_SUBNET"; do
             filter_del FORWARD -s "\$source" -d "\$destination" -j DROP
@@ -753,7 +787,7 @@ cipher AES-256-GCM
 EOF
     if [[ "$compatibility" != "adapter" ]]; then
         cat <<EOF
-data-ciphers AES-256-GCM:AES-128-GCM
+data-ciphers AES-128-GCM:AES-256-GCM
 data-ciphers-fallback AES-256-GCM
 EOF
     fi
@@ -779,6 +813,7 @@ tdz_openvpn_write_profile() {
         [[ -n "$header" ]] && printf '# %s\n' "$header"
         echo "proto $proto"
         echo "remote $TDZ_OVPN_HOST $remote_port"
+        [[ "$proto" == "tcp-client" ]] && echo "tun-mtu $TDZ_OVPN_TCP_TUN_MTU"
         if [[ "$protect_outer_route" == "true" ]]; then
             # Injector apps create an outer WS/TLS socket before OpenVPN adds
             # its default route. Pin that public endpoint to the original
@@ -802,6 +837,7 @@ tdz_openvpn_generate_profiles_into() {
         echo "remote $TDZ_OVPN_HOST $TDZ_OVPN_TCP_PORT"
         echo "http-proxy $TDZ_OVPN_HOST $TDZ_OVPN_HTTP_PORT"
         echo "http-proxy-option VERSION 1.1"
+        echo "tun-mtu $TDZ_OVPN_TCP_TUN_MTU"
         tdz_openvpn_profile_common
     } > "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn"
     chmod 644 "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn"

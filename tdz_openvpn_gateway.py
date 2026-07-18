@@ -30,7 +30,11 @@ from typing import Dict, Optional, Tuple
 
 LOG = logging.getLogger("tdz-openvpn-gateway")
 MAX_HEADER_BYTES = 32 * 1024
-COPY_BUFFER = 128 * 1024
+# Keep each relay write small enough to avoid building a large userspace/TLS
+# backlog.  A 32 KiB chunk still saturates fast links while letting interactive
+# packets reach the socket between bulk-transfer chunks.
+COPY_BUFFER = 32 * 1024
+TCP_NOTSENT_LIMIT = 32 * 1024
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 HTTP_METHOD_PREFIXES = (b"GET ", b"POST ", b"HEAD ", b"OPTIONS ")
 
@@ -70,6 +74,26 @@ def tune_socket(writer: asyncio.StreamWriter) -> None:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     with contextlib.suppress(OSError):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    # Linux defaults leave TCP_NOTSENT_LOWAT effectively unlimited.  Capping
+    # only *unsent* bytes prevents the gateway from adding avoidable queueing
+    # delay without shrinking TCP's congestion window or receive window.
+    notsent_lowat = getattr(socket, "TCP_NOTSENT_LOWAT", None)
+    if notsent_lowat is not None:
+        with contextlib.suppress(OSError):
+            sock.setsockopt(
+                socket.IPPROTO_TCP,
+                notsent_lowat,
+                TCP_NOTSENT_LIMIT,
+            )
+    for option_name, value in (
+        ("TCP_KEEPIDLE", 60),
+        ("TCP_KEEPINTVL", 10),
+        ("TCP_KEEPCNT", 3),
+    ):
+        option = getattr(socket, option_name, None)
+        if option is not None:
+            with contextlib.suppress(OSError):
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
 
 
 async def close_writer(writer: Optional[asyncio.StreamWriter]) -> None:
@@ -298,7 +322,7 @@ async def backend_to_websocket(
     backend_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
 ) -> None:
     while True:
-        chunk = await backend_reader.read(64 * 1024)
+        chunk = await backend_reader.read(COPY_BUFFER)
         if not chunk:
             return
         client_writer.write(ws_frame(chunk))

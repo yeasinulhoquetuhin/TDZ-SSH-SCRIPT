@@ -195,24 +195,32 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("max-clients 250", server)
             self.assertIn("tls-version-min 1.2", server)
             self.assertIn("tcp-nodelay", server)
+            self.assertIn("tun-mtu 1400", server)
+            self.assertIn("tcp-queue-limit 128", server)
+            self.assertIn("up ", server)
+            self.assertIn("/up-tcp", server)
+            self.assertIn("AES-128-GCM:AES-256-GCM", server)
             self.assertNotIn("fast-io", server)
             self.assertNotIn("comp-lzo", server)
 
             udp_server = (root / "openvpn/server-udp.conf").read_text()
             self.assertNotIn("tcp-nodelay", udp_server)
             self.assertIn("fast-io", udp_server)
+            self.assertNotIn("tun-mtu 1400", udp_server)
+            self.assertNotIn("tcp-queue-limit", udp_server)
 
             profile = (root / "portal/ovpn-configs/tdz-openvpn-http-connect.ovpn").read_text()
             self.assertIn("remote vpn.example.com 447", profile)
             self.assertIn("http-proxy vpn.example.com 449", profile)
+            self.assertIn("tun-mtu 1400", profile)
             self.assertIn("setenv CLIENT_CERT 0", profile)
             self.assertIn("<tls-crypt>", profile)
             self.assertNotIn("password", profile.lower())
             self.assertNotIn("auth-nocache", profile)
 
             direct_profile = (root / "portal/ovpn-configs/tdz-openvpn-tcp.ovpn").read_text()
-            self.assertIn("data-ciphers AES-256-GCM:AES-128-GCM", direct_profile)
-            self.assertNotIn("tun-mtu 1400", direct_profile)
+            self.assertIn("data-ciphers AES-128-GCM:AES-256-GCM", direct_profile)
+            self.assertIn("tun-mtu 1400", direct_profile)
             self.assertNotIn("mssfix 1360", direct_profile)
             self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", direct_profile)
             self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", profile)
@@ -228,7 +236,7 @@ class ModuleTests(unittest.TestCase):
                     "route vpn.example.com 255.255.255.255 net_gateway",
                     adapter_profile,
                 )
-                self.assertNotIn("tun-mtu 1400", adapter_profile)
+                self.assertIn("tun-mtu 1400", adapter_profile)
                 self.assertNotIn("mssfix 1360", adapter_profile)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
@@ -372,8 +380,10 @@ class ModuleTests(unittest.TestCase):
             : > "$TDZ_OVPN_PKI/gateway.crt"
             : > "$TDZ_OVPN_PKI/gateway.key"
             tdz_openvpn_write_network_service
+            tdz_openvpn_write_hooks
             tdz_openvpn_write_systemd_units
             dash -n "$TDZ_OVPN_FIREWALL"
+            dash -n "$TDZ_OVPN_HOOKS/up-tcp"
             """
             result = self.run_bash(script)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -384,9 +394,14 @@ class ModuleTests(unittest.TestCase):
             self.assertIn('WSS_PORT="450"', firewall)
             self.assertIn('SSL_PORT="446"', firewall)
             self.assertIn("MASQUERADE", firewall)
+            self.assertIn("-t mangle", firewall)
+            self.assertIn("TCPMSS --clamp-mss-to-pmtu", firewall)
             self.assertNotIn("SSH_PORT=", firewall)
             self.assertNotIn("filter_add INPUT -i tun-tdz-tcp", firewall)
             self.assertNotIn("filter_add INPUT -i tun-tdz-udp", firewall)
+            qdisc_hook = (root / "openvpn/hooks/up-tcp").read_text()
+            self.assertIn("fq_codel", qdisc_hook)
+            self.assertIn('command -v tc', qdisc_hook)
             units = list((root / "systemd").glob("tdz-openvpn-*.service"))
             self.assertEqual(len(units), 8)
             for unit in units:
