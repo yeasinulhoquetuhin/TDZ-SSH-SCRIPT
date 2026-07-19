@@ -170,7 +170,7 @@ After installation, type **`menu`** to launch the management interface.
 
 Open **`menu → 13) Protocol Manager → 10) OpenVPN Protocol Suite`** to install or manage OpenVPN. The component is optional: installing or removing it does not remove TDZ users or change the existing SSH, HAProxy, Nginx, DNSTT, BadVPN, ZiVPN, banner, certificate, or backup configuration.
 
-During first installation, TDZ asks for the public VPS IP or domain. It then applies the fixed OpenVPN transport layout (`446–450`), creates fresh server cryptographic material, applies isolated VPN subnets, starts the required services, and verifies that every listener is active. Re-running the installer repairs the suite while preserving account data; installations created with the earlier random-port layout are migrated transactionally and restored automatically if any new listener cannot be started.
+During first installation, TDZ asks for the public VPS IP or domain. It starts with portal port `1180` and transport ports `446–450`, creates fresh server cryptographic material, applies isolated VPN subnets, starts the required services, and verifies that every listener is active. These are defaults rather than permanent restrictions. From the OpenVPN Suite menu, **Change Portal and Method Ports** can update the portal, SSL, TCP, UDP, HTTP/WS, and WSS ports together. The saved layout survives installer updates and repairs. Every change transactionally rebuilds the server configs, systemd listeners, firewall rules, downloadable profiles, ZIP, portal pages, and displayed connection details; if validation fails, the last working layout is restored automatically.
 
 The optional suite requires Python 3.7 or newer. On an older distribution the core TDZ SSH features remain available, while OpenVPN installation stops safely without changing the existing setup.
 
@@ -190,7 +190,7 @@ http://VPS-IP-OR-HOST:1180/openvpn/
 https://VPS-IP-OR-HOST:1180/openvpn/
 ```
 
-The landing page summarizes every transport. Full client fields, copyable payloads, SNI values, firewall requirements, verification order, and troubleshooting are available at `/openvpn/docs`; individual profiles, the complete ZIP, and the server CA are available at `/openvpn/download`. The managed portal accepts both HTTP and HTTPS on port `1180`; HTTPS is strongly recommended when downloading profiles because HTTP cannot prevent network-side tampering. The offline text guide remains inside the ZIP but is no longer required to understand the setup. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
+The landing page summarizes every transport. Full client fields, copyable payloads, SNI values, verification order, and client-focused troubleshooting are available at `/openvpn/docs`; individual profiles, the complete ZIP, and the server CA are available at `/openvpn/download`. The managed portal accepts both HTTP and HTTPS on its configured port (`1180` by default); HTTPS is strongly recommended when downloading profiles because HTTP cannot prevent network-side tampering. The offline text guide remains inside the ZIP but is no longer required to understand the setup. Profiles never contain a TDZ username or password. Users import a profile and sign in with the same TDZ account credentials.
 
 The portal uses the same validated outer certificate as WSS and SSL. A matching certificate applied through **Domain & SSL Cert** is reused automatically across all three services; if it does not cover the saved OpenVPN host, the last working adapter certificate is preserved and the menu reports the mismatch. The private OpenVPN CA remains separate and embedded in every profile.
 
@@ -249,12 +249,12 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 | 8770 | HTTP | Nginx internal proxy |
 | 8442 | HTTPS | Nginx internal TLS proxy |
 | 8890 | TCP | WS-to-SSH bridge |
-| 446 | TLS | OpenVPN SSL / SNI adapter |
-| 447 | TCP | OpenVPN direct TCP backend |
-| 448 | UDP | OpenVPN direct UDP transport |
-| 449 | HTTP / WS | OpenVPN HTTP CONNECT, HTTP Payload, and WebSocket gateway |
-| 450 | WSS | OpenVPN TLS WebSocket / SNI gateway |
-| 1180 | HTTP / HTTPS | OpenVPN documentation and profile portal; both protocols are accepted |
+| 446 | TLS | OpenVPN SSL / SNI adapter (configurable default) |
+| 447 | TCP | OpenVPN direct TCP backend (configurable default) |
+| 448 | UDP | OpenVPN direct UDP transport (configurable default) |
+| 449 | HTTP / WS | OpenVPN HTTP CONNECT, HTTP Payload, and WebSocket gateway (configurable default) |
+| 450 | WSS | OpenVPN TLS WebSocket / SNI gateway (configurable default) |
+| 1180 | HTTP / HTTPS | OpenVPN documentation and profile portal; configurable default, both protocols are accepted |
 
 ## Supported Platforms
 

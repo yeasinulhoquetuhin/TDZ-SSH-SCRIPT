@@ -1249,7 +1249,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-19.7
+# TDZ SSH TUNNEL limiter version 2026-07-20.1
 # Live session counts use authenticated `who`, sshd, and OpenVPN records only.
 # Per-user process scans remain traffic-accounting inputs, never session evidence.
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1596,12 +1596,14 @@ while true; do
         # --- Generate dynamic banner based on status ---
         if $dynamic_banners_enabled; then
             SEP="---------------------------------"
-            # OpenSSH sends Banner files before authentication, so the login
-            # currently reading this file cannot appear in who/sshd session
-            # accounting yet. Display the existing shared SSH+OpenVPN total
-            # plus this incoming SSH login; enforcement keeps using the
-            # authoritative online_count above.
-            banner_session_count=$((online_count + 1))
+            # OpenSSH sends Banner files before authentication.  Never count
+            # the connection that is merely reading the banner: it may fail
+            # authentication, and a successful login will be present in the
+            # authoritative SSH/OpenVPN sources on the next scan.  Adding a
+            # speculative +1 made failed attempts look active and could show
+            # impossible values such as 4/3 even though enforcement was
+            # correctly holding the account to three authenticated sessions.
+            banner_session_count=$online_count
 
             if $pending_activation; then
                 STATUS_TEXT="Waiting for First Use"
@@ -1784,7 +1786,7 @@ EOF
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-19.7"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-20.1"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
@@ -8159,16 +8161,12 @@ main_menu() {
         local pill_haprx="${C_STATUS_I}○${C_RESET}"  pill_nginx="${C_STATUS_I}○${C_RESET}"
         local pill_ws="${C_STATUS_I}○${C_RESET}"     pill_badvpn="${C_STATUS_I}○${C_RESET}"
         local pill_udpgw="${C_STATUS_I}○${C_RESET}"  pill_dnstt="${C_STATUS_I}○${C_RESET}"
-        local pill_openvpn="${C_STATUS_I}○${C_RESET}"
         systemctl is-active --quiet haproxy            && pill_haprx="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet nginx              && pill_nginx="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet tdz-ws-ssh-bridge  && pill_ws="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet badvpn              && pill_badvpn="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet udpgw               && pill_udpgw="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet dnstt               && pill_dnstt="${C_STATUS_A}●${C_RESET}"
-        if declare -F tdz_openvpn_is_active >/dev/null 2>&1 && tdz_openvpn_is_active; then
-            pill_openvpn="${C_STATUS_A}●${C_RESET}"
-        fi
 
         # ── SECTION 1: SERVER PROFILE ──
         # Layout (per user request, 2026-06-25):
@@ -8204,9 +8202,6 @@ main_menu() {
         tdz_box_header "SERVICE STATUS"
         tdz_box_divider
         tdz_row "${pill_haprx} HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}   ${pill_nginx} Nginx ${NGINX_INTERNAL_TLS_PORT}   ${pill_ws} WS-Bridge ${WS_SSH_BRIDGE_PORT}"
-        if declare -F tdz_openvpn_is_installed >/dev/null 2>&1 && tdz_openvpn_is_installed; then
-            tdz_row "${pill_openvpn} OpenVPN Suite   ${C_DIM}Portal :${TDZ_OVPN_PORTAL_PORT}/openvpn${C_RESET}"
-        fi
         tdz_box_bot
 
         # ── SECTION 3: USER MANAGEMENT ────────────────────────────────

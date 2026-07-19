@@ -58,12 +58,13 @@ class ModuleTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_fixed_openvpn_port_mapping_and_legacy_state_detection(self):
+    def test_default_and_custom_openvpn_port_state(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             result = self.run_bash(
                 f"""
                 tdz_openvpn_apply_fixed_port_mapping
+                [[ "$TDZ_OVPN_PORTAL_PORT" == 1180 ]] || exit 19
                 [[ "$TDZ_OVPN_SSL_PORT" == 446 ]] || exit 20
                 [[ "$TDZ_OVPN_TCP_PORT" == 447 ]] || exit 21
                 [[ "$TDZ_OVPN_UDP_PORT" == 448 ]] || exit 22
@@ -72,7 +73,14 @@ class ModuleTests(unittest.TestCase):
                 tdz_openvpn_ports_match_fixed_mapping || exit 25
                 tdz_openvpn_valid_saved_port 446 || exit 26
                 tdz_openvpn_valid_saved_port 25001 || exit 27
-                ! tdz_openvpn_valid_saved_port 1024 || exit 28
+                tdz_openvpn_valid_saved_port 1024 || exit 28
+                ! tdz_openvpn_valid_saved_port 0 || exit 33
+                ! tdz_openvpn_valid_saved_port 65536 || exit 34
+                ! tdz_openvpn_valid_saved_port 00443 || exit 42
+                tdz_openvpn_requested_ports_valid 1180 446 447 448 449 450 || exit 35
+                tdz_openvpn_requested_ports_valid 25000 25001 25002 25003 25004 25005 || exit 36
+                ! tdz_openvpn_requested_ports_valid 25000 25001 25002 25003 25004 25004 || exit 37
+                ! tdz_openvpn_requested_ports_valid 25000 25001 25002 25003 25004 443 || exit 38
 
                 TDZ_OVPN_ROOT={root}/openvpn
                 TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
@@ -81,6 +89,7 @@ class ModuleTests(unittest.TestCase):
                 printf 'test\n' > "$TDZ_OVPN_PKI/ca.crt"
                 printf 'test\n' > "$TDZ_OVPN_PKI/server.key"
                 TDZ_OVPN_HOST=vpn.example.com
+                TDZ_OVPN_PORTAL_PORT=25000
                 TDZ_OVPN_TCP_PORT=25001
                 TDZ_OVPN_UDP_PORT=25002
                 TDZ_OVPN_HTTP_PORT=25003
@@ -89,11 +98,45 @@ class ModuleTests(unittest.TestCase):
                 TDZ_OVPN_TCP_SUBNET=10.100.10.0
                 TDZ_OVPN_UDP_SUBNET=10.101.11.0
                 tdz_openvpn_save_state || exit 29
-                tdz_openvpn_needs_refresh || exit 30
+                tdz_openvpn_load_state || exit 30
+                [[ "$TDZ_OVPN_PORTAL_PORT" == 25000 ]] || exit 39
+                [[ "$TDZ_OVPN_TCP_PORT" == 25001 ]] || exit 40
+                ! tdz_openvpn_needs_refresh || exit 41
 
                 tdz_openvpn_apply_fixed_port_mapping
                 tdz_openvpn_save_state || exit 31
                 ! tdz_openvpn_needs_refresh || exit 32
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_legacy_state_without_portal_port_uses_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / "state.conf"
+            state.write_text(
+                "\n".join(
+                    (
+                        "VERSION=legacy",
+                        "HOST=vpn.example.com",
+                        "TCP_PORT=25001",
+                        "UDP_PORT=25002",
+                        "HTTP_PORT=25003",
+                        "WSS_PORT=25004",
+                        "SSL_PORT=25005",
+                        "TCP_SUBNET=10.100.10.0",
+                        "UDP_SUBNET=10.101.11.0",
+                        "SERVICE_USER_CREATED=0",
+                        "SERVICE_GROUP_CREATED=0",
+                    )
+                )
+                + "\n"
+            )
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_STATE={state}
+                tdz_openvpn_load_state || exit 20
+                [[ "$TDZ_OVPN_PORTAL_PORT" == 1180 ]] || exit 21
+                [[ "$TDZ_OVPN_TCP_PORT" == 25001 ]] || exit 22
                 """
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -302,6 +345,10 @@ class ModuleTests(unittest.TestCase):
 
             visitor_pages = portal + docs + downloads
             self.assertNotIn("1180", visitor_pages)
+            self.assertNotIn("External firewall", visitor_pages)
+            self.assertNotIn("security group", visitor_pages)
+            self.assertNotIn("VPS service", visitor_pages)
+            self.assertIn("contact the server administrator", docs)
             self.assertNotIn("brand-mark", visitor_pages)
             self.assertNotIn("<strong>PORTAL</strong>", visitor_pages)
 
@@ -362,6 +409,8 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("public carrier endpoint outside the tunnel", guide)
             self.assertNotIn("route-gateway", guide)
             self.assertNotIn("/ovpn-configs", portal + docs + downloads + guide)
+            self.assertNotIn("external firewall", guide.lower())
+            self.assertNotIn("security group", guide.lower())
 
             (root / "portal/ovpn-configs/stale.ovpn").write_text("stale\n")
             regenerated = self.run_bash(script)
@@ -448,6 +497,151 @@ class ModuleTests(unittest.TestCase):
                 )
                 self.assertEqual(verified.returncode, 0, verified.stderr)
 
+    def test_custom_ports_propagate_to_state_services_firewall_and_profiles(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script = f"""
+            TDZ_OVPN_ROOT={root}/openvpn
+            TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+            TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+            TDZ_OVPN_RUN=$TDZ_OVPN_ROOT/run
+            TDZ_OVPN_HOOKS=$TDZ_OVPN_ROOT/hooks
+            TDZ_OVPN_PORTAL_BASE={root}/portal
+            TDZ_OVPN_PROFILES=$TDZ_OVPN_PORTAL_BASE/ovpn-configs
+            TDZ_OVPN_SYSTEMD_DIR={root}/systemd
+            TDZ_OVPN_PAM_SERVICE={root}/pam/tdz-openvpn
+            TDZ_OVPN_SYSCTL={root}/sysctl/tdz-openvpn.conf
+            TDZ_OVPN_FIREWALL={root}/libexec/tdz-openvpn-firewall
+            TDZ_OVPN_RUNTIME=/runtime-helper
+            TDZ_OVPN_GATEWAY=/gateway-helper
+            TDZ_OVPN_PORTAL=/portal-helper
+            TDZ_OVPN_SERVICE_USER=root
+            TDZ_OVPN_BIN=/bin/true
+            TDZ_OVPN_HOST=vpn.example.com
+            TDZ_OVPN_PORTAL_PORT=25100
+            TDZ_OVPN_SSL_PORT=25101
+            TDZ_OVPN_TCP_PORT=25102
+            TDZ_OVPN_UDP_PORT=25103
+            TDZ_OVPN_HTTP_PORT=25104
+            TDZ_OVPN_WSS_PORT=25105
+            TDZ_OVPN_TCP_SUBNET=10.100.10.0
+            TDZ_OVPN_UDP_SUBNET=10.101.11.0
+            tdz_openvpn_has_modern_cipher_option() {{ return 0; }}
+            mkdir -p "$TDZ_OVPN_PKI" "$TDZ_OVPN_RUN" "$TDZ_OVPN_HOOKS"
+            printf '%s\n' 'TEST CA' > "$TDZ_OVPN_PKI/ca.crt"
+            printf '%s\n' 'TEST TLS KEY' > "$TDZ_OVPN_PKI/tls-crypt.key"
+            : > "$TDZ_OVPN_PKI/gateway.crt"
+            : > "$TDZ_OVPN_PKI/gateway.key"
+            tdz_openvpn_save_state
+            tdz_openvpn_write_server_config tcp tcp-server "$TDZ_OVPN_TCP_PORT" "$TDZ_OVPN_TCP_SUBNET" /pam-plugin.so
+            tdz_openvpn_write_server_config udp udp "$TDZ_OVPN_UDP_PORT" "$TDZ_OVPN_UDP_SUBNET" /pam-plugin.so
+            tdz_openvpn_generate_profiles
+            tdz_openvpn_write_network_service
+            tdz_openvpn_write_systemd_units
+            """
+            result = self.run_bash(script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            state = (root / "openvpn/state.conf").read_text()
+            for entry in (
+                "PORTAL_PORT=25100",
+                "SSL_PORT=25101",
+                "TCP_PORT=25102",
+                "UDP_PORT=25103",
+                "HTTP_PORT=25104",
+                "WSS_PORT=25105",
+            ):
+                self.assertIn(entry, state)
+
+            self.assertIn("port 25102", (root / "openvpn/server-tcp.conf").read_text())
+            self.assertIn("port 25103", (root / "openvpn/server-udp.conf").read_text())
+            firewall = (root / "libexec/tdz-openvpn-firewall").read_text()
+            for entry in (
+                'PORTAL_PORT="25100"',
+                'SSL_PORT="25101"',
+                'TCP_PORT="25102"',
+                'UDP_PORT="25103"',
+                'HTTP_PORT="25104"',
+                'WSS_PORT="25105"',
+            ):
+                self.assertIn(entry, firewall)
+
+            systemd = root / "systemd"
+            self.assertIn("--port 25100 ", (systemd / "tdz-openvpn-portal.service").read_text())
+            self.assertIn("--port 25104 ", (systemd / "tdz-openvpn-http.service").read_text())
+            self.assertIn("--backend-port 25102 ", (systemd / "tdz-openvpn-http.service").read_text())
+            self.assertIn("--port 25105 ", (systemd / "tdz-openvpn-wss.service").read_text())
+            self.assertIn("--port 25101 ", (systemd / "tdz-openvpn-ssl.service").read_text())
+
+            profiles = root / "portal/ovpn-configs"
+            self.assertIn("remote vpn.example.com 25103", (profiles / "tdz-openvpn-udp.ovpn").read_text())
+            self.assertIn("remote vpn.example.com 25102", (profiles / "tdz-openvpn-tcp.ovpn").read_text())
+            http_profile = (profiles / "tdz-openvpn-http-connect.ovpn").read_text()
+            self.assertIn("remote vpn.example.com 25102", http_profile)
+            self.assertIn("http-proxy vpn.example.com 25104", http_profile)
+            self.assertIn("remote vpn.example.com 25104", (profiles / "tdz-openvpn-ws-injector.ovpn").read_text())
+            self.assertIn("remote vpn.example.com 25105", (profiles / "tdz-openvpn-wss-injector.ovpn").read_text())
+            self.assertIn("remote vpn.example.com 25101", (profiles / "tdz-openvpn-ssl-injector.ovpn").read_text())
+            guide = (profiles / "connection-guide.txt").read_text()
+            self.assertIn("https://vpn.example.com:25100/openvpn/", guide)
+
+    def test_failed_port_change_restores_previous_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                TDZ_OVPN_HOST=vpn.example.com
+                TDZ_OVPN_PORTAL_PORT=1180
+                TDZ_OVPN_SSL_PORT=446
+                TDZ_OVPN_TCP_PORT=447
+                TDZ_OVPN_UDP_PORT=448
+                TDZ_OVPN_HTTP_PORT=449
+                TDZ_OVPN_WSS_PORT=450
+                TDZ_OVPN_TCP_SUBNET=10.100.10.0
+                TDZ_OVPN_UDP_SUBNET=10.101.11.0
+                mkdir -p "$TDZ_OVPN_PKI"
+                : > "$TDZ_OVPN_PKI/ca.crt"
+                : > "$TDZ_OVPN_PKI/server.key"
+                tdz_openvpn_save_state || exit 20
+
+                tdz_openvpn_python_supported() {{ return 0; }}
+                tdz_openvpn_resolve_binary() {{ TDZ_OVPN_BIN=/bin/true; return 0; }}
+                tdz_openvpn_find_pam_plugin() {{ printf /pam-plugin.so; }}
+                tdz_openvpn_ensure_service_user() {{ return 0; }}
+                tdz_openvpn_snapshot_runtime() {{ mkdir -p "$1"; cp "$TDZ_OVPN_STATE" "$1/original-state"; }}
+                tdz_openvpn_stop_services() {{ return 0; }}
+                tdz_openvpn_selected_ports_free() {{ return 0; }}
+                tdz_openvpn_ensure_pki() {{ return 0; }}
+                tdz_openvpn_write_hooks() {{ return 0; }}
+                tdz_openvpn_prepare_gateway_certificate() {{ return 0; }}
+                tdz_openvpn_write_pam() {{ return 0; }}
+                tdz_openvpn_write_server_config() {{ return 0; }}
+                tdz_openvpn_generate_profiles() {{ return 0; }}
+                tdz_openvpn_apply_private_permissions() {{ return 0; }}
+                tdz_openvpn_write_network_service() {{ return 0; }}
+                tdz_openvpn_write_systemd_units() {{ return 0; }}
+                tdz_openvpn_validate_runtime_files() {{ return 0; }}
+                tdz_openvpn_start_services() {{ return 1; }}
+                tdz_openvpn_restore_snapshot() {{ cp "$1/original-state" "$TDZ_OVPN_STATE"; tdz_openvpn_load_state; }}
+                tdz_openvpn_show_details() {{ return 0; }}
+
+                if tdz_openvpn_apply_port_layout 25100 25101 25102 25103 25104 25105; then
+                    exit 21
+                fi
+                tdz_openvpn_load_state || exit 22
+                [[ "$TDZ_OVPN_PORTAL_PORT" == 1180 ]] || exit 23
+                [[ "$TDZ_OVPN_SSL_PORT" == 446 ]] || exit 24
+                [[ "$TDZ_OVPN_TCP_PORT" == 447 ]] || exit 25
+                [[ "$TDZ_OVPN_UDP_PORT" == 448 ]] || exit 26
+                [[ "$TDZ_OVPN_HTTP_PORT" == 449 ]] || exit 27
+                [[ "$TDZ_OVPN_WSS_PORT" == 450 ]] || exit 28
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_state_round_trip_preserves_service_account_ownership(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -486,9 +680,10 @@ class ModuleTests(unittest.TestCase):
 
     def test_limiter_preserves_established_openvpn_sessions(self):
         menu = (REPO / "menu.sh").read_text()
-        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-19.7", menu)
+        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-20.1", menu)
         self.assertIn("if (( online_count > limit )); then", menu)
-        self.assertIn("banner_session_count=$((online_count + 1))", menu)
+        self.assertIn("banner_session_count=$online_count", menu)
+        self.assertNotIn("banner_session_count=$((online_count + 1))", menu)
         self.assertIn(
             "Active Session:</b> $banner_session_count/$limit",
             menu,
@@ -509,12 +704,27 @@ class ModuleTests(unittest.TestCase):
         self.assertNotIn("is_dynamic_ssh_banner_enabled", refresh)
         self.assertIn('-s "$banner_dir/${user}.txt"', refresh)
 
-        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-19.7")
+        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-20.1")
         limiter_end = menu.index("\nEOF\n    chmod +x \"$LIMITER_SCRIPT\"", limiter_start)
         limiter = menu[limiter_start:limiter_end]
         self.assertIn('${#unique_sshd_sessions[@]} -gt 0', limiter)
         self.assertNotIn('${#unique_pids[@]} -gt 0', limiter)
         self.assertNotIn('online_count=1\n', limiter)
+
+    def test_main_dashboard_keeps_openvpn_status_inside_protocol_suite(self):
+        menu = (REPO / "menu.sh").read_text()
+        main_start = menu.index("main_menu() {")
+        main = menu[main_start:]
+        service_start = main.index('tdz_box_header "SERVICE STATUS"')
+        service_end = main.index("# ── SECTION 3: USER MANAGEMENT", service_start)
+        service_block = main[service_start:service_end]
+        self.assertNotIn("OpenVPN Suite", service_block)
+        self.assertNotIn("TDZ_OVPN_PORTAL_PORT", service_block)
+
+        protocol_start = menu.index("protocol_menu() {")
+        protocol_end = menu.index("\n}\n\nuninstall_script()", protocol_start)
+        protocol = menu[protocol_start:protocol_end]
+        self.assertIn('tdz_menu_status "[10]" "OpenVPN Protocol Suite"', protocol)
 
     def test_protocol_manager_numbering_is_sequential(self):
         menu = (REPO / "menu.sh").read_text()

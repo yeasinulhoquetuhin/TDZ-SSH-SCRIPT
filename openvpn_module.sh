@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-19.21"
+TDZ_OVPN_MODULE_VERSION="2026-07-20.1"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -14,13 +14,14 @@ TDZ_OVPN_LIB="${TDZ_OVPN_LIB:-/usr/local/lib/tdz-ssh-tunnel}"
 TDZ_OVPN_RUNTIME="${TDZ_OVPN_RUNTIME:-$TDZ_OVPN_LIB/tdz_openvpn_runtime.py}"
 TDZ_OVPN_GATEWAY="${TDZ_OVPN_GATEWAY:-$TDZ_OVPN_LIB/tdz_openvpn_gateway.py}"
 TDZ_OVPN_PORTAL="${TDZ_OVPN_PORTAL:-$TDZ_OVPN_LIB/tdz_openvpn_portal.py}"
-TDZ_OVPN_PORTAL_PORT=1180
 TDZ_OVPN_PUBLIC_PATH="/openvpn"
+TDZ_OVPN_FIXED_PORTAL_PORT=1180
 TDZ_OVPN_FIXED_SSL_PORT=446
 TDZ_OVPN_FIXED_TCP_PORT=447
 TDZ_OVPN_FIXED_UDP_PORT=448
 TDZ_OVPN_FIXED_HTTP_PORT=449
 TDZ_OVPN_FIXED_WSS_PORT=450
+TDZ_OVPN_PORTAL_PORT="$TDZ_OVPN_FIXED_PORTAL_PORT"
 TDZ_OVPN_TCP_TUN_MTU=1400
 TDZ_OVPN_TCP_QUEUE_LIMIT=128
 # External injector modes add a second TCP/TLS/WebSocket queue in front of
@@ -68,6 +69,9 @@ tdz_openvpn_load_state() {
     local key value
     [[ -r "$TDZ_OVPN_STATE" ]] || return 1
     TDZ_OVPN_SAVED_VERSION=""; TDZ_OVPN_HOST=""
+    # PORTAL_PORT was added after the first public release.  Default it before
+    # parsing so legacy state files migrate without losing their installation.
+    TDZ_OVPN_PORTAL_PORT="$TDZ_OVPN_FIXED_PORTAL_PORT"
     TDZ_OVPN_TCP_PORT=""; TDZ_OVPN_UDP_PORT=""; TDZ_OVPN_HTTP_PORT=""
     TDZ_OVPN_WSS_PORT=""; TDZ_OVPN_SSL_PORT=""
     TDZ_OVPN_TCP_SUBNET=""; TDZ_OVPN_UDP_SUBNET=""
@@ -78,6 +82,7 @@ tdz_openvpn_load_state() {
         case "$key" in
             VERSION) TDZ_OVPN_SAVED_VERSION="$value" ;;
             HOST) TDZ_OVPN_HOST="$value" ;;
+            PORTAL_PORT) TDZ_OVPN_PORTAL_PORT="$value" ;;
             TCP_PORT) TDZ_OVPN_TCP_PORT="$value" ;;
             UDP_PORT) TDZ_OVPN_UDP_PORT="$value" ;;
             HTTP_PORT) TDZ_OVPN_HTTP_PORT="$value" ;;
@@ -94,6 +99,7 @@ tdz_openvpn_load_state() {
         esac
     done < "$TDZ_OVPN_STATE"
     tdz_openvpn_valid_host "$TDZ_OVPN_HOST" || return 1
+    tdz_openvpn_valid_saved_port "$TDZ_OVPN_PORTAL_PORT" || return 1
     tdz_openvpn_valid_saved_port "$TDZ_OVPN_TCP_PORT" || return 1
     tdz_openvpn_valid_saved_port "$TDZ_OVPN_UDP_PORT" || return 1
     tdz_openvpn_valid_saved_port "$TDZ_OVPN_HTTP_PORT" || return 1
@@ -102,22 +108,12 @@ tdz_openvpn_load_state() {
     tdz_openvpn_valid_subnet "$TDZ_OVPN_TCP_SUBNET" || return 1
     tdz_openvpn_valid_subnet "$TDZ_OVPN_UDP_SUBNET" || return 1
     [[ "$TDZ_OVPN_TCP_SUBNET" != "$TDZ_OVPN_UDP_SUBNET" ]] || return 1
-    [[ "$TDZ_OVPN_TCP_PORT" != "$TDZ_OVPN_UDP_PORT" &&
-       "$TDZ_OVPN_TCP_PORT" != "$TDZ_OVPN_HTTP_PORT" &&
-       "$TDZ_OVPN_TCP_PORT" != "$TDZ_OVPN_WSS_PORT" &&
-       "$TDZ_OVPN_TCP_PORT" != "$TDZ_OVPN_SSL_PORT" &&
-       "$TDZ_OVPN_UDP_PORT" != "$TDZ_OVPN_HTTP_PORT" &&
-       "$TDZ_OVPN_UDP_PORT" != "$TDZ_OVPN_WSS_PORT" &&
-       "$TDZ_OVPN_UDP_PORT" != "$TDZ_OVPN_SSL_PORT" &&
-       "$TDZ_OVPN_HTTP_PORT" != "$TDZ_OVPN_WSS_PORT" &&
-       "$TDZ_OVPN_HTTP_PORT" != "$TDZ_OVPN_SSL_PORT" &&
-       "$TDZ_OVPN_WSS_PORT" != "$TDZ_OVPN_SSL_PORT" ]]
+    tdz_openvpn_ports_are_distinct
 }
 
 tdz_openvpn_needs_refresh() {
     tdz_openvpn_is_installed || return 1
     tdz_openvpn_load_state || return 0
-    tdz_openvpn_ports_match_fixed_mapping || return 0
     [[ "$TDZ_OVPN_SAVED_VERSION" != "$TDZ_OVPN_MODULE_VERSION" ]]
 }
 
@@ -128,6 +124,7 @@ tdz_openvpn_save_state() {
     {
         printf 'VERSION=%s\n' "$TDZ_OVPN_MODULE_VERSION"
         printf 'HOST=%s\n' "$TDZ_OVPN_HOST"
+        printf 'PORTAL_PORT=%s\n' "$TDZ_OVPN_PORTAL_PORT"
         printf 'TCP_PORT=%s\n' "$TDZ_OVPN_TCP_PORT"
         printf 'UDP_PORT=%s\n' "$TDZ_OVPN_UDP_PORT"
         printf 'HTTP_PORT=%s\n' "$TDZ_OVPN_HTTP_PORT"
@@ -185,14 +182,44 @@ tdz_openvpn_valid_generated_port() {
 
 tdz_openvpn_valid_saved_port() {
     local port=${1:-}
+    [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+    (( 10#$port >= 1 && 10#$port <= 65535 ))
+}
+
+tdz_openvpn_valid_configurable_port() {
+    local port=${1:-}
+    tdz_openvpn_valid_saved_port "$port" || return 1
     case "$port" in
-        "$TDZ_OVPN_FIXED_SSL_PORT"|"$TDZ_OVPN_FIXED_TCP_PORT"|"$TDZ_OVPN_FIXED_UDP_PORT"|\
+        "$TDZ_OVPN_FIXED_PORTAL_PORT"|"$TDZ_OVPN_FIXED_SSL_PORT"|"$TDZ_OVPN_FIXED_TCP_PORT"|"$TDZ_OVPN_FIXED_UDP_PORT"|\
         "$TDZ_OVPN_FIXED_HTTP_PORT"|"$TDZ_OVPN_FIXED_WSS_PORT") return 0 ;;
-        *) tdz_openvpn_valid_generated_port "$port" ;;
+        *) ! tdz_openvpn_forbidden_port "$port" ;;
     esac
 }
 
+tdz_openvpn_ports_are_distinct() {
+    local port
+    local -A seen=()
+    for port in "$TDZ_OVPN_PORTAL_PORT" "$TDZ_OVPN_SSL_PORT" "$TDZ_OVPN_TCP_PORT" \
+        "$TDZ_OVPN_UDP_PORT" "$TDZ_OVPN_HTTP_PORT" "$TDZ_OVPN_WSS_PORT"; do
+        tdz_openvpn_valid_saved_port "$port" || return 1
+        [[ -z "${seen[$port]+x}" ]] || return 1
+        seen["$port"]=1
+    done
+}
+
+tdz_openvpn_requested_ports_valid() {
+    local port
+    local -A seen=()
+    (( $# == 6 )) || return 1
+    for port in "$@"; do
+        tdz_openvpn_valid_configurable_port "$port" || return 1
+        [[ -z "${seen[$port]+x}" ]] || return 1
+        seen["$port"]=1
+    done
+}
+
 tdz_openvpn_apply_fixed_port_mapping() {
+    TDZ_OVPN_PORTAL_PORT="$TDZ_OVPN_FIXED_PORTAL_PORT"
     TDZ_OVPN_SSL_PORT="$TDZ_OVPN_FIXED_SSL_PORT"
     TDZ_OVPN_TCP_PORT="$TDZ_OVPN_FIXED_TCP_PORT"
     TDZ_OVPN_UDP_PORT="$TDZ_OVPN_FIXED_UDP_PORT"
@@ -201,7 +228,8 @@ tdz_openvpn_apply_fixed_port_mapping() {
 }
 
 tdz_openvpn_ports_match_fixed_mapping() {
-    [[ "$TDZ_OVPN_SSL_PORT" == "$TDZ_OVPN_FIXED_SSL_PORT" &&
+    [[ "$TDZ_OVPN_PORTAL_PORT" == "$TDZ_OVPN_FIXED_PORTAL_PORT" &&
+       "$TDZ_OVPN_SSL_PORT" == "$TDZ_OVPN_FIXED_SSL_PORT" &&
        "$TDZ_OVPN_TCP_PORT" == "$TDZ_OVPN_FIXED_TCP_PORT" &&
        "$TDZ_OVPN_UDP_PORT" == "$TDZ_OVPN_FIXED_UDP_PORT" &&
        "$TDZ_OVPN_HTTP_PORT" == "$TDZ_OVPN_FIXED_HTTP_PORT" &&
@@ -610,8 +638,8 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 MemoryDenyWriteExecute=true
 RestrictRealtime=true
 
@@ -899,8 +927,6 @@ Expiry, lock, connection limit, first-use activation, and shared bandwidth quota
 HTTPS is recommended for downloading profiles because public HTTP is not encrypted.
 Adapter profiles keep the public carrier endpoint outside the tunnel so the outer
 WS, WSS, or SSL connection cannot route back into itself.
-If your VPS provider uses an external firewall or security group, allow TCP $TDZ_OVPN_PORTAL_PORT,
-TCP $TDZ_OVPN_TCP_PORT/$TDZ_OVPN_HTTP_PORT/$TDZ_OVPN_WSS_PORT/$TDZ_OVPN_SSL_PORT, and UDP $TDZ_OVPN_UDP_PORT.
 EOF
     chmod 644 "$TDZ_OVPN_PROFILES/connection-guide.txt" "$TDZ_OVPN_PROFILES/tdz-openvpn-ca.crt"
     (
@@ -1210,7 +1236,7 @@ EOF
 
 <section class="content-section" id="policy"><div class="kicker">Account policy</div><h2>What the same TDZ login enforces</h2><div class="grid two"><div class="callout"><span class="callout-mark">ID</span><div><strong>One username and password</strong><p>Profiles never contain credentials. Enter the existing TDZ account after import.</p></div></div><div class="callout"><span class="callout-mark">BW</span><div><strong>Shared usage accounting</strong><p>OpenVPN traffic is reconciled against the account bandwidth limit.</p></div></div><div class="callout"><span class="callout-mark">EX</span><div><strong>Expiry and first use</strong><p>Pending activation and expiry follow the same account lifecycle.</p></div></div><div class="callout"><span class="callout-mark">CN</span><div><strong>Connection admission</strong><p>Session limits are checked atomically before a connection is admitted.</p></div></div></div></section>
 
-<section class="content-section" id="troubleshooting"><div class="kicker">Troubleshooting</div><h2>Understand the client log</h2><div class="table-wrap"><table><thead><tr><th>Log or symptom</th><th>Meaning</th><th>Check</th></tr></thead><tbody><tr><td><code>AUTH_FAILED</code></td><td>The transport reached OpenVPN, but account authentication failed.</td><td>Username/password, expiry, lock, quota and connection limit</td></tr><tr><td><code>Connection refused</code></td><td>No listener is reachable on that port.</td><td>Selected mode, VPS service and provider firewall/security group</td></tr><tr><td><code>TLS Error</code></td><td>The endpoint answered, but TLS or profile validation failed.</td><td>Correct profile, SNI, CA and device time</td></tr><tr><td><code>HTTP 200</code> or <code>101</code></td><td>The HTTP or WS adapter accepted the request.</td><td>Continue to the later OpenVPN authentication lines</td></tr><tr><td>Higher WS/WSS latency</td><td>TCP plus HTTP/WebSocket and optional TLS add overhead compared with direct UDP.</td><td>Use Direct UDP when the network permits it; use WS/WSS when compatibility or filtering requires it</td></tr></tbody></table></div><div class="panel warning spaced-panel"><span class="label">External firewall</span><p>The installer opens the local VPS firewall. If the provider has a separate firewall or security group, allow TCP $TDZ_OVPN_SSL_PORT, $TDZ_OVPN_TCP_PORT, $TDZ_OVPN_HTTP_PORT and $TDZ_OVPN_WSS_PORT, plus UDP $TDZ_OVPN_UDP_PORT.</p></div></section>
+<section class="content-section" id="troubleshooting"><div class="kicker">Troubleshooting</div><h2>Understand the client log</h2><div class="table-wrap"><table><thead><tr><th>Log or symptom</th><th>Meaning</th><th>Check</th></tr></thead><tbody><tr><td><code>AUTH_FAILED</code></td><td>The transport reached OpenVPN, but account authentication failed.</td><td>Username/password, expiry, lock, quota and connection limit</td></tr><tr><td><code>Connection refused</code></td><td>The selected server method is not reachable.</td><td>Import the matching profile again; if it still fails, contact the server administrator</td></tr><tr><td><code>TLS Error</code></td><td>The endpoint answered, but TLS or profile validation failed.</td><td>Correct profile, SNI, CA and device time</td></tr><tr><td><code>HTTP 200</code> or <code>101</code></td><td>The HTTP or WS adapter accepted the request.</td><td>Continue to the later OpenVPN authentication lines</td></tr><tr><td>Higher WS/WSS latency</td><td>TCP plus HTTP/WebSocket and optional TLS add overhead compared with direct UDP.</td><td>Use Direct UDP when the network permits it; use WS/WSS when compatibility or filtering requires it</td></tr></tbody></table></div></section>
 </article>
 <aside class="toc" aria-label="On this page"><div class="toc-title">On this page</div><a href="#modes">Mode-by-mode setup</a><a href="#certificates">Certificate layers</a><a href="#payloads">Payload reference</a><a href="#verification">Verification order</a><a href="#policy">Account policy</a><a href="#troubleshooting">Troubleshooting</a></aside>
 </main>
@@ -1344,7 +1370,13 @@ tdz_openvpn_validate_runtime_files() {
         tdz_openvpn_cert_key_match "$TDZ_OVPN_PKI/server.crt" "$TDZ_OVPN_PKI/server.key" &&
         tdz_openvpn_cert_key_match "$TDZ_OVPN_PKI/gateway.crt" "$TDZ_OVPN_PKI/gateway.key" &&
         grep -q '^proto tcp' "$TDZ_OVPN_ROOT/server-tcp.conf" &&
+        grep -q "^port $TDZ_OVPN_TCP_PORT$" "$TDZ_OVPN_ROOT/server-tcp.conf" &&
         grep -q '^proto udp' "$TDZ_OVPN_ROOT/server-udp.conf" &&
+        grep -q "^port $TDZ_OVPN_UDP_PORT$" "$TDZ_OVPN_ROOT/server-udp.conf" &&
+        grep -q -- "--port $TDZ_OVPN_HTTP_PORT " "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-http.service" &&
+        grep -q -- "--port $TDZ_OVPN_WSS_PORT " "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-wss.service" &&
+        grep -q -- "--port $TDZ_OVPN_SSL_PORT " "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-ssl.service" &&
+        grep -q -- "--port $TDZ_OVPN_PORTAL_PORT " "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-portal.service" &&
         grep -q '^<tls-crypt>$' "$TDZ_OVPN_PROFILES/tdz-openvpn-tcp.ovpn"
 }
 
@@ -1420,11 +1452,6 @@ tdz_openvpn_install() {
             return 1
         }
     fi
-
-    # Repairs and updater runs migrate legacy random-port installations to
-    # the documented fixed mapping. The old state remains in the rollback
-    # snapshot until every regenerated listener has passed validation.
-    tdz_openvpn_apply_fixed_port_mapping
 
     if ! tdz_openvpn_portal_available; then
         echo -e "${C_RED}[ERROR] The required public portal port ${TDZ_OVPN_PORTAL_PORT} is already used by another service.${C_RESET}"
@@ -1626,7 +1653,6 @@ tdz_openvpn_refresh_runtime() {
     backup=$(mktemp -d /tmp/tdz-openvpn-refresh.XXXXXX) || return 1
     tdz_openvpn_snapshot_runtime "$backup" || { rm -rf "$backup"; return 1; }
     tdz_openvpn_stop_services
-    tdz_openvpn_apply_fixed_port_mapping
     tdz_openvpn_selected_ports_free || failed=true
     $failed || tdz_openvpn_save_state || failed=true
     $failed || tdz_openvpn_ensure_pki || failed=true
@@ -1648,6 +1674,169 @@ tdz_openvpn_refresh_runtime() {
     fi
     rm -rf "$backup"
     return 0
+}
+
+tdz_openvpn_apply_port_layout() {
+    local requested_portal=${1:-} requested_ssl=${2:-} requested_tcp=${3:-}
+    local requested_udp=${4:-} requested_http=${5:-} requested_wss=${6:-}
+    local pam_plugin backup failed=false rollback_ok=true
+
+    tdz_openvpn_is_installed || {
+        echo -e "${C_RED}[ERROR] Install OpenVPN Suite before changing its ports.${C_RESET}"
+        return 1
+    }
+    tdz_openvpn_load_state || {
+        echo -e "${C_RED}[ERROR] Saved OpenVPN settings are invalid.${C_RESET}"
+        return 1
+    }
+    if ! tdz_openvpn_requested_ports_valid "$requested_portal" "$requested_ssl" \
+        "$requested_tcp" "$requested_udp" "$requested_http" "$requested_wss"; then
+        echo -e "${C_RED}[ERROR] Ports must be unique numbers from 1-65535 and must not conflict with TDZ system ports.${C_RESET}"
+        return 1
+    fi
+    if [[ "$requested_portal" == "$TDZ_OVPN_PORTAL_PORT" &&
+          "$requested_ssl" == "$TDZ_OVPN_SSL_PORT" &&
+          "$requested_tcp" == "$TDZ_OVPN_TCP_PORT" &&
+          "$requested_udp" == "$TDZ_OVPN_UDP_PORT" &&
+          "$requested_http" == "$TDZ_OVPN_HTTP_PORT" &&
+          "$requested_wss" == "$TDZ_OVPN_WSS_PORT" ]]; then
+        echo -e "${C_YELLOW}[INFO] The OpenVPN port layout is already unchanged.${C_RESET}"
+        return 0
+    fi
+
+    tdz_openvpn_python_supported || {
+        echo -e "${C_RED}[ERROR] Python 3.7 or newer is required.${C_RESET}"
+        return 1
+    }
+    tdz_openvpn_resolve_binary || {
+        echo -e "${C_RED}[ERROR] The OpenVPN binary is unavailable.${C_RESET}"
+        return 1
+    }
+    pam_plugin=$(tdz_openvpn_find_pam_plugin) || {
+        echo -e "${C_RED}[ERROR] The OpenVPN PAM plugin is unavailable.${C_RESET}"
+        return 1
+    }
+    tdz_openvpn_ensure_service_user || {
+        echo -e "${C_RED}[ERROR] The OpenVPN service account is unavailable.${C_RESET}"
+        return 1
+    }
+
+    backup=$(mktemp -d /tmp/tdz-openvpn-ports.XXXXXX) || return 1
+    if ! tdz_openvpn_snapshot_runtime "$backup"; then
+        rm -rf "$backup"
+        echo -e "${C_RED}[ERROR] Could not create the rollback snapshot.${C_RESET}"
+        return 1
+    fi
+
+    echo -e "${C_BLUE}[INFO] Rebuilding OpenVPN listeners, firewall rules, profiles, and portal...${C_RESET}"
+    tdz_openvpn_stop_services
+    TDZ_OVPN_PORTAL_PORT="$requested_portal"
+    TDZ_OVPN_SSL_PORT="$requested_ssl"
+    TDZ_OVPN_TCP_PORT="$requested_tcp"
+    TDZ_OVPN_UDP_PORT="$requested_udp"
+    TDZ_OVPN_HTTP_PORT="$requested_http"
+    TDZ_OVPN_WSS_PORT="$requested_wss"
+
+    tdz_openvpn_selected_ports_free || failed=true
+    $failed || tdz_openvpn_save_state || failed=true
+    $failed || tdz_openvpn_ensure_pki || failed=true
+    $failed || tdz_openvpn_write_hooks || failed=true
+    $failed || tdz_openvpn_prepare_gateway_certificate || failed=true
+    $failed || tdz_openvpn_write_pam || failed=true
+    $failed || tdz_openvpn_write_server_config tcp tcp-server "$TDZ_OVPN_TCP_PORT" "$TDZ_OVPN_TCP_SUBNET" "$pam_plugin" || failed=true
+    $failed || tdz_openvpn_write_server_config udp udp "$TDZ_OVPN_UDP_PORT" "$TDZ_OVPN_UDP_SUBNET" "$pam_plugin" || failed=true
+    $failed || tdz_openvpn_generate_profiles || failed=true
+    $failed || tdz_openvpn_apply_private_permissions || failed=true
+    $failed || tdz_openvpn_write_network_service || failed=true
+    $failed || tdz_openvpn_write_systemd_units || failed=true
+    $failed || tdz_openvpn_validate_runtime_files || failed=true
+    $failed || tdz_openvpn_start_services || failed=true
+
+    if $failed; then
+        echo -e "${C_RED}[ERROR] The new ports could not be activated; restoring the previous working layout.${C_RESET}"
+        tdz_openvpn_restore_snapshot "$backup" >/dev/null 2>&1 || rollback_ok=false
+        rm -rf "$backup"
+        if ! $rollback_ok; then
+            echo -e "${C_RED}[CRITICAL] Automatic rollback also failed. Run OpenVPN repair from this menu.${C_RESET}"
+        fi
+        return 1
+    fi
+
+    rm -rf "$backup"
+    echo -e "${C_GREEN}[OK] Every OpenVPN port, service, firewall rule, profile, and portal page was updated.${C_RESET}"
+    tdz_openvpn_show_details
+}
+
+TDZ_OVPN_PROMPT_PORT=""
+tdz_openvpn_prompt_port() {
+    local label=$1 current=$2 input
+    if ! read -r -p "$(echo -e "${C_PROMPT}  ${label} [${current}]: ${C_RESET}")" input; then
+        return 1
+    fi
+    input=${input:-$current}
+    if ! tdz_openvpn_valid_configurable_port "$input"; then
+        echo -e "${C_RED}[ERROR] Invalid or reserved port: ${input}.${C_RESET}"
+        return 1
+    fi
+    TDZ_OVPN_PROMPT_PORT="$input"
+}
+
+tdz_openvpn_configure_ports() {
+    local new_portal new_ssl new_tcp new_udp new_http new_wss confirm
+    tdz_openvpn_load_state || {
+        echo -e "${C_RED}[ERROR] OpenVPN must be installed first.${C_RESET}"
+        return 1
+    }
+    echo
+    if declare -F tdz_section >/dev/null 2>&1; then
+        tdz_section "CHANGE OPENVPN PORTS"
+    fi
+    echo -e "${C_DIM}Press Enter to keep a current value. All six ports must be unique.${C_RESET}"
+
+    tdz_openvpn_prompt_port "Download Portal" "$TDZ_OVPN_PORTAL_PORT" || return 1
+    new_portal="$TDZ_OVPN_PROMPT_PORT"
+    tdz_openvpn_prompt_port "SSL / SNI method" "$TDZ_OVPN_SSL_PORT" || return 1
+    new_ssl="$TDZ_OVPN_PROMPT_PORT"
+    tdz_openvpn_prompt_port "TCP / Official method" "$TDZ_OVPN_TCP_PORT" || return 1
+    new_tcp="$TDZ_OVPN_PROMPT_PORT"
+    tdz_openvpn_prompt_port "UDP / Official method" "$TDZ_OVPN_UDP_PORT" || return 1
+    new_udp="$TDZ_OVPN_PROMPT_PORT"
+    tdz_openvpn_prompt_port "HTTP / WS method" "$TDZ_OVPN_HTTP_PORT" || return 1
+    new_http="$TDZ_OVPN_PROMPT_PORT"
+    tdz_openvpn_prompt_port "WSS / SNI method" "$TDZ_OVPN_WSS_PORT" || return 1
+    new_wss="$TDZ_OVPN_PROMPT_PORT"
+
+    if ! tdz_openvpn_requested_ports_valid "$new_portal" "$new_ssl" "$new_tcp" \
+        "$new_udp" "$new_http" "$new_wss"; then
+        echo -e "${C_RED}[ERROR] Ports must be unique and cannot overlap TDZ system services.${C_RESET}"
+        return 1
+    fi
+    echo
+    printf '  Portal %-5s  SSL %-5s  TCP %-5s  UDP %-5s  HTTP %-5s  WSS %-5s\n' \
+        "$new_portal" "$new_ssl" "$new_tcp" "$new_udp" "$new_http" "$new_wss"
+    read -r -p "$(echo -e "${C_PROMPT}  Apply this layout? Type yes: ${C_RESET}")" confirm
+    [[ "$confirm" == "yes" ]] || {
+        echo -e "${C_YELLOW}[CANCELLED] Existing OpenVPN ports were kept.${C_RESET}"
+        return 0
+    }
+    tdz_openvpn_apply_port_layout "$new_portal" "$new_ssl" "$new_tcp" \
+        "$new_udp" "$new_http" "$new_wss"
+}
+
+tdz_openvpn_restore_default_ports() {
+    local confirm
+    tdz_openvpn_is_installed || {
+        echo -e "${C_RED}[ERROR] OpenVPN must be installed first.${C_RESET}"
+        return 1
+    }
+    read -r -p "$(echo -e "${C_PROMPT}  Restore Portal 1180 and methods 446-450? Type yes: ${C_RESET}")" confirm
+    [[ "$confirm" == "yes" ]] || {
+        echo -e "${C_YELLOW}[CANCELLED] Existing OpenVPN ports were kept.${C_RESET}"
+        return 0
+    }
+    tdz_openvpn_apply_port_layout "$TDZ_OVPN_FIXED_PORTAL_PORT" "$TDZ_OVPN_FIXED_SSL_PORT" \
+        "$TDZ_OVPN_FIXED_TCP_PORT" "$TDZ_OVPN_FIXED_UDP_PORT" \
+        "$TDZ_OVPN_FIXED_HTTP_PORT" "$TDZ_OVPN_FIXED_WSS_PORT"
 }
 
 tdz_openvpn_uninstall() {
@@ -1688,11 +1877,14 @@ tdz_openvpn_uninstall() {
 
 tdz_openvpn_menu() {
     while true; do
-        local status="Not Installed" status_color="$C_RED"
+        local status="Not Installed" status_color="$C_RED" state_loaded=false
         if tdz_openvpn_is_active; then
             status="Active"; status_color="$C_GREEN"
         elif tdz_openvpn_is_installed; then
             status="Attention"; status_color="$C_YELLOW"
+        fi
+        if tdz_openvpn_is_installed && tdz_openvpn_load_state; then
+            state_loaded=true
         fi
         show_banner
         echo
@@ -1700,12 +1892,20 @@ tdz_openvpn_menu() {
         tdz_box_header "OPENVPN PROTOCOL SUITE"
         tdz_box_divider
         tdz_row2 "${C_GRAY}STATUS${C_RESET}" "${status_color}${C_BOLD}${status}${C_RESET}"
+        if $state_loaded; then
+            tdz_kv2 "PORTAL" ":${TDZ_OVPN_PORTAL_PORT}${TDZ_OVPN_PUBLIC_PATH}" \
+                "SSL / TCP" "${TDZ_OVPN_SSL_PORT} / ${TDZ_OVPN_TCP_PORT}"
+            tdz_kv2 "UDP / HTTP" "${TDZ_OVPN_UDP_PORT} / ${TDZ_OVPN_HTTP_PORT}" \
+                "WSS" "$TDZ_OVPN_WSS_PORT"
+        fi
         tdz_box_divider
         tdz_menu1 "[ 1]" "Install or Repair OpenVPN"
         tdz_menu1 "[ 2]" "View Ports and Download Portal"
-        tdz_menu1 "[ 3]" "Regenerate Download Profiles"
-        tdz_menu1 "[ 4]" "Restart and Verify Services"
-        tdz_menu1 "[ 5]" "Uninstall OpenVPN Suite"
+        tdz_menu1 "[ 3]" "Change Portal and Method Ports"
+        tdz_menu1 "[ 4]" "Restore Default Ports (1180, 446-450)"
+        tdz_menu1 "[ 5]" "Regenerate Download Profiles"
+        tdz_menu1 "[ 6]" "Restart and Verify Services"
+        tdz_menu1 "[ 7]" "Uninstall OpenVPN Suite"
         tdz_box_divider
         tdz_menu1 "[ 0]" "Return to Protocol Manager"
         tdz_box_bot
@@ -1714,7 +1914,9 @@ tdz_openvpn_menu() {
         case "$choice" in
             1) tdz_openvpn_install; press_enter ;;
             2) tdz_openvpn_show_details; press_enter ;;
-            3)
+            3) tdz_openvpn_configure_ports; press_enter ;;
+            4) tdz_openvpn_restore_default_ports; press_enter ;;
+            5)
                 if tdz_openvpn_load_state && tdz_openvpn_generate_profiles &&
                    tdz_openvpn_apply_private_permissions && systemctl restart tdz-openvpn-portal; then
                     echo -e "${C_GREEN}[OK] Download profiles regenerated.${C_RESET}"
@@ -1723,11 +1925,11 @@ tdz_openvpn_menu() {
                     echo -e "${C_RED}[ERROR] OpenVPN must be installed first.${C_RESET}"
                 fi
                 press_enter ;;
-            4)
+            6)
                 if tdz_openvpn_restart; then echo -e "${C_GREEN}[OK] All OpenVPN services are active.${C_RESET}"
                 else echo -e "${C_RED}[ERROR] Service verification failed. Check the system journal.${C_RESET}"; fi
                 press_enter ;;
-            5) tdz_openvpn_uninstall; press_enter ;;
+            7) tdz_openvpn_uninstall; press_enter ;;
             0) return ;;
             *) invalid_option ;;
         esac
