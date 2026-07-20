@@ -31,8 +31,6 @@ PAGE_ROUTES = {
     f"{PUBLIC_PREFIX}/download/": "download.html",
     f"{PUBLIC_PREFIX}/assets/portal.css": "portal.css",
     f"{PUBLIC_PREFIX}/assets/portal.js": "portal.js",
-    f"{PUBLIC_PREFIX}/assets/tdz-logo.png": "tdz-logo.png",
-    f"{PUBLIC_PREFIX}/assets/tdz-favicon.svg": "tdz-favicon.svg",
 }
 
 
@@ -93,7 +91,8 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'none'; style-src 'self'; script-src 'self'; "
-            "img-src 'self' data:; connect-src 'none'; object-src 'none'; "
+            "img-src 'self' data: https://raw.githubusercontent.com; "
+            "connect-src 'none'; object-src 'none'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         )
         if isinstance(self.connection, ssl.SSLSocket):
