@@ -57,7 +57,7 @@ POLICY_STATUS = {
 }
 POLICY_REASONS = frozenset(POLICY_STATUS)
 RETRY_GUARD_REASONS = frozenset(
-    ("expired", "quota", "manual_lock", "policy_error")
+    ("expired", "quota", "manual_lock", "connection_limit", "policy_error")
 )
 
 
@@ -692,6 +692,14 @@ def _process_managed_login(
             (paths.session_dir / (str(sshd_identity.pid) + ".session")).unlink()
         except OSError:
             pass
+        try:
+            write_denial_guard(
+                paths, username, "connection_limit", now=now
+            )
+        except Exception:
+            # The rejected marker is already gone, so a damaged guard cannot
+            # turn this failed attempt into a counted session.
+            pass
         message = ""
         if paths.banner_flag.is_file():
             message = render_banner(
@@ -711,7 +719,9 @@ def _process_managed_login(
 
 def _process_auth_retry_guard(
     paths: RuntimePaths,
+    accounts: Mapping[str, Account],
     account: Account,
+    who_output: Optional[str] = None,
     now: Optional[float] = None,
 ) -> LoginDecision:
     """Stop only a retry that follows a matching post-auth policy banner."""
@@ -721,6 +731,31 @@ def _process_auth_retry_guard(
     except Exception:
         reason = "policy_error"
     guarded_reason = read_denial_guard(paths, account.username, now=now)
+    if guarded_reason == "connection_limit" and reason in ("active", "pending"):
+        marker_counts, _marker_pids = prune_and_count_markers(paths, accounts)
+        process_counts = count_authenticated_children(paths)
+        who_counts = count_who_sessions(who_output)
+        ssh_total = max(
+            marker_counts.get(account.username, 0),
+            process_counts.get(account.username, 0),
+            who_counts.get(account.username, 0),
+        )
+        total = ssh_total + count_openvpn_sessions(
+            paths.openvpn_snapshot, account.username, now=now
+        )
+        if total >= account.limit:
+            try:
+                # Keep reconnecting clients in the ordinary authentication
+                # failure path only while every shared connection slot is
+                # still occupied.
+                write_denial_guard(
+                    paths, account.username, "connection_limit", now=now
+                )
+            except Exception:
+                pass
+            return LoginDecision("", False, "retry_guard")
+        clear_denial_guard(paths, account.username)
+        return LoginDecision("", True, reason)
     if reason in RETRY_GUARD_REASONS and guarded_reason == reason:
         try:
             # Sliding expiry keeps a persistently retrying client in the
@@ -797,7 +832,13 @@ def process_authenticated_login(
                     paths, username, pam_type, now=now
                 )
             if pam_type == "auth":
-                return _process_auth_retry_guard(paths, account, now=now)
+                return _process_auth_retry_guard(
+                    paths,
+                    accounts,
+                    account,
+                    who_output=who_output,
+                    now=now,
+                )
             return _process_managed_login(
                 paths,
                 accounts,

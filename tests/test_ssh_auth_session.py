@@ -317,9 +317,94 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
         self.assertFalse(denied.allowed)
         self.assertEqual(denied.reason, "connection_limit")
         self.assertIn("Connection Limit Reached", denied.message)
+        self.assertEqual(
+            auth_session.read_denial_guard(self.paths, "E"),
+            "connection_limit",
+        )
         counts, pids = auth_session.prune_and_count_markers(self.paths, {"E"})
         self.assertEqual(counts["E"], 2)
         self.assertEqual(pids["E"], (401, 402))
+
+        retry = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=403,
+            who_output="",
+        )
+        self.assertFalse(retry.allowed)
+        self.assertEqual(retry.reason, "retry_guard")
+        self.assertEqual(retry.message, "")
+        counts, pids = auth_session.prune_and_count_markers(self.paths, {"E"})
+        self.assertEqual(counts["E"], 2)
+        self.assertEqual(pids["E"], (401, 402))
+
+    def test_connection_limit_retry_guard_clears_as_soon_as_a_slot_opens(self):
+        self.login(411, 4101)
+        self.login(412, 4102)
+        denied = self.login(413, 4103)
+        self.assertFalse(denied.allowed)
+
+        shutil.rmtree(self.proc / "412")
+        retry = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=413,
+            who_output="",
+        )
+        self.assertTrue(retry.allowed)
+        self.assertEqual(retry.reason, "active")
+        self.assertFalse((self.paths.session_dir / "E.denied").exists())
+
+        admitted = self.login(414, 4104)
+        self.assertTrue(admitted.allowed)
+        self.assertIn("Active Session:</b> 2/2", admitted.message)
+
+    def test_connection_limit_retry_guard_clears_when_limit_is_raised(self):
+        self.login(421, 4201)
+        self.login(422, 4202)
+        denied = self.login(423, 4203)
+        self.assertFalse(denied.allowed)
+
+        self.paths.db_file.write_text("E:secret:2099-12-31:3:10\n")
+        retry = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=423,
+            who_output="",
+        )
+        self.assertTrue(retry.allowed)
+        self.assertEqual(retry.reason, "active")
+        self.assertFalse((self.paths.session_dir / "E.denied").exists())
+
+    def test_connection_limit_retry_guard_counts_shared_openvpn_slots(self):
+        now = time.time()
+        self.paths.openvpn_snapshot.write_text("E\tudp\t7\t1000\n")
+        os.utime(self.paths.openvpn_snapshot, (now, now))
+        admitted = self.login(431, 4301)
+        self.assertTrue(admitted.allowed)
+        self.assertIn("Active Session:</b> 2/2", admitted.message)
+
+        denied = self.login(432, 4302)
+        self.assertFalse(denied.allowed)
+        self.assertEqual(denied.reason, "connection_limit")
+        retry = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=432,
+            who_output="",
+        )
+        self.assertFalse(retry.allowed)
+        self.assertEqual(retry.reason, "retry_guard")
+
+        shutil.rmtree(self.proc / "431")
+        available = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=432,
+            who_output="",
+        )
+        self.assertTrue(available.allowed)
+        self.assertFalse((self.paths.session_dir / "E.denied").exists())
 
     def test_pending_account_is_allowed_and_counted(self):
         self.paths.db_file.write_text("E:secret:Never:2:10:pending:30\n")
