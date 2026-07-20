@@ -453,10 +453,12 @@ class ModuleTests(unittest.TestCase):
             portal = (root / "portal/ovpn-configs/index.html").read_text()
             self.assertIn("Fast when it can be.", portal)
             self.assertIn('class="site-logo site-logo-header"', portal)
-            self.assertIn('src="/openvpn/assets/tdz-logo.jpg"', portal)
+            self.assertIn('src="/openvpn/assets/tdz-logo.png"', portal)
+            self.assertIn('<span class="brand-copy"><strong>TDZ</strong>', portal)
+            self.assertNotIn('class="signal-panel"', portal)
+            self.assertNotIn("Gateway signal", portal)
             self.assertIn("From zero to connected in four steps", portal)
             self.assertIn("Six paths. One destination.", portal)
-            self.assertIn("HTTP + HTTPS", portal)
             self.assertIn('href="/openvpn/docs"', portal)
             self.assertIn('href="/openvpn/download"', portal)
             docs = (root / "portal/ovpn-configs/docs.html").read_text()
@@ -476,11 +478,15 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("backdrop-filter:blur(26px)", css)
             self.assertIn(".theme-switch{display:flex", css)
             self.assertIn('.theme-option[aria-pressed="true"]', css)
-            self.assertIn(".site-logo-header{width:82px", css)
+            self.assertIn(".site-logo-header{width:42px", css)
+            self.assertIn("border-radius:13px", css)
+            self.assertNotIn(".nav-link.active{box-shadow", css)
             self.assertIn(".support-banner{position:relative;display:grid", css)
-            self.assertIn(".radar-ring{position:absolute", css)
+            self.assertIn(".support-orb svg{width:29px", css)
+            self.assertNotIn(".radar-ring", css)
+            self.assertNotIn(".signal-panel", css)
             self.assertIn(".developer-line .developer-link", css)
-            self.assertIn(".project-spotlight{position:relative;display:grid", css)
+            self.assertIn(".project-spotlight{display:grid", css)
             self.assertIn(".footer-repo{display:inline-flex", css)
             self.assertIn(".footer-repo span{color:var(--accent)}", css)
             portal_js = (root / "portal/ovpn-configs/portal.js").read_text()
@@ -490,16 +496,20 @@ class ModuleTests(unittest.TestCase):
             self.assertIn('window.matchMedia("(prefers-color-scheme: dark)")', portal_js)
             self.assertIn('[data-theme-option]', portal_js)
             self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
-            logo = root / "portal/ovpn-configs/tdz-logo.jpg"
+            logo = root / "portal/ovpn-configs/tdz-logo.png"
             self.assertTrue(logo.is_file())
-            self.assertEqual(logo.stat().st_size, 35156)
-            self.assertEqual(logo.read_bytes()[:3], b"\xff\xd8\xff")
+            self.assertEqual(logo.stat().st_size, 65596)
+            self.assertEqual(logo.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
             favicon = root / "portal/ovpn-configs/tdz-favicon.svg"
             self.assertTrue(favicon.is_file())
-            self.assertIn('viewBox="130 315 240 240"', favicon.read_text())
-            self.assertGreater(favicon.stat().st_size, 45000)
+            self.assertIn('viewBox="0 0 350 350"', favicon.read_text())
+            self.assertIn('<rect width="350" height="350" rx="88"/>', favicon.read_text())
+            self.assertIn('<image x="-155" y="-330" width="1031" height="1031"', favicon.read_text())
+            self.assertGreater(favicon.stat().st_size, 87000)
 
             visitor_pages = portal + docs + downloads
+            self.assertIn("SSH/OVPN account", visitor_pages)
+            self.assertNotIn("TDZ account", visitor_pages)
             self.assertNotIn("1180", visitor_pages)
             self.assertNotIn("External firewall", visitor_pages)
             self.assertNotIn("security group", visitor_pages)
@@ -515,7 +525,7 @@ class ModuleTests(unittest.TestCase):
                 "/openvpn/download",
                 "/openvpn/assets/portal.css",
                 "/openvpn/assets/portal.js",
-                "/openvpn/assets/tdz-logo.jpg",
+                "/openvpn/assets/tdz-logo.png",
                 "/openvpn/assets/tdz-favicon.svg",
                 "https://tuhinbro.com/",
                 "https://t.me/TuhinBroh",
@@ -523,9 +533,9 @@ class ModuleTests(unittest.TestCase):
                 "https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT",
             }
             self.assertIn('class="section project-spotlight"', portal)
-            self.assertIn("TDZ SSH TUNNEL powers both SSH and OpenVPN.", portal)
-            self.assertIn("Want this complete system on your own VPS?", portal)
-            self.assertIn("Get TDZ SSH TUNNEL", portal)
+            self.assertIn("Part of TDZ SSH TUNNEL.", portal)
+            self.assertIn("View GitHub repository", portal)
+            self.assertNotIn("TDZ SSH TUNNEL powers both SSH and OpenVPN.", portal)
             self.assertNotIn('class="section project-spotlight"', docs + downloads)
             for page_name in ("index.html", "docs.html", "download.html"):
                 page_text = (public / page_name).read_text()
@@ -536,8 +546,10 @@ class ModuleTests(unittest.TestCase):
                 self.assertIn("Telegram:", page_text)
                 self.assertIn('href="https://t.me/TuhinBroh"', page_text)
                 self.assertIn('href="https://t.me/TUSTDZ"', page_text)
-                self.assertIn("No TDZ account yet? Start here.", page_text)
+                self.assertIn("No SSH/OVPN account yet? Start here.", page_text)
                 self.assertIn("Message @TUSTDZ", page_text)
+                self.assertIn('<div class="support-orb" aria-hidden="true"><svg', page_text)
+                self.assertNotIn("<span>✦</span>", page_text)
                 self.assertIn(
                     'class="footer-repo" '
                     'href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT"',
@@ -575,7 +587,7 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("https://vpn.example.com:1180/openvpn/download", guide)
             self.assertIn("HTTPS is recommended for downloading profiles", guide)
             self.assertIn("public carrier endpoint outside the tunnel", guide)
-            self.assertIn("Account and support: @TUSTDZ (https://t.me/TUSTDZ)", guide)
+            self.assertIn("Telegram contact for account/support: @TUSTDZ (https://t.me/TUSTDZ)", guide)
             self.assertNotIn("route-gateway", guide)
             self.assertNotIn("/ovpn-configs", portal + docs + downloads + guide)
             self.assertNotIn("external firewall", guide.lower())
@@ -1008,7 +1020,7 @@ class ModuleTests(unittest.TestCase):
         openvpn_module = MODULE.read_text()
         suite_start = openvpn_module.index("tdz_openvpn_menu() {")
         suite = openvpn_module[suite_start:]
-        self.assertIn('tdz_menu1 "[ 8]" "Change Account / Support Contact"', suite)
+        self.assertIn('tdz_menu1 "[ 8]" "Change Telegram Contact Username"', suite)
         self.assertIn("8) tdz_openvpn_configure_support_contact", suite)
 
 

@@ -436,7 +436,7 @@ class PortalTests(ProcessCase):
             (public / "download.html").write_text("TDZ downloads")
             (public / "portal.css").write_text("body{}")
             (public / "portal.js").write_text("void 0;")
-            (public / "tdz-logo.jpg").write_bytes(b"\xff\xd8\xffTDZ")
+            (public / "tdz-logo.png").write_bytes(b"\x89PNG\r\n\x1a\nTDZ")
             (public / "tdz-favicon.svg").write_text("<svg></svg>")
             (public / "client.ovpn").write_text("client\n")
             (public / ".secret").write_text("hidden")
@@ -504,7 +504,7 @@ class PortalTests(ProcessCase):
                 ("/openvpn/download/", b"TDZ downloads"),
                 ("/openvpn/assets/portal.css", b"body{}"),
                 ("/openvpn/assets/portal.js", b"void 0;"),
-                ("/openvpn/assets/tdz-logo.jpg", b"\xff\xd8\xffTDZ"),
+                ("/openvpn/assets/tdz-logo.png", b"\x89PNG\r\n\x1a\nTDZ"),
                 ("/openvpn/assets/tdz-favicon.svg", b"<svg></svg>"),
             ):
                 connection.request("GET", path)

@@ -31,7 +31,7 @@ PAGE_ROUTES = {
     f"{PUBLIC_PREFIX}/download/": "download.html",
     f"{PUBLIC_PREFIX}/assets/portal.css": "portal.css",
     f"{PUBLIC_PREFIX}/assets/portal.js": "portal.js",
-    f"{PUBLIC_PREFIX}/assets/tdz-logo.jpg": "tdz-logo.jpg",
+    f"{PUBLIC_PREFIX}/assets/tdz-logo.png": "tdz-logo.png",
     f"{PUBLIC_PREFIX}/assets/tdz-favicon.svg": "tdz-favicon.svg",
 }
 
