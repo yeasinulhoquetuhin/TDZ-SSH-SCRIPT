@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-20.6"
+TDZ_OVPN_MODULE_VERSION="2026-07-20.7"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -921,7 +921,6 @@ TDZ SSH TUNNEL - OpenVPN Connection Guide
 
 Server: $TDZ_OVPN_HOST
 Portal: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/
-Portal (HTTP): http://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/
 Online documentation: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/docs
 Download page: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/download
 Contact for account/support: @$TDZ_OVPN_SUPPORT_USERNAME (https://t.me/$TDZ_OVPN_SUPPORT_USERNAME)
@@ -1153,7 +1152,7 @@ main{padding:36px 0 88px}
 .support-banner:after{content:"";position:absolute;right:15%;bottom:-90px;width:220px;height:220px;border-radius:50%;background:var(--blue-soft);filter:blur(10px);pointer-events:none}.support-orb{position:relative;z-index:1;display:grid;place-items:center;width:58px;height:58px;border:1px solid rgba(40,120,255,.28);border-radius:18px;background:var(--panel-solid);color:var(--blue);box-shadow:0 12px 28px var(--blue-soft)}.support-orb svg{width:29px;height:29px}.support-copy,.support-banner .button{position:relative;z-index:1}.support-copy h2{font-size:clamp(1.4rem,2.6vw,2rem)}.support-copy p{max-width:680px;margin:.55rem 0 0;color:var(--muted)}
 .project-spotlight{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:28px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:28px 30px}.project-spotlight h2{margin:.3rem 0 .55rem;font-size:clamp(1.35rem,2.6vw,1.9rem);letter-spacing:-.025em}.project-spotlight p{margin:0;color:var(--muted)}
 .page-intro{position:relative;overflow:hidden;border:1px solid var(--line-strong);border-radius:var(--radius-lg);background:linear-gradient(135deg,var(--panel-solid),var(--panel));padding:clamp(30px,5vw,58px);box-shadow:var(--shadow)}
-.page-intro:after{content:"";position:absolute;right:-8%;top:-45%;width:380px;height:380px;border-radius:50%;background:var(--accent-glow);filter:blur(18px);pointer-events:none}.page-intro>*{position:relative;z-index:1}.page-intro h1{max-width:850px;margin:.55rem 0 .85rem;font-size:clamp(2.55rem,6vw,5.2rem);font-weight:780;letter-spacing:-.06em;line-height:.96}.page-intro h1 span{color:var(--accent)}.page-intro p{max-width:790px;margin:0;color:var(--text-soft);font-size:1.06rem}
+.page-intro:after{content:"";position:absolute;right:-8%;top:-45%;width:380px;height:380px;border-radius:50%;background:var(--accent-glow);filter:blur(28px);opacity:.4;pointer-events:none}.page-intro>*{position:relative;z-index:1}.page-intro h1{max-width:850px;margin:.55rem 0 .85rem;font-size:clamp(2.55rem,6vw,5.2rem);font-weight:780;letter-spacing:-.06em;line-height:.96}.page-intro h1 span{color:var(--accent)}.page-intro p{max-width:790px;margin:0;color:var(--text-soft);font-size:1.06rem}
 .inline-account{display:inline-flex;align-items:center;gap:7px;margin-top:20px;color:var(--blue);font-weight:780;text-decoration:none}.inline-account:hover{text-decoration:underline;text-underline-offset:4px}
 .docs-layout{display:grid;grid-template-columns:minmax(0,1fr) 255px;gap:38px;align-items:start}.article{min-width:0}.toc{position:sticky;top:108px;border:1px solid var(--line);border-radius:15px;background:var(--panel);padding:16px}.toc-title{margin-bottom:8px;color:var(--text);font-size:.75rem;font-weight:850;letter-spacing:.1em;text-transform:uppercase}.toc a{display:block;border-radius:8px;color:var(--muted);padding:7px 8px;font-size:.84rem;text-decoration:none}.toc a:hover{background:var(--accent-soft);color:var(--accent)}
 .content-section{margin-top:54px;scroll-margin-top:110px}.content-section>p{color:var(--text-soft)}

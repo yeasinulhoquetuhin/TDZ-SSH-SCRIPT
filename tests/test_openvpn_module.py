@@ -486,6 +486,7 @@ class ModuleTests(unittest.TestCase):
             self.assertIn(".site-logo-header{width:42px", css)
             self.assertIn("border-radius:13px", css)
             self.assertIn("object-fit:contain", css)
+            self.assertIn("filter:blur(28px);opacity:.4", css)
             self.assertNotIn("translate(-32%", css)
             self.assertNotIn(".nav-link.active{box-shadow", css)
             self.assertIn(".support-banner{position:relative;display:grid", css)
@@ -584,7 +585,8 @@ class ModuleTests(unittest.TestCase):
                         self.assertIn(link, valid_pages, f"unexpected link in {page_name}: {link}")
 
             guide = (public / "connection-guide.txt").read_text()
-            self.assertIn("http://vpn.example.com:1180/openvpn/", guide)
+            self.assertNotIn("http://vpn.example.com:1180/openvpn/", guide)
+            self.assertNotIn("Portal (HTTP):", guide)
             self.assertIn("https://vpn.example.com:1180/openvpn/docs", guide)
             self.assertIn("https://vpn.example.com:1180/openvpn/download", guide)
             self.assertIn("HTTPS is recommended for downloading profiles", guide)
