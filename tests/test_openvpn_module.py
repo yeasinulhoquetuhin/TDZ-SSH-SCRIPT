@@ -1311,10 +1311,6 @@ class ModuleTests(unittest.TestCase):
             hook,
         )
         self.assertIn(
-            "auth requisite pam_exec.so quiet type=auth",
-            hook,
-        )
-        self.assertNotIn(
             "auth requisite pam_exec.so quiet stdout type=auth",
             hook,
         )
@@ -1374,7 +1370,7 @@ class ModuleTests(unittest.TestCase):
                 + str(helper)
             )
             auth_line = (
-                "auth requisite pam_exec.so quiet type=auth " + str(helper)
+                "auth requisite pam_exec.so quiet stdout type=auth " + str(helper)
             )
             self.assertEqual(lines.count(account_line), 1)
             self.assertEqual(lines.count(auth_line), 1)
@@ -1404,6 +1400,19 @@ class ModuleTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("type=account", result.stdout)
             self.assertNotIn("type=auth", result.stdout)
+
+    def test_tdz_accounts_force_keyboard_interactive_for_single_attempt_denial(self):
+        menu = MENU.read_text()
+        installer = (REPO / "install.sh").read_text()
+        harden_start = menu.index("harden_sshd_for_tunnel_stability() {")
+        harden_end = menu.index("\n}\n\nensure_tdztunnel_system_group", harden_start)
+        harden = menu[harden_start:harden_end]
+        for config in (harden, installer):
+            self.assertIn("Match Group", config)
+            self.assertIn("PasswordAuthentication no", config)
+            self.assertIn("KbdInteractiveAuthentication yes", config)
+            self.assertIn("AuthenticationMethods keyboard-interactive", config)
+            self.assertIn("Match all", config)
 
     def test_new_accounts_provision_dynamic_banner_before_follow_up_ui(self):
         menu = (REPO / "menu.sh").read_text()

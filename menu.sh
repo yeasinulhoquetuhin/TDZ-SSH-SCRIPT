@@ -884,6 +884,13 @@ harden_sshd_for_tunnel_stability() {
     new_conf+="PermitTunnel yes\n"
     new_conf+="AllowTcpForwarding yes\n"
     new_conf+="GatewayPorts yes\n"
+    new_conf+="\n# Keep TDZ password accounts inside PAM keyboard-interactive so a denied\n"
+    new_conf+="# private banner and Auth failed are delivered in one SSH attempt.\n"
+    new_conf+="Match Group $TDZ_USERS_GROUP\n"
+    new_conf+="    PasswordAuthentication no\n"
+    new_conf+="    KbdInteractiveAuthentication yes\n"
+    new_conf+="    AuthenticationMethods keyboard-interactive\n"
+    new_conf+="Match all\n"
 
     local current_conf
     current_conf=$(printf '%b' "$new_conf")
@@ -2106,13 +2113,12 @@ EOF
 setup_ssh_auth_session_hook() {
     local account_hook_line auth_guard_line tmp_file body_file registry_security
     local auth_guard_supported=false
-    # The account hook shows the private TDZ banner only after a credential is
-    # accepted, then enforces expiry/quota/manual-lock policy. The auth guard is
-    # deliberately placed *after* common-auth: wrong passwords never invoke the
-    # helper, while an immediate valid-password retry after a denial becomes a
-    # normal auth failure instead of another fatal account-phase disconnect.
+    # The account hook keeps active-session registration and a public-key/custom
+    # PAM fallback. The auth hook is deliberately placed *after* common-auth:
+    # wrong passwords never invoke it, while a valid but denied TDZ account gets
+    # its private banner and Auth failed inside the same SSH attempt.
     account_hook_line="account requisite pam_exec.so quiet stdout type=account $SSH_AUTH_SESSION_HELPER"
-    auth_guard_line="auth requisite pam_exec.so quiet type=auth $SSH_AUTH_SESSION_HELPER"
+    auth_guard_line="auth requisite pam_exec.so quiet stdout type=auth $SSH_AUTH_SESSION_HELPER"
 
     [[ -x "$SSH_AUTH_SESSION_HELPER" && -f "$SSH_PAM_CONFIG" ]] || return 1
     if [[ -L "$SSH_AUTH_SESSION_DIR" || ( -e "$SSH_AUTH_SESSION_DIR" && ! -d "$SSH_AUTH_SESSION_DIR" ) ]]; then

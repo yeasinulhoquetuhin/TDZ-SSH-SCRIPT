@@ -2,12 +2,14 @@
 """Authenticated SSH session registry and post-auth TDZ banner renderer.
 
 The OpenSSH ``Banner`` directive is intentionally not used for account data:
-it is delivered before authentication.  This helper is called only from the
-PAM *account* phase after an authentication method has succeeded.  It records
-the lifetime of the connection's privileged sshd process and returns the
-per-user banner through pam_exec's ``stdout``/PAM_TEXT_INFO path.  A short,
-root-private PAM *auth* guard turns an immediate retry after a policy banner
-into a normal authentication failure so reconnecting clients do not loop.
+it is delivered before authentication. PAM invokes this helper only after the
+standard password verifier in the auth phase, and again in the account phase
+for accepted sessions and compatibility fallbacks. It records the lifetime of
+the connection's privileged sshd process and returns the per-user banner
+through pam_exec's ``stdout``/PAM_TEXT_INFO path. Managed TDZ password accounts
+use PAM keyboard-interactive so a denied private banner and the authentication
+failure complete inside the same SSH attempt. A short, root-private guard
+suppresses duplicate output from explicit client retries.
 
 Marker identity is a PID plus the kernel process start time.  Checking both
 prevents a stale marker from becoming valid again after PID reuse.
@@ -711,24 +713,38 @@ def _process_managed_login(
 
 def _process_auth_retry_guard(
     paths: RuntimePaths,
+    accounts: Mapping[str, Account],
     account: Account,
+    parent_pid: Optional[int] = None,
+    who_output: Optional[str] = None,
     now: Optional[float] = None,
 ) -> LoginDecision:
-    """Stop only a retry that follows a matching post-auth policy banner."""
+    """Deliver a denied policy banner and fail in the same PAM auth attempt."""
 
     try:
         reason = account_policy_reason(paths, account, now=now)
     except Exception:
         reason = "policy_error"
     guarded_reason = read_denial_guard(paths, account.username, now=now)
-    if reason in RETRY_GUARD_REASONS and guarded_reason == reason:
-        try:
-            # Sliding expiry keeps a persistently retrying client in the
-            # ordinary auth-failure path until it actually stops retrying.
-            write_denial_guard(paths, account.username, reason, now=now)
-        except Exception:
-            pass
-        return LoginDecision("", False, "retry_guard")
+    if reason in RETRY_GUARD_REASONS:
+        if guarded_reason == reason:
+            try:
+                # Sliding expiry suppresses duplicate banner output if a
+                # client explicitly retries after the direct auth failure.
+                write_denial_guard(paths, account.username, reason, now=now)
+            except Exception:
+                pass
+            return LoginDecision("", False, "retry_guard")
+        if guarded_reason is not None:
+            clear_denial_guard(paths, account.username)
+        return _process_managed_login(
+            paths,
+            accounts,
+            account.username,
+            parent_pid=parent_pid,
+            who_output=who_output,
+            now=now,
+        )
     if guarded_reason is not None:
         clear_denial_guard(paths, account.username)
     return LoginDecision("", True, reason)
@@ -747,7 +763,14 @@ def _missing_managed_policy_decision(
             except Exception:
                 pass
             return LoginDecision("", False, "retry_guard")
-        return LoginDecision("", True, "policy_error")
+        try:
+            write_denial_guard(paths, username, "policy_error", now=now)
+        except Exception:
+            pass
+        message = ""
+        if paths.banner_flag.is_file():
+            message = _minimal_policy_banner(username, 0, 1, "policy_error")
+        return LoginDecision(message, False, "policy_error")
     try:
         write_denial_guard(paths, username, "policy_error", now=now)
     except Exception:
@@ -797,7 +820,14 @@ def process_authenticated_login(
                     paths, username, pam_type, now=now
                 )
             if pam_type == "auth":
-                return _process_auth_retry_guard(paths, account, now=now)
+                return _process_auth_retry_guard(
+                    paths,
+                    accounts,
+                    account,
+                    parent_pid=parent_pid,
+                    who_output=who_output,
+                    now=now,
+                )
             return _process_managed_login(
                 paths,
                 accounts,

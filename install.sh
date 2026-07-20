@@ -334,6 +334,14 @@ TCPKeepAlive yes
 PermitTunnel yes
 AllowTcpForwarding yes
 GatewayPorts yes
+
+# Keep TDZ password accounts inside PAM keyboard-interactive so a denied
+# private banner and Auth failed are delivered in one SSH attempt.
+Match Group tdzusers
+    PasswordAuthentication no
+    KbdInteractiveAuthentication yes
+    AuthenticationMethods keyboard-interactive
+Match all
 EOF
     chmod 600 "$SSHD_DROPIN"
     "$sshd_bin" -t
