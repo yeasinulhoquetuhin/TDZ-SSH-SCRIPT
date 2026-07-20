@@ -3,11 +3,12 @@
 
 The OpenSSH ``Banner`` directive is intentionally not used for account data:
 it is delivered before authentication.  This helper is called only from the
-PAM *account* phase after an authentication method has succeeded.  It records
-the lifetime of the connection's privileged sshd process and returns the
-per-user banner through pam_exec's ``stdout``/PAM_TEXT_INFO path.  A short,
-root-private PAM *auth* guard turns an immediate retry after a policy banner
-into a normal authentication failure so reconnecting clients do not loop.
+PAM *account* phase after an authentication method has succeeded to record the
+lifetime of the connection's privileged sshd process and return a dynamic
+per-user banner through pam_exec's ``stdout``/PAM_TEXT_INFO path.  The PAM
+*auth* hook runs after the normal password verifier.  It either guards a retry
+after a dynamic policy banner, or rejects a static-banner policy denial in the
+first SSH attempt so the client does not reopen the connection.
 
 Marker identity is a PID plus the kernel process start time.  Checking both
 prevents a stale marker from becoming valid again after PID reuse.
@@ -84,6 +85,8 @@ class RuntimePaths:
     usage_lock: Path = Path("/etc/tdztunnel/bandwidth/.usage.lock")
     banner_dir: Path = Path("/etc/tdztunnel/banners")
     banner_flag: Path = Path("/etc/tdztunnel/banners_enabled")
+    static_banner_file: Path = Path("/etc/tdztunnel/bannerssh")
+    sshd_config: Path = Path("/etc/ssh/sshd_config")
     session_dir: Path = Path("/run/tdztunnel/ssh-auth-sessions")
     openvpn_snapshot: Path = Path("/etc/tdztunnel/openvpn/run/sessions.tsv")
     openvpn_admission_dir: Path = Path(
@@ -153,6 +156,39 @@ def load_accounts(db_file: Path) -> Dict[str, Account]:
     except OSError:
         pass
     return accounts
+
+
+def static_ssh_banner_enabled(paths: RuntimePaths) -> bool:
+    """Recognize the static Banner directive managed by the TDZ menu.
+
+    A static banner contains no private account data and OpenSSH has already
+    delivered it before PAM verifies the password.  This lets the post-password
+    auth hook reject a TDZ policy state directly instead of reaching OpenSSH's
+    fatal PAM account path.  Fail closed to the existing account hook whenever
+    the effective static mode cannot be identified safely.
+    """
+
+    try:
+        if not paths.static_banner_file.is_file():
+            return False
+        target = str(paths.static_banner_file)
+        with paths.sshd_config.open(
+            "r", encoding="utf-8", errors="replace"
+        ) as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fields = line.split()
+                if (
+                    len(fields) >= 2
+                    and fields[0].casefold() == "banner"
+                    and fields[1] == target
+                ):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def is_tdztunnel_system_user(username: str) -> bool:
@@ -822,6 +858,26 @@ def count_openvpn_slots(
     return max(len(live_slots), legacy_count) + len(pending_slots)
 
 
+def _current_shared_session_total(
+    paths: RuntimePaths,
+    accounts: Mapping[str, Account],
+    username: str,
+    who_output: Optional[str] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Return the authoritative SSH plus OpenVPN occupancy for one account."""
+
+    marker_counts, _marker_pids = prune_and_count_markers(paths, accounts)
+    process_counts = count_authenticated_children(paths)
+    who_counts = count_who_sessions(who_output)
+    ssh_total = max(
+        marker_counts.get(username, 0),
+        process_counts.get(username, 0),
+        who_counts.get(username, 0),
+    )
+    return ssh_total + count_openvpn_slots(paths, username, now=now)
+
+
 def _minimal_policy_banner(
     username: str, total: int, limit: int, reason: str
 ) -> str:
@@ -1023,13 +1079,43 @@ def _process_auth_retry_guard(
     who_output: Optional[str] = None,
     now: Optional[float] = None,
 ) -> LoginDecision:
-    """Stop only a retry that follows a matching post-auth policy banner."""
+    """Handle safe auth-phase denials after the normal password verifier."""
 
     try:
         reason = account_policy_reason(paths, account, now=now)
     except Exception:
         reason = "policy_error"
     guarded_reason = read_denial_guard(paths, account.username, now=now)
+
+    # OpenSSH sends its configured static Banner before authentication.  Once
+    # common-auth has accepted the password, reject a stable TDZ policy state
+    # here so sshd returns USERAUTH_FAILURE on this same connection.  No PAM
+    # stdout is emitted: the public static banner remains the only banner, and
+    # wrong passwords never reach this hook because it follows common-auth.
+    if (
+        not paths.banner_flag.is_file()
+        and static_ssh_banner_enabled(paths)
+    ):
+        if guarded_reason is not None:
+            clear_denial_guard(paths, account.username)
+        if reason in RETRY_GUARD_REASONS:
+            return LoginDecision("", False, reason)
+        if reason in ("active", "pending"):
+            total = _current_shared_session_total(
+                paths,
+                accounts,
+                account.username,
+                who_output=who_output,
+                now=now,
+            )
+            if total >= account.limit:
+                # Read-only admission check: existing SSH/OpenVPN sessions and
+                # their markers are never replaced or disconnected here.  The
+                # account hook remains the final race-safe authority whenever
+                # a slot appears available.
+                return LoginDecision("", False, "connection_limit")
+        return LoginDecision("", True, reason)
+
     if guarded_reason == "connection_limit" and reason in ("active", "pending"):
         marker_counts, _marker_pids = prune_and_count_markers(paths, accounts)
         process_counts = count_authenticated_children(paths)
@@ -1075,6 +1161,12 @@ def _missing_managed_policy_decision(
     now: Optional[float] = None,
 ) -> LoginDecision:
     if pam_type == "auth":
+        if (
+            not paths.banner_flag.is_file()
+            and static_ssh_banner_enabled(paths)
+        ):
+            clear_denial_guard(paths, username)
+            return LoginDecision("", False, "policy_error")
         if read_denial_guard(paths, username, now=now) == "policy_error":
             try:
                 write_denial_guard(paths, username, "policy_error", now=now)

@@ -114,6 +114,7 @@ Account status, expiration, remaining validity, active connections, and compact 
 - **Immediate session lifecycle** — the successful connection is included in its own banner, while PID plus process-start-time tracking removes disconnected sessions and rejects stale PID reuse
 - **Reason-aware denial** — a correct password for an expired, quota-ended, or manually locked account receives its private reason banner and is then denied; an incorrect password receives neither the banner nor a session marker
 - **Reconnect-loop guard** — after a private expiry, quota, lock, or connection-limit denial banner, immediate valid-password retries become a normal authentication failure instead of repeatedly reopening and redisplaying the denied connection; connection-limit retries are allowed immediately when a shared slot opens
+- **Static-banner direct denial** — after the public static banner, a correct password for a locked, expired, quota-ended, or full account is rejected in the same SSH attempt; wrong passwords keep the standard static-banner behavior
 - **Auto-updating data** — generated banner data refreshes every second to reflect current bandwidth and established SSH/OpenVPN sessions
 - **Custom Admin & Channel usernames** — replace the default Telegram usernames with your own in the Dynamic Banner; matching `t.me/` links are generated automatically
 

@@ -43,6 +43,8 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             usage_lock=self.root / "bandwidth/.usage.lock",
             banner_dir=self.root / "banners",
             banner_flag=self.root / "banners_enabled",
+            static_banner_file=self.root / "bannerssh",
+            sshd_config=self.root / "sshd_config",
             session_dir=self.root / "run/ssh-auth-sessions",
             openvpn_snapshot=self.root / "openvpn-sessions.tsv",
             openvpn_admission_dir=self.root / "openvpn-admissions",
@@ -65,6 +67,13 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def enable_static_banner(self) -> None:
+        self.paths.banner_flag.unlink(missing_ok=True)
+        self.paths.static_banner_file.write_text("Public static banner\n")
+        self.paths.sshd_config.write_text(
+            "Banner %s\n" % self.paths.static_banner_file
+        )
 
     def login(self, pid: int, start_time: int) -> auth_session.LoginDecision:
         write_fake_process(
@@ -127,6 +136,153 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
         self.assertEqual(decision.reason, "active")
         self.assertFalse(self.paths.session_dir.exists())
 
+    def test_static_banner_active_auth_waits_for_account_registration(self):
+        self.enable_static_banner()
+        write_fake_process(self.proc, 111, 1, 2100, "sshd", "sshd: E [preauth]")
+
+        authenticated = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=111,
+            who_output="",
+        )
+
+        self.assertTrue(authenticated.allowed)
+        self.assertEqual(authenticated.reason, "active")
+        self.assertEqual(authenticated.message, "")
+        self.assertFalse((self.paths.session_dir / "111.session").exists())
+
+        admitted = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment=self.env,
+            parent_pid=111,
+            who_output="",
+        )
+        self.assertTrue(admitted.allowed)
+        self.assertEqual(admitted.message, "")
+        counts, pids = auth_session.prune_and_count_markers(self.paths, {"E"})
+        self.assertEqual(counts["E"], 1)
+        self.assertEqual(pids["E"], (111,))
+
+    def test_static_banner_pending_first_use_still_reaches_account_phase(self):
+        self.paths.db_file.write_text("E:secret:Never:1:10:pending:30\n")
+        self.enable_static_banner()
+        write_fake_process(self.proc, 112, 1, 2101, "sshd", "sshd: E [preauth]")
+
+        authenticated = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=112,
+            who_output="",
+        )
+        self.assertTrue(authenticated.allowed)
+        self.assertEqual(authenticated.reason, "pending")
+        self.assertFalse((self.paths.session_dir / "112.session").exists())
+
+        admitted = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment=self.env,
+            parent_pid=112,
+            who_output="",
+        )
+        self.assertTrue(admitted.allowed)
+        self.assertTrue((self.paths.session_dir / "112.session").is_file())
+
+    def test_static_banner_policy_denials_fail_in_first_auth_attempt(self):
+        self.enable_static_banner()
+        cases = (
+            ("E:secret:2000-01-01:2:10\n", None, None, "expired"),
+            ("E:secret:2099-12-31:2:1\n", str(1024**3), None, "quota"),
+            ("E:secret:2099-12-31:2:10\n", None, "E\n", "manual_lock"),
+        )
+        for offset, (row, usage, locks, expected_reason) in enumerate(cases, 1):
+            with self.subTest(reason=expected_reason):
+                self.paths.db_file.write_text(row)
+                self.paths.manual_lock_file.write_text(locks or "")
+                self.paths.bandwidth_dir.mkdir(exist_ok=True)
+                usage_file = self.paths.bandwidth_dir / "E.usage"
+                if usage is None:
+                    usage_file.unlink(missing_ok=True)
+                else:
+                    usage_file.write_text(usage + "\n")
+                pid = 120 + offset
+                write_fake_process(
+                    self.proc,
+                    pid,
+                    1,
+                    2200 + offset,
+                    "sshd",
+                    "sshd: E [preauth]",
+                )
+
+                decision = auth_session.process_authenticated_login(
+                    paths=self.paths,
+                    environment={
+                        "PAM_SERVICE": "sshd",
+                        "PAM_TYPE": "auth",
+                        "PAM_USER": "E",
+                    },
+                    parent_pid=pid,
+                    who_output="",
+                )
+
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.reason, expected_reason)
+                self.assertEqual(decision.message, "")
+                self.assertFalse((self.paths.session_dir / f"{pid}.session").exists())
+                self.assertIsNone(auth_session.read_denial_guard(self.paths, "E"))
+
+    def test_static_banner_full_session_fails_without_touching_live_sessions(self):
+        self.login(131, 2301)
+        self.login(132, 2302)
+        self.enable_static_banner()
+        write_fake_process(self.proc, 133, 1, 2303, "sshd", "sshd: E [preauth]")
+
+        denied = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=133,
+            who_output="",
+        )
+
+        self.assertFalse(denied.allowed)
+        self.assertEqual(denied.reason, "connection_limit")
+        self.assertEqual(denied.message, "")
+        counts, pids = auth_session.prune_and_count_markers(self.paths, {"E"})
+        self.assertEqual(counts["E"], 2)
+        self.assertEqual(pids["E"], (131, 132))
+        self.assertFalse((self.paths.session_dir / "133.session").exists())
+        self.assertIsNone(auth_session.read_denial_guard(self.paths, "E"))
+
+        shutil.rmtree(self.proc / "132")
+        available = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=133,
+            who_output="",
+        )
+        self.assertTrue(available.allowed)
+        self.assertEqual(available.reason, "active")
+        self.assertFalse((self.paths.session_dir / "133.session").exists())
+
+    def test_static_banner_full_openvpn_slot_fails_without_consuming_ssh_slot(self):
+        self.paths.db_file.write_text("E:secret:2099-12-31:1:10\n")
+        admission = self.reserve_openvpn()
+        self.enable_static_banner()
+        write_fake_process(self.proc, 134, 1, 2304, "sshd", "sshd: E [preauth]")
+
+        denied = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=134,
+            who_output="",
+        )
+
+        self.assertFalse(denied.allowed)
+        self.assertEqual(denied.reason, "connection_limit")
+        self.assertTrue(admission.is_file())
+        self.assertFalse((self.paths.session_dir / "134.session").exists())
+
     def test_missing_policy_row_fails_closed_only_for_tdz_system_users(self):
         self.paths.db_file.write_text("")
         with mock.patch.object(
@@ -153,6 +309,43 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             )
         self.assertTrue(unrelated.allowed)
         self.assertEqual(unrelated.reason, "not_managed")
+
+    def test_missing_policy_row_fails_during_auth_when_static_banner_is_active(self):
+        self.enable_static_banner()
+        self.paths.db_file.write_text("")
+        with mock.patch.object(
+            auth_session, "is_tdztunnel_system_user", return_value=True
+        ):
+            decision = auth_session.process_authenticated_login(
+                paths=self.paths,
+                environment={
+                    "PAM_SERVICE": "sshd",
+                    "PAM_TYPE": "auth",
+                    "PAM_USER": "E",
+                },
+                who_output="",
+            )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "policy_error")
+        self.assertEqual(decision.message, "")
+        self.assertIsNone(auth_session.read_denial_guard(self.paths, "E"))
+
+    def test_commented_static_banner_directive_keeps_existing_dynamic_guard_flow(self):
+        self.enable_static_banner()
+        self.paths.sshd_config.write_text(
+            "# Banner %s\n" % self.paths.static_banner_file
+        )
+        self.paths.manual_lock_file.write_text("E\n")
+
+        decision = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            who_output="",
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "manual_lock")
+        self.assertEqual(decision.message, "")
 
     def test_successful_auth_is_included_immediately_once(self):
         decision = self.login(101, 1100)
