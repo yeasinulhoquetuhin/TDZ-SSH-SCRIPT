@@ -221,19 +221,12 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
                     (self.paths.session_dir / (str(300 + offset) + ".session")).exists()
                 )
 
-    def test_policy_banner_and_auth_failure_share_the_first_attempt(self):
+    def test_recent_policy_denial_stops_retry_then_clears_after_unlock(self):
         self.paths.manual_lock_file.write_text("E\n")
         now = time.time()
-        first = auth_session.process_authenticated_login(
-            paths=self.paths,
-            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
-            parent_pid=350,
-            who_output="",
-            now=now,
-        )
+        first = self.login(350, 3500)
         self.assertFalse(first.allowed)
         self.assertEqual(first.reason, "manual_lock")
-        self.assertIn("Status:</b> Locked", first.message)
         self.assertTrue((self.paths.session_dir / "E.denied").is_file())
 
         retry = auth_session.process_authenticated_login(
@@ -278,10 +271,9 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             who_output="",
             now=1011.0,
         )
-        self.assertFalse(after_cooldown.allowed)
+        self.assertTrue(after_cooldown.allowed)
         self.assertEqual(after_cooldown.reason, "manual_lock")
-        self.assertIn("Status:</b> Locked", after_cooldown.message)
-        self.assertTrue((self.paths.session_dir / "E.denied").exists())
+        self.assertFalse((self.paths.session_dir / "E.denied").exists())
 
     def test_untrusted_denial_guard_cannot_block_authentication(self):
         self.paths.manual_lock_file.write_text("E\n")
@@ -297,11 +289,10 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
             who_output="",
         )
-        # An untrusted marker cannot trigger the silent retry path. The real
-        # policy is evaluated and its private banner is returned directly.
-        self.assertFalse(decision.allowed)
+        # An untrusted marker is ignored, so this first valid-password attempt
+        # may proceed to the account hook and receive the real private banner.
+        self.assertTrue(decision.allowed)
         self.assertEqual(decision.reason, "manual_lock")
-        self.assertIn("Status:</b> Locked", decision.message)
         self.assertFalse(list(self.paths.session_dir.glob("*.session")))
 
     def test_malformed_denial_guard_is_ignored_and_removed(self):
@@ -315,11 +306,9 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
             who_output="",
         )
-        self.assertFalse(decision.allowed)
+        self.assertTrue(decision.allowed)
         self.assertEqual(decision.reason, "manual_lock")
-        self.assertIn("Status:</b> Locked", decision.message)
-        self.assertTrue(guard.exists())
-        self.assertEqual(guard.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(guard.exists())
 
     def test_connection_limit_denial_removes_the_rejected_marker(self):
         self.login(401, 4001)
