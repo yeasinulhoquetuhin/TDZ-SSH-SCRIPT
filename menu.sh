@@ -1083,7 +1083,7 @@ update_setup() {
 
     if $dynamic_banner_was_enabled; then
         touch "$dynamic_banner_flag"
-        update_ssh_banners_config
+        refresh_dynamic_banner_routing_if_enabled
     fi
 
     # Refresh the Telegram worker code without changing its saved bot settings
@@ -1801,7 +1801,7 @@ sync_runtime_components_if_needed() {
         tdz_openvpn_refresh_runtime >/dev/null 2>&1 || true
     fi
     if [[ -f "/etc/tdztunnel/banners_enabled" ]]; then
-        update_ssh_banners_config
+        refresh_dynamic_banner_routing_if_enabled
     elif [[ -f "$SSHD_TDZ_CONFIG" ]]; then
         disable_dynamic_ssh_banner_system
         systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
@@ -1913,7 +1913,7 @@ get_ssh_banner_mode() {
 }
 
 refresh_dynamic_banner_routing_if_enabled() {
-    local users=("$@") attempt user all_ready
+    local users=("$@") attempt user all_ready=true
     local banner_dir="/etc/tdztunnel/banners"
 
     # The feature flag is the source of truth. Requiring the generated sshd
@@ -1921,32 +1921,58 @@ refresh_dynamic_banner_routing_if_enabled() {
     # removed during an update, even though Dynamic Banner was still enabled.
     [[ -f "/etc/tdztunnel/banners_enabled" ]] || return 0
 
-    update_ssh_banners_config
+    # A call without an explicit list means every currently managed account.
+    # This keeps restore, cleanup, updater, and manual-enable flows consistent
+    # with individual and bulk account creation.
+    if (( ${#users[@]} == 0 )) && [[ -f "$DB_FILE" ]]; then
+        while IFS=: read -r user _rest; do
+            [[ -n "$user" && "$user" != \#* ]] && users+=("$user")
+        done < "$DB_FILE"
+    fi
+
     if ! systemctl is-active --quiet tdztunnel-limiter; then
         systemctl start tdztunnel-limiter --no-block >/dev/null 2>&1 || true
     fi
 
-    # New accounts can be used immediately after this function returns. Give
-    # the one-second worker cycle a short bounded window to publish each new
-    # banner before the user's first SSH connection reaches OpenSSH.
-    (( ${#users[@]} > 0 )) || return 0
+    # Publish the banner before exposing its Match User route through sshd.
+    # Otherwise an immediate first login can reach a route whose Banner file
+    # does not exist yet and that connection will never see the dynamic banner.
     mkdir -p "$banner_dir"
-    for ((attempt=0; attempt<30; attempt++)); do
-        all_ready=true
-        for user in "${users[@]}"; do
-            [[ -n "$user" && -s "$banner_dir/${user}.txt" ]] || {
-                all_ready=false
-                break
-            }
+    if (( ${#users[@]} > 0 )); then
+        all_ready=false
+        for ((attempt=0; attempt<50; attempt++)); do
+            all_ready=true
+            for user in "${users[@]}"; do
+                [[ -n "$user" && -s "$banner_dir/${user}.txt" ]] || {
+                    all_ready=false
+                    break
+                }
+            done
+            $all_ready && break
+            sleep 0.1
         done
-        $all_ready && return 0
-        sleep 0.1
+    fi
+
+    # Always refresh routing even after a worker timeout so the account starts
+    # working automatically as soon as the supervised worker recovers.
+    update_ssh_banners_config || return 1
+    $all_ready
+}
+
+provision_dynamic_banners_for_new_users() {
+    local users=("$@") user
+
+    # A deleted username may leave an old banner behind. Never treat that
+    # stale file as proof that a newly-created account is ready.
+    for user in "${users[@]}"; do
+        [[ -n "$user" ]] && rm -f "$DB_DIR/banners/${user}.txt" 2>/dev/null
     done
-    return 0
+    invalidate_banner_cache
+    refresh_dynamic_banner_routing_if_enabled "${users[@]}"
 }
 
 update_ssh_banners_config() {
-    local tmp_conf
+    local tmp_conf config_changed=false include_added=false
 
     if [[ ! -f "/etc/tdztunnel/banners_enabled" ]]; then
         if [[ -f "$SSHD_TDZ_CONFIG" ]]; then
@@ -1957,7 +1983,8 @@ update_ssh_banners_config() {
     fi
 
     ensure_tdztunnel_dirs
-    tmp_conf="/tmp/tdz_banners_new.conf"
+    mkdir -p "$(dirname "$SSHD_TDZ_CONFIG")" || return 1
+    tmp_conf=$(mktemp "${SSHD_TDZ_CONFIG}.tmp.XXXXXX") || return 1
     echo "# TDZ SSH TUNNEL - Dynamic per-user SSH banners" > "$tmp_conf"
 
     if [[ -f "$DB_FILE" ]]; then
@@ -1969,14 +1996,25 @@ update_ssh_banners_config() {
     fi
 
     if ! cmp -s "$tmp_conf" "$SSHD_TDZ_CONFIG" 2>/dev/null; then
-        mv "$tmp_conf" "$SSHD_TDZ_CONFIG"
-        if ! grep -q "^Include /etc/ssh/sshd_config.d/" /etc/ssh/sshd_config 2>/dev/null; then
-            echo "Include /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config
-        fi
-        systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null
+        chmod 644 "$tmp_conf"
+        mv -f "$tmp_conf" "$SSHD_TDZ_CONFIG" || { rm -f "$tmp_conf"; return 1; }
+        config_changed=true
     else
         rm -f "$tmp_conf"
     fi
+
+    # Keep the include independently self-healing. Previously it was checked
+    # only when the per-user file changed, so an otherwise-current file could
+    # remain completely ignored by sshd after its Include line was removed.
+    if ! grep -qE "^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*\.conf" /etc/ssh/sshd_config 2>/dev/null; then
+        echo "Include /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config || return 1
+        include_added=true
+    fi
+
+    if $config_changed || $include_added; then
+        systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null
+    fi
+    return 0
 }
 
 setup_ssh_login_info() {
@@ -1986,8 +2024,7 @@ setup_ssh_login_info() {
         return 1
     fi
     disable_static_ssh_banner_in_sshd_config
-    update_ssh_banners_config
-    return 0
+    refresh_dynamic_banner_routing_if_enabled
 }
 
 
@@ -2609,7 +2646,7 @@ create_user() {
     clear; show_banner
     tdz_screen_title "CREATE SSH USER" "Create a managed SSH account with limits and expiry."
     read -r -p "$(echo -e "${C_PROMPT}  Username (0 = cancel): ${C_RESET}")" username
-    local adopt_existing=false
+    local adopt_existing=false banner_sync_ok=true
     if [[ "$username" == "0" ]]; then
         tdz_message CANCELLED "User creation cancelled."
         return
@@ -2691,6 +2728,11 @@ create_user() {
         chage -E "$expire_date" "$username"
     fi
     echo "$username:$password:$stored_expiry:$limit:$bandwidth_gb$metadata_suffix" >> "$DB_FILE"
+
+    # Dynamic routing is part of account provisioning, not a follow-up UI
+    # action. Finish it before displaying credentials or opening another
+    # prompt so the account's very first SSH connection sees its banner.
+    provision_dynamic_banners_for_new_users "$username" || banner_sync_ok=false
     
     local bw_display
     bw_display=$(tdz_format_quota_gb "$bandwidth_gb")
@@ -2710,6 +2752,9 @@ create_user() {
     tdz_detail "Connections" "$limit"
     tdz_detail "Bandwidth" "$bw_display"
     echo -e "  ${C_DIM}Limits are enforced automatically by the account worker.${C_RESET}"
+    if [[ "$banner_sync_ok" != true ]]; then
+        echo -e "  ${C_YELLOW}[WARNING] Account created, but dynamic banner routing is still waiting for the worker.${C_RESET}"
+    fi
 
     # Auto-ask for config generation
     echo
@@ -2717,9 +2762,6 @@ create_user() {
     if [[ "$gen_conf" == "y" || "$gen_conf" == "Y" ]]; then
         generate_client_config "$username" "$password"
     fi
-    
-    invalidate_banner_cache
-    refresh_dynamic_banner_routing_if_enabled "$username"
 }
 
 delete_user() {
@@ -7371,7 +7413,7 @@ create_trial_account() {
     read -r -p "$(echo -e "${C_PROMPT}  Select a duration: ${C_RESET}")" dur_choice
     
     local duration_hours=0
-    local duration_label=""
+    local duration_label="" banner_sync_ok=true
     case $dur_choice in
         1) duration_hours=1;   duration_label="1 Hour" ;;
         2) duration_hours=2;   duration_label="2 Hours" ;;
@@ -7436,6 +7478,7 @@ create_trial_account() {
     echo "$username:$password" | chpasswd
     chage -E "$expire_date" "$username"
     echo "$username:$password:$expire_date:$limit:$bandwidth_gb:trial:$expiry_epoch" >> "$DB_FILE"
+    provision_dynamic_banners_for_new_users "$username" || banner_sync_ok=false
     
     # Schedule by UID + immutable expiry token so changing the username later
     # does not detach the automatic cleanup job. The token prevents UID-reuse
@@ -7458,6 +7501,9 @@ create_trial_account() {
     tdz_detail "Connections" "$limit"
     tdz_detail "Bandwidth" "$bw_display"
     echo -e "  ${C_DIM}This account is removed automatically when its trial expires.${C_RESET}"
+    if [[ "$banner_sync_ok" != true ]]; then
+        echo -e "  ${C_YELLOW}[WARNING] Trial created, but dynamic banner routing is still waiting for the worker.${C_RESET}"
+    fi
     
     # Auto-ask for config generation
     echo
@@ -7465,9 +7511,6 @@ create_trial_account() {
     if [[ "$gen_conf" == "y" || "$gen_conf" == "Y" ]]; then
         generate_client_config "$username" "$password"
     fi
-    
-    invalidate_banner_cache
-    refresh_dynamic_banner_routing_if_enabled "$username"
 }
 
 format_trial_time_left() {
@@ -7694,7 +7737,7 @@ bulk_create_users() {
     printf "${C_BOLD}${C_WHITE}%-20s | %-15s | %-12s${C_RESET}\n" "USERNAME" "PASSWORD" "EXPIRES"
     echo -e "${C_GRAY}─────────────────────┼─────────────────┼─────────────${C_RESET}"
     
-    local created=0
+    local created=0 banner_sync_ok=true
     local -a created_usernames=()
     for ((i=1; i<=count; i++)); do
         local username="${prefix}${i}"
@@ -7716,11 +7759,14 @@ bulk_create_users() {
         created=$((created + 1))
         created_usernames+=("$username")
     done
-    
+
+    if (( created > 0 )); then
+        provision_dynamic_banners_for_new_users "${created_usernames[@]}" || banner_sync_ok=false
+    fi
     tdz_message OK "Created $created account(s). Connections: ${limit}; bandwidth: ${bw_display}; expiry starts: ${activation_display}."
-    
-    invalidate_banner_cache
-    refresh_dynamic_banner_routing_if_enabled "${created_usernames[@]}"
+    if [[ "$banner_sync_ok" != true ]]; then
+        echo -e "  ${C_YELLOW}[WARNING] Accounts created, but dynamic banner routing is still waiting for the worker.${C_RESET}"
+    fi
 }
 
 generate_client_config() {

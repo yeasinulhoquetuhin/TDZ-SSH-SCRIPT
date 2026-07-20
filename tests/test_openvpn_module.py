@@ -794,11 +794,28 @@ class ModuleTests(unittest.TestCase):
     def test_banner_refresh_and_session_detection_are_immediate_and_authoritative(self):
         menu = (REPO / "menu.sh").read_text()
         refresh_start = menu.index("refresh_dynamic_banner_routing_if_enabled() {")
-        refresh_end = menu.index("\n}\n\nupdate_ssh_banners_config", refresh_start)
+        refresh_end = menu.index(
+            "\n}\n\nprovision_dynamic_banners_for_new_users", refresh_start
+        )
         refresh = menu[refresh_start:refresh_end]
         self.assertIn('[[ -f "/etc/tdztunnel/banners_enabled" ]]', refresh)
         self.assertNotIn("is_dynamic_ssh_banner_enabled", refresh)
         self.assertIn('-s "$banner_dir/${user}.txt"', refresh)
+        self.assertIn('users+=("$user")', refresh)
+        self.assertLess(
+            refresh.index("systemctl start tdztunnel-limiter"),
+            refresh.index('-s "$banner_dir/${user}.txt"'),
+        )
+        self.assertLess(
+            refresh.index('-s "$banner_dir/${user}.txt"'),
+            refresh.index("update_ssh_banners_config || return 1"),
+        )
+
+        provision_start = menu.index("provision_dynamic_banners_for_new_users() {")
+        provision_end = menu.index("\n}\n\nupdate_ssh_banners_config", provision_start)
+        provision = menu[provision_start:provision_end]
+        self.assertIn('rm -f "$DB_DIR/banners/${user}.txt"', provision)
+        self.assertIn('refresh_dynamic_banner_routing_if_enabled "${users[@]}"', provision)
 
         limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-20.1")
         limiter_end = menu.index("\nEOF\n    chmod +x \"$LIMITER_SCRIPT\"", limiter_start)
@@ -806,6 +823,61 @@ class ModuleTests(unittest.TestCase):
         self.assertIn('${#unique_sshd_sessions[@]} -gt 0', limiter)
         self.assertNotIn('${#unique_pids[@]} -gt 0', limiter)
         self.assertNotIn('online_count=1\n', limiter)
+
+    def test_new_accounts_provision_dynamic_banner_before_follow_up_ui(self):
+        menu = (REPO / "menu.sh").read_text()
+
+        create_start = menu.index("create_user() {")
+        create_end = menu.index("\n}\n\ndelete_user()", create_start)
+        create = menu[create_start:create_end]
+        create_db = create.index(
+            'echo "$username:$password:$stored_expiry:$limit:$bandwidth_gb$metadata_suffix" >> "$DB_FILE"'
+        )
+        create_sync = create.index(
+            'provision_dynamic_banners_for_new_users "$username"'
+        )
+        create_details = create.index("clear; show_banner", create_db)
+        create_config_prompt = create.index("Generate client configuration now?")
+        self.assertLess(create_db, create_sync)
+        self.assertLess(create_sync, create_details)
+        self.assertLess(create_sync, create_config_prompt)
+        self.assertEqual(
+            create.count('provision_dynamic_banners_for_new_users "$username"'), 1
+        )
+
+        trial_start = menu.index("create_trial_account() {")
+        trial_end = menu.index("\n}\n\nformat_trial_time_left()", trial_start)
+        trial = menu[trial_start:trial_end]
+        trial_db = trial.index(
+            'echo "$username:$password:$expire_date:$limit:$bandwidth_gb:trial:$expiry_epoch" >> "$DB_FILE"'
+        )
+        trial_sync = trial.index(
+            'provision_dynamic_banners_for_new_users "$username"'
+        )
+        trial_details = trial.index("clear; show_banner", trial_db)
+        trial_config_prompt = trial.index("Generate client configuration now?")
+        self.assertLess(trial_db, trial_sync)
+        self.assertLess(trial_sync, trial_details)
+        self.assertLess(trial_sync, trial_config_prompt)
+
+        bulk_start = menu.index("bulk_create_users() {")
+        bulk_end = menu.index("\n}\n\ngenerate_client_config()", bulk_start)
+        bulk = menu[bulk_start:bulk_end]
+        bulk_db = bulk.index(
+            'echo "$username:$password:$stored_expiry:$limit:$bandwidth_gb$metadata_suffix" >> "$DB_FILE"'
+        )
+        bulk_sync = bulk.index(
+            'provision_dynamic_banners_for_new_users "${created_usernames[@]}"'
+        )
+        bulk_success = bulk.index('tdz_message OK "Created $created account(s).')
+        self.assertLess(bulk_db, bulk_sync)
+        self.assertLess(bulk_sync, bulk_success)
+
+        setup_start = menu.index("setup_ssh_login_info() {")
+        setup_end = menu.index("\n}\n\n\ndomain_cert_menu()", setup_start)
+        setup = menu[setup_start:setup_end]
+        self.assertIn("refresh_dynamic_banner_routing_if_enabled", setup)
+        self.assertNotIn("update_ssh_banners_config\n", setup)
 
     def test_main_dashboard_keeps_openvpn_status_inside_protocol_suite(self):
         menu = (REPO / "menu.sh").read_text()
