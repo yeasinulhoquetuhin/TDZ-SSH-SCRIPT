@@ -25,6 +25,9 @@ class LinkCollector(HTMLParser):
         if tag == "script" and "src" in attributes:
             self.links.append(attributes["src"])
             return
+        if tag == "img" and "src" in attributes:
+            self.links.append(attributes["src"])
+            return
         if tag not in {"a", "link"}:
             return
         if "href" in attributes:
@@ -449,7 +452,8 @@ class ModuleTests(unittest.TestCase):
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
             self.assertIn("Fast when it can be.", portal)
-            self.assertIn('<span class="brand-signal" aria-hidden="true">', portal)
+            self.assertIn('class="site-logo site-logo-header"', portal)
+            self.assertIn('src="/openvpn/assets/tdz-logo.jpg"', portal)
             self.assertIn("From zero to connected in four steps", portal)
             self.assertIn("Six paths. One destination.", portal)
             self.assertIn("HTTP + HTTPS", portal)
@@ -472,10 +476,11 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("backdrop-filter:blur(26px)", css)
             self.assertIn(".theme-switch{display:flex", css)
             self.assertIn('.theme-option[aria-pressed="true"]', css)
+            self.assertIn(".site-logo-header{width:82px", css)
             self.assertIn(".support-banner{position:relative;display:grid", css)
             self.assertIn(".radar-ring{position:absolute", css)
             self.assertIn(".developer-line .developer-link", css)
-            self.assertIn(".project-spotlight{display:grid", css)
+            self.assertIn(".project-spotlight{position:relative;display:grid", css)
             self.assertIn(".footer-repo{display:inline-flex", css)
             self.assertIn(".footer-repo span{color:var(--accent)}", css)
             portal_js = (root / "portal/ovpn-configs/portal.js").read_text()
@@ -485,6 +490,14 @@ class ModuleTests(unittest.TestCase):
             self.assertIn('window.matchMedia("(prefers-color-scheme: dark)")', portal_js)
             self.assertIn('[data-theme-option]', portal_js)
             self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
+            logo = root / "portal/ovpn-configs/tdz-logo.jpg"
+            self.assertTrue(logo.is_file())
+            self.assertEqual(logo.stat().st_size, 35156)
+            self.assertEqual(logo.read_bytes()[:3], b"\xff\xd8\xff")
+            favicon = root / "portal/ovpn-configs/tdz-favicon.svg"
+            self.assertTrue(favicon.is_file())
+            self.assertIn('viewBox="130 315 240 240"', favicon.read_text())
+            self.assertGreater(favicon.stat().st_size, 45000)
 
             visitor_pages = portal + docs + downloads
             self.assertNotIn("1180", visitor_pages)
@@ -502,14 +515,17 @@ class ModuleTests(unittest.TestCase):
                 "/openvpn/download",
                 "/openvpn/assets/portal.css",
                 "/openvpn/assets/portal.js",
+                "/openvpn/assets/tdz-logo.jpg",
+                "/openvpn/assets/tdz-favicon.svg",
                 "https://tuhinbro.com/",
                 "https://t.me/TuhinBroh",
                 "https://t.me/TUSTDZ",
                 "https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT",
             }
             self.assertIn('class="section project-spotlight"', portal)
-            self.assertIn("Part of TDZ SSH TUNNEL.", portal)
-            self.assertIn("View GitHub repository", portal)
+            self.assertIn("TDZ SSH TUNNEL powers both SSH and OpenVPN.", portal)
+            self.assertIn("Want this complete system on your own VPS?", portal)
+            self.assertIn("Get TDZ SSH TUNNEL", portal)
             self.assertNotIn('class="section project-spotlight"', docs + downloads)
             for page_name in ("index.html", "docs.html", "download.html"):
                 page_text = (public / page_name).read_text()
@@ -532,6 +548,9 @@ class ModuleTests(unittest.TestCase):
                 self.assertNotIn("© 2026", page_text)
                 self.assertNotIn("All rights reserved", page_text)
                 self.assertIn('src="/openvpn/assets/portal.js"', page_text)
+                self.assertIn('rel="icon" type="image/svg+xml" href="/openvpn/assets/tdz-favicon.svg"', page_text)
+                self.assertIn('class="site-logo site-logo-header"', page_text)
+                self.assertNotIn('class="header-support"', page_text)
                 self.assertIn('data-theme-option="light"', page_text)
                 self.assertIn('data-theme-option="system"', page_text)
                 self.assertIn('data-theme-option="dark"', page_text)

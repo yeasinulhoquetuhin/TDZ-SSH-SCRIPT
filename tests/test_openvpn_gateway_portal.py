@@ -436,6 +436,8 @@ class PortalTests(ProcessCase):
             (public / "download.html").write_text("TDZ downloads")
             (public / "portal.css").write_text("body{}")
             (public / "portal.js").write_text("void 0;")
+            (public / "tdz-logo.jpg").write_bytes(b"\xff\xd8\xffTDZ")
+            (public / "tdz-favicon.svg").write_text("<svg></svg>")
             (public / "client.ovpn").write_text("client\n")
             (public / ".secret").write_text("hidden")
             (root / "outside.ovpn").write_text("must not be served\n")
@@ -491,6 +493,9 @@ class PortalTests(ProcessCase):
             self.assertIn(
                 "script-src 'self'", response.getheader("Content-Security-Policy")
             )
+            self.assertIn(
+                "img-src 'self' data:", response.getheader("Content-Security-Policy")
+            )
 
             for path, expected in (
                 ("/openvpn/docs", b"TDZ docs"),
@@ -499,6 +504,8 @@ class PortalTests(ProcessCase):
                 ("/openvpn/download/", b"TDZ downloads"),
                 ("/openvpn/assets/portal.css", b"body{}"),
                 ("/openvpn/assets/portal.js", b"void 0;"),
+                ("/openvpn/assets/tdz-logo.jpg", b"\xff\xd8\xffTDZ"),
+                ("/openvpn/assets/tdz-favicon.svg", b"<svg></svg>"),
             ):
                 connection.request("GET", path)
                 page = connection.getresponse()
