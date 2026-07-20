@@ -50,6 +50,12 @@ class ModuleTests(unittest.TestCase):
             ! tdz_openvpn_valid_host '-bad.example' || exit 14
             ! tdz_openvpn_valid_host '.bad.example' || exit 17
             ! tdz_openvpn_valid_host 'bad.example.' || exit 18
+            tdz_openvpn_valid_telegram_username TUSTDZ || exit 19
+            tdz_openvpn_valid_telegram_username Support_24 || exit 20
+            ! tdz_openvpn_valid_telegram_username '@TUSTDZ' || exit 21
+            ! tdz_openvpn_valid_telegram_username abcd || exit 22
+            ! tdz_openvpn_valid_telegram_username 'bad-name' || exit 23
+            ! tdz_openvpn_valid_telegram_username '1Support' || exit 24
             for port in 80 443 442 8443 2080 2086 2096 2053 1080 1180 8080 8880 8888; do
                 tdz_openvpn_forbidden_port "$port" || exit 15
             done
@@ -97,12 +103,14 @@ class ModuleTests(unittest.TestCase):
                 TDZ_OVPN_HTTP_PORT=25003
                 TDZ_OVPN_WSS_PORT=25004
                 TDZ_OVPN_SSL_PORT=25005
+                TDZ_OVPN_SUPPORT_USERNAME=CustomSupport
                 TDZ_OVPN_TCP_SUBNET=10.100.10.0
                 TDZ_OVPN_UDP_SUBNET=10.101.11.0
                 tdz_openvpn_save_state || exit 29
                 tdz_openvpn_load_state || exit 30
                 [[ "$TDZ_OVPN_PORTAL_PORT" == 25000 ]] || exit 39
                 [[ "$TDZ_OVPN_TCP_PORT" == 25001 ]] || exit 40
+                [[ "$TDZ_OVPN_SUPPORT_USERNAME" == CustomSupport ]] || exit 45
                 ! tdz_openvpn_needs_refresh || exit 41
 
                 tdz_openvpn_apply_fixed_port_mapping
@@ -206,6 +214,46 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("APPLY_CALLED", result.stdout)
             self.assertNotIn("disconnects active OpenVPN sessions", result.stdout)
 
+    def test_support_contact_change_is_persistent_and_does_not_restart_openvpn(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_file = root / "input.txt"
+            input_file.write_text("@NewSupport\n")
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                TDZ_OVPN_HOST=vpn.example.com
+                TDZ_OVPN_SUPPORT_USERNAME=TUSTDZ
+                tdz_openvpn_apply_fixed_port_mapping
+                TDZ_OVPN_TCP_SUBNET=10.100.10.0
+                TDZ_OVPN_UDP_SUBNET=10.101.11.0
+                mkdir -p "$TDZ_OVPN_PKI"
+                printf 'test\n' > "$TDZ_OVPN_PKI/ca.crt"
+                printf 'test\n' > "$TDZ_OVPN_PKI/server.key"
+                tdz_openvpn_save_state || exit 20
+
+                generated=0
+                tdz_openvpn_generate_profiles() {{
+                    ((generated += 1))
+                    [[ "$TDZ_OVPN_SUPPORT_USERNAME" == NewSupport ]]
+                }}
+                tdz_openvpn_apply_private_permissions() {{ return 0; }}
+                systemctl() {{ printf 'SYSTEMCTL_CALLED\n'; return 91; }}
+
+                tdz_openvpn_configure_support_contact < {input_file} || exit 21
+                [[ "$generated" == 1 ]] || exit 22
+                tdz_openvpn_load_state || exit 23
+                [[ "$TDZ_OVPN_SUPPORT_USERNAME" == NewSupport ]] || exit 24
+                grep -q '^SUPPORT_USERNAME=NewSupport$' "$TDZ_OVPN_STATE" || exit 25
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("changed to @NewSupport", result.stdout)
+            self.assertIn("active VPN sessions were not restarted", result.stdout)
+            self.assertNotIn("SYSTEMCTL_CALLED", result.stdout)
+
     def test_legacy_state_without_portal_port_uses_default(self):
         with tempfile.TemporaryDirectory() as temp:
             state = Path(temp) / "state.conf"
@@ -233,6 +281,7 @@ class ModuleTests(unittest.TestCase):
                 tdz_openvpn_load_state || exit 20
                 [[ "$TDZ_OVPN_PORTAL_PORT" == 1180 ]] || exit 21
                 [[ "$TDZ_OVPN_TCP_PORT" == 25001 ]] || exit 22
+                [[ "$TDZ_OVPN_SUPPORT_USERNAME" == TUSTDZ ]] || exit 23
                 """
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -306,6 +355,7 @@ class ModuleTests(unittest.TestCase):
             TDZ_OVPN_PROFILES={root}/portal/ovpn-configs
             TDZ_OVPN_RUNTIME=/runtime-helper
             TDZ_OVPN_HOST=vpn.example.com
+            TDZ_OVPN_SUPPORT_USERNAME=TUSTDZ
             TDZ_OVPN_TCP_PORT=447
             TDZ_OVPN_UDP_PORT=448
             TDZ_OVPN_HTTP_PORT=449
@@ -398,8 +448,10 @@ class ModuleTests(unittest.TestCase):
                 self.assertNotIn("rcvbuf 524288", direct)
 
             portal = (root / "portal/ovpn-configs/index.html").read_text()
-            self.assertIn("TDZ <span>•</span><br>OVPN PORTAL", portal)
-            self.assertIn('<span class="brand-main">TDZ</span>', portal)
+            self.assertIn("Fast when it can be.", portal)
+            self.assertIn('<span class="brand-signal" aria-hidden="true">', portal)
+            self.assertIn("From zero to connected in four steps", portal)
+            self.assertIn("Six paths. One destination.", portal)
             self.assertIn("HTTP + HTTPS", portal)
             self.assertIn('href="/openvpn/docs"', portal)
             self.assertIn('href="/openvpn/download"', portal)
@@ -413,30 +465,25 @@ class ModuleTests(unittest.TestCase):
             downloads = (root / "portal/ovpn-configs/download.html").read_text()
             self.assertIn("/openvpn/download/openvpn-profiles.zip", downloads)
             css = (root / "portal/ovpn-configs/portal.css").read_text()
-            self.assertIn("--bg:#efeee9", css)
-            self.assertIn("--accent:#12b98f", css)
+            self.assertIn("--bg:#eef1f5", css)
+            self.assertIn("--accent:#ef4050", css)
             self.assertIn(':root[data-theme="dark"]', css)
             self.assertIn("@media(prefers-color-scheme:dark)", css)
-            self.assertIn("backdrop-filter:blur", css)
-            self.assertIn(".theme-toggle{display:inline-flex;align-items:center;gap:5px;min-height:32px", css)
+            self.assertIn("backdrop-filter:blur(26px)", css)
+            self.assertIn(".theme-switch{display:flex", css)
+            self.assertIn('.theme-option[aria-pressed="true"]', css)
+            self.assertIn(".support-banner{position:relative;display:grid", css)
+            self.assertIn(".radar-ring{position:absolute", css)
             self.assertIn(".developer-line .developer-link", css)
-            self.assertIn("color:#1267d6", css)
-            self.assertIn(
-                ".developer-line>span{color:var(--text);font-size:.94rem;font-weight:700",
-                css,
-            )
-            self.assertIn(
-                ".developer-line .developer-link{display:inline;width:auto;margin:0;"
-                "color:#1267d6;font-size:.94rem;font-weight:650",
-                css,
-            )
-            self.assertIn(".project-spotlight{position:relative;display:grid", css)
+            self.assertIn(".project-spotlight{display:grid", css)
             self.assertIn(".footer-repo{display:inline-flex", css)
-            self.assertIn(".footer-bottom .footer-repo span{color:var(--accent)}", css)
+            self.assertIn(".footer-repo span{color:var(--accent)}", css)
             portal_js = (root / "portal/ovpn-configs/portal.js").read_text()
             self.assertIn("navigator.clipboard.writeText", portal_js)
             self.assertIn("window.localStorage", portal_js)
             self.assertIn('document.documentElement.setAttribute("data-theme"', portal_js)
+            self.assertIn('window.matchMedia("(prefers-color-scheme: dark)")', portal_js)
+            self.assertIn('[data-theme-option]', portal_js)
             self.assertTrue((root / "portal/ovpn-configs/openvpn-profiles.zip").is_file())
 
             visitor_pages = portal + docs + downloads
@@ -444,7 +491,7 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("External firewall", visitor_pages)
             self.assertNotIn("security group", visitor_pages)
             self.assertNotIn("VPS service", visitor_pages)
-            self.assertIn("contact the server administrator", docs)
+            self.assertIn("then contact support", docs)
             self.assertNotIn("brand-mark", visitor_pages)
             self.assertNotIn("<strong>PORTAL</strong>", visitor_pages)
 
@@ -457,6 +504,7 @@ class ModuleTests(unittest.TestCase):
                 "/openvpn/assets/portal.js",
                 "https://tuhinbro.com/",
                 "https://t.me/TuhinBroh",
+                "https://t.me/TUSTDZ",
                 "https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT",
             }
             self.assertIn('class="section project-spotlight"', portal)
@@ -471,6 +519,9 @@ class ModuleTests(unittest.TestCase):
                 self.assertIn('class="developer-link" href="https://tuhinbro.com/"', page_text)
                 self.assertIn("Telegram:", page_text)
                 self.assertIn('href="https://t.me/TuhinBroh"', page_text)
+                self.assertIn('href="https://t.me/TUSTDZ"', page_text)
+                self.assertIn("No TDZ account yet? Start here.", page_text)
+                self.assertIn("Message @TUSTDZ", page_text)
                 self.assertIn(
                     'class="footer-repo" '
                     'href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT"',
@@ -481,7 +532,9 @@ class ModuleTests(unittest.TestCase):
                 self.assertNotIn("© 2026", page_text)
                 self.assertNotIn("All rights reserved", page_text)
                 self.assertIn('src="/openvpn/assets/portal.js"', page_text)
-                self.assertIn("data-theme-toggle", page_text)
+                self.assertIn('data-theme-option="light"', page_text)
+                self.assertIn('data-theme-option="system"', page_text)
+                self.assertIn('data-theme-option="dark"', page_text)
                 self.assertNotIn("Powered By", page_text)
                 parser = LinkCollector()
                 parser.feed(page_text)
@@ -503,6 +556,7 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("https://vpn.example.com:1180/openvpn/download", guide)
             self.assertIn("HTTPS is recommended for downloading profiles", guide)
             self.assertIn("public carrier endpoint outside the tunnel", guide)
+            self.assertIn("Account and support: @TUSTDZ (https://t.me/TUSTDZ)", guide)
             self.assertNotIn("route-gateway", guide)
             self.assertNotIn("/ovpn-configs", portal + docs + downloads + guide)
             self.assertNotIn("external firewall", guide.lower())
@@ -513,6 +567,30 @@ class ModuleTests(unittest.TestCase):
             self.assertEqual(regenerated.returncode, 0, regenerated.stderr)
             self.assertFalse((root / "portal/ovpn-configs/stale.ovpn").exists())
             self.assertEqual(list((root / "portal").glob(".ovpn-configs.*")), [])
+
+    def test_custom_support_contact_propagates_to_every_portal_page(self):
+        with tempfile.TemporaryDirectory() as temp:
+            public = Path(temp) / "ovpn-configs"
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_PROFILES={public}
+                TDZ_OVPN_HOST=vpn.example.com
+                TDZ_OVPN_SUPPORT_USERNAME=TeamHelp
+                TDZ_OVPN_TCP_PORT=447
+                TDZ_OVPN_UDP_PORT=448
+                TDZ_OVPN_HTTP_PORT=449
+                TDZ_OVPN_WSS_PORT=450
+                TDZ_OVPN_SSL_PORT=446
+                mkdir -p "$TDZ_OVPN_PROFILES"
+                tdz_openvpn_generate_portal_html || exit 20
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for page_name in ("index.html", "docs.html", "download.html"):
+                page = (public / page_name).read_text()
+                self.assertIn('href="https://t.me/TeamHelp"', page)
+                self.assertIn("@TeamHelp", page)
+                self.assertNotIn("https://t.me/TUSTDZ", page)
 
     def test_firewall_and_service_files_are_syntactically_well_formed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -907,6 +985,12 @@ class ModuleTests(unittest.TestCase):
         self.assertIn("10) if declare -F tdz_openvpn_menu", protocol)
         self.assertIn("11) install_xui_panel", protocol)
         self.assertIn("12) uninstall_xui_panel", protocol)
+
+        openvpn_module = MODULE.read_text()
+        suite_start = openvpn_module.index("tdz_openvpn_menu() {")
+        suite = openvpn_module[suite_start:]
+        self.assertIn('tdz_menu1 "[ 8]" "Change Account / Support Contact"', suite)
+        self.assertIn("8) tdz_openvpn_configure_support_contact", suite)
 
 
 if __name__ == "__main__":
