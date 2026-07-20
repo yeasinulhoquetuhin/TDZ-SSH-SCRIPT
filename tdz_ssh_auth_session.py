@@ -11,7 +11,11 @@ Marker identity is a PID plus the kernel process start time.  Checking both
 prevents a stale marker from becoming valid again after PID reuse.
 """
 
+import datetime as dt
+import fcntl
+import grp
 import os
+import pwd
 import re
 import stat
 import subprocess
@@ -20,13 +24,15 @@ import syslog
 import tempfile
 import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional, Tuple
+from typing import Dict, FrozenSet, Iterable, Mapping, Optional, Tuple
 
 
 MARKER_VERSION = "v1"
 SSH_PROCESS_NAMES = frozenset(("sshd", "sshd-session"))
+MANAGED_SYSTEM_GROUP = "tdzusers"
 SAFE_USERNAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
 AUTHENTICATED_TITLE = re.compile(
     r"^(?:sshd|sshd-session): ([A-Za-z0-9_][A-Za-z0-9_.-]{0,31})@"
@@ -35,11 +41,32 @@ AUTHENTICATED_TITLE = re.compile(
 SESSION_TEXT = re.compile(
     r"(<b>\[-\] Active Session:</b>\s*)[0-9]+/[0-9]+"
 )
+STATUS_TEXT = re.compile(r"(<b>\[-\] Status:</b>\s*)[^<]*(<br>)")
+
+POLICY_STATUS = {
+    "expired": "Expired",
+    "quota": "Traffic Ended",
+    "manual_lock": "Locked",
+    "connection_limit": "Connection Limit Reached",
+    "session_error": "Session Verification Failed",
+    "policy_error": "Policy Check Failed",
+}
+POLICY_MESSAGE = {
+    "expired": "Your account has expired. Please renew it before reconnecting.",
+    "quota": "Your data limit has been reached. Please top up before reconnecting.",
+    "manual_lock": "Your account has been locked. Please contact support.",
+    "connection_limit": "Your connection limit has already been reached.",
+    "session_error": "The authenticated session could not be verified. Please retry.",
+    "policy_error": "The account policy could not be verified safely. Please contact support.",
+}
 
 
 @dataclass(frozen=True)
 class RuntimePaths:
     db_file: Path = Path("/etc/tdztunnel/users.db")
+    manual_lock_file: Path = Path("/etc/tdztunnel/manual-locks.db")
+    bandwidth_dir: Path = Path("/etc/tdztunnel/bandwidth")
+    usage_lock: Path = Path("/etc/tdztunnel/bandwidth/.usage.lock")
     banner_dir: Path = Path("/etc/tdztunnel/banners")
     banner_flag: Path = Path("/etc/tdztunnel/banners_enabled")
     session_dir: Path = Path("/run/tdztunnel/ssh-auth-sessions")
@@ -55,13 +82,30 @@ class ProcessIdentity:
     command: str
 
 
-def load_accounts(db_file: Path) -> Dict[str, int]:
-    accounts: Dict[str, int] = {}
+@dataclass(frozen=True)
+class Account:
+    username: str
+    expiry: str
+    limit: int
+    quota_gb: float
+    account_type: str = ""
+    metadata_value: str = ""
+
+
+@dataclass(frozen=True)
+class LoginDecision:
+    message: str
+    allowed: bool
+    reason: str = "active"
+
+
+def load_accounts(db_file: Path) -> Dict[str, Account]:
+    accounts: Dict[str, Account] = {}
     try:
         with db_file.open("r", encoding="utf-8", errors="replace") as handle:
             for raw_line in handle:
                 fields = raw_line.rstrip("\r\n").split(":")
-                if len(fields) < 4:
+                if len(fields) < 5:
                     continue
                 username = fields[0]
                 if not SAFE_USERNAME.fullmatch(username):
@@ -70,10 +114,113 @@ def load_accounts(db_file: Path) -> Dict[str, int]:
                     limit = int(fields[3])
                 except ValueError:
                     limit = 1
-                accounts[username] = max(1, limit)
+                try:
+                    quota_gb = max(0.0, float(fields[4] or "0"))
+                except ValueError:
+                    quota_gb = 0.0
+                accounts[username] = Account(
+                    username=username,
+                    expiry=fields[2],
+                    limit=max(1, limit),
+                    quota_gb=quota_gb,
+                    account_type=fields[5] if len(fields) > 5 else "",
+                    metadata_value=fields[6] if len(fields) > 6 else "",
+                )
     except OSError:
         pass
     return accounts
+
+
+def is_tdztunnel_system_user(username: str) -> bool:
+    """Identify TDZ-owned accounts without affecting unrelated SSH admins."""
+
+    if not SAFE_USERNAME.fullmatch(username):
+        return False
+    try:
+        user_record = pwd.getpwnam(username)
+        group_record = grp.getgrnam(MANAGED_SYSTEM_GROUP)
+    except (KeyError, OSError):
+        return False
+    return bool(
+        user_record.pw_gid == group_record.gr_gid
+        or username in group_record.gr_mem
+    )
+
+
+def load_manual_locks(lock_file: Path) -> FrozenSet[str]:
+    try:
+        info = lock_file.lstat()
+    except FileNotFoundError:
+        return frozenset()
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise RuntimeError("manual lock policy is not a regular file")
+    if os.geteuid() == 0 and (
+        info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        raise RuntimeError("manual lock policy has unsafe ownership or mode")
+    locks = set()
+    with lock_file.open("r", encoding="utf-8", errors="strict") as handle:
+        for raw_line in handle:
+            username = raw_line.rstrip("\r\n")
+            if SAFE_USERNAME.fullmatch(username):
+                locks.add(username)
+    return frozenset(locks)
+
+
+def read_usage(bandwidth_dir: Path, username: str) -> int:
+    try:
+        value = int((bandwidth_dir / (username + ".usage")).read_text().strip() or "0")
+    except (OSError, ValueError):
+        return 0
+    return max(0, value)
+
+
+@contextmanager
+def account_state_lock(paths: RuntimePaths):
+    paths.usage_lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(str(paths.usage_lock), flags, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError("shared account lock is not a regular file")
+        if os.geteuid() == 0 and (
+            info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022
+        ):
+            raise RuntimeError("shared account lock has unsafe ownership or mode")
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def account_policy_reason(
+    paths: RuntimePaths,
+    account: Account,
+    now: Optional[float] = None,
+) -> str:
+    now = time.time() if now is None else now
+    if account.account_type == "trial" and account.metadata_value.isdigit():
+        if int(account.metadata_value) > 0 and int(account.metadata_value) <= int(now):
+            return "expired"
+    if account.account_type != "pending" and account.expiry not in ("", "Never"):
+        try:
+            expiry_date = dt.date.fromisoformat(account.expiry)
+        except ValueError:
+            return "expired"
+        if dt.datetime.fromtimestamp(now).date() > expiry_date:
+            return "expired"
+    if account.quota_gb > 0:
+        quota_bytes = max(1, int(account.quota_gb * 1024**3))
+        if read_usage(paths.bandwidth_dir, account.username) >= quota_bytes:
+            return "quota"
+    if account.username in load_manual_locks(paths.manual_lock_file):
+        return "manual_lock"
+    return "pending" if account.account_type == "pending" else "active"
 
 
 def read_process_identity(proc_root: Path, pid: int) -> Optional[ProcessIdentity]:
@@ -300,41 +447,76 @@ def count_openvpn_sessions(
     return total
 
 
-def render_banner(paths: RuntimePaths, username: str, total: int, limit: int) -> str:
+def _minimal_policy_banner(
+    username: str, total: int, limit: int, reason: str
+) -> str:
+    status = POLICY_STATUS.get(reason, "Access Denied")
+    message = POLICY_MESSAGE.get(reason, "Account access was denied.")
+    return (
+        "<br><br>---------------------------------<br>"
+        "<b>[!] ACCOUNT • DETAILS [!]</b><br>"
+        "---------------------------------<br>"
+        f"<b>[-] Username:</b> {username}<br>"
+        f"<b>[-] Status:</b> {status}<br>"
+        f"<b>[-] Active Session:</b> {max(0, total)}/{max(1, limit)}<br>"
+        "---------------------------------<br>"
+        f'<font color="red"><b>[!] {message}</b></font><br>'
+        "---------------------------------"
+    )
+
+
+def render_banner(
+    paths: RuntimePaths,
+    username: str,
+    total: int,
+    limit: int,
+    reason: str = "active",
+) -> str:
     banner_file = paths.banner_dir / (username + ".txt")
     try:
         content = banner_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
+        if reason in POLICY_MESSAGE:
+            return _minimal_policy_banner(username, total, limit, reason)
         return ""
     replacement = r"\g<1>%d/%d" % (max(0, total), max(1, limit))
     rendered, substitutions = SESSION_TEXT.subn(replacement, content, count=1)
     if substitutions != 1:
+        if reason in POLICY_MESSAGE:
+            return _minimal_policy_banner(username, total, limit, reason)
         return ""
+    if reason in POLICY_MESSAGE:
+        status = POLICY_STATUS[reason]
+        rendered, status_substitutions = STATUS_TEXT.subn(
+            r"\g<1>%s\g<2>" % status, rendered, count=1
+        )
+        if status_substitutions != 1:
+            return _minimal_policy_banner(username, total, limit, reason)
+        policy_message = POLICY_MESSAGE[reason]
+        if policy_message.casefold() not in rendered.casefold():
+            rendered += (
+                '<br><font color="red"><b>[!] '
+                + policy_message
+                + "</b></font>"
+            )
     # pam_exec turns each physical output line into a separate PAM message.
     # The TDZ HTML already uses <br>, so send one atomic informational message.
     return rendered.replace("\r", "").replace("\n", "")
 
 
-def process_authenticated_login(
-    paths: RuntimePaths = RuntimePaths(),
-    environment: Optional[Mapping[str, str]] = None,
+def _process_managed_login(
+    paths: RuntimePaths,
+    accounts: Mapping[str, Account],
+    username: str,
     parent_pid: Optional[int] = None,
     who_output: Optional[str] = None,
     now: Optional[float] = None,
-) -> str:
-    env = os.environ if environment is None else environment
-    if env.get("PAM_SERVICE") != "sshd" or env.get("PAM_TYPE") != "account":
-        return ""
-    username = env.get("PAM_USER", "")
-    accounts = load_accounts(paths.db_file)
-    if username not in accounts or not SAFE_USERNAME.fullmatch(username):
-        return ""
-
-    caller = os.getppid() if parent_pid is None else parent_pid
-    sshd_identity = find_sshd_ancestor(paths.proc_root, caller)
-    if sshd_identity is None:
-        return ""
-    write_marker(paths, username, sshd_identity)
+) -> LoginDecision:
+    account = accounts[username]
+    try:
+        reason = account_policy_reason(paths, account, now=now)
+    except Exception:
+        reason = "policy_error"
 
     marker_counts, _marker_pids = prune_and_count_markers(paths, accounts)
     process_counts = count_authenticated_children(paths)
@@ -347,24 +529,135 @@ def process_authenticated_login(
     total = ssh_total + count_openvpn_sessions(
         paths.openvpn_snapshot, username, now=now
     )
+    if reason in POLICY_MESSAGE:
+        message = ""
+        if paths.banner_flag.is_file():
+            message = render_banner(
+                paths, username, total, account.limit, reason=reason
+            )
+        return LoginDecision(message, False, reason)
+
+    caller = os.getppid() if parent_pid is None else parent_pid
+    sshd_identity = find_sshd_ancestor(paths.proc_root, caller)
+    if sshd_identity is None:
+        message = ""
+        if paths.banner_flag.is_file():
+            message = render_banner(
+                paths,
+                username,
+                total,
+                account.limit,
+                reason="session_error",
+            )
+        return LoginDecision(message, False, "session_error")
+    write_marker(paths, username, sshd_identity)
+
+    marker_counts, _marker_pids = prune_and_count_markers(paths, accounts)
+    ssh_total = max(
+        marker_counts.get(username, 0),
+        process_counts.get(username, 0),
+        who_counts.get(username, 0),
+    )
+    total = ssh_total + count_openvpn_sessions(
+        paths.openvpn_snapshot, username, now=now
+    )
+    if total > account.limit:
+        try:
+            (paths.session_dir / (str(sshd_identity.pid) + ".session")).unlink()
+        except OSError:
+            pass
+        message = ""
+        if paths.banner_flag.is_file():
+            message = render_banner(
+                paths,
+                username,
+                max(0, total - 1),
+                account.limit,
+                reason="connection_limit",
+            )
+        return LoginDecision(message, False, "connection_limit")
     if not paths.banner_flag.is_file():
-        return ""
-    return render_banner(paths, username, total, accounts[username])
+        return LoginDecision("", True, reason)
+    return LoginDecision(
+        render_banner(paths, username, total, account.limit), True, reason
+    )
+
+
+def process_authenticated_login(
+    paths: RuntimePaths = RuntimePaths(),
+    environment: Optional[Mapping[str, str]] = None,
+    parent_pid: Optional[int] = None,
+    who_output: Optional[str] = None,
+    now: Optional[float] = None,
+) -> LoginDecision:
+    env = os.environ if environment is None else environment
+    if env.get("PAM_SERVICE") != "sshd" or env.get("PAM_TYPE") != "account":
+        return LoginDecision("", True, "not_applicable")
+    username = env.get("PAM_USER", "")
+    if not SAFE_USERNAME.fullmatch(username):
+        return LoginDecision("", True, "not_managed")
+    accounts = load_accounts(paths.db_file)
+    if username not in accounts:
+        # A TDZ system account without a trustworthy database row must never
+        # bypass expiry/quota/manual-lock policy. Unrelated SSH admin accounts
+        # remain outside this project and continue through the normal PAM stack.
+        if is_tdztunnel_system_user(username):
+            message = ""
+            if paths.banner_flag.is_file():
+                message = _minimal_policy_banner(
+                    username, 0, 1, "policy_error"
+                )
+            return LoginDecision(message, False, "policy_error")
+        return LoginDecision("", True, "not_managed")
+
+    account = accounts[username]
+    try:
+        # This is the same advisory lock used by first-use activation and the
+        # OpenVPN client-connect hook. It serializes simultaneous SSH account
+        # decisions so two successful passwords cannot both claim the final
+        # connection slot.
+        with account_state_lock(paths):
+            accounts = load_accounts(paths.db_file)
+            account = accounts.get(username)
+            if account is None:
+                return LoginDecision("", False, "policy_error")
+            return _process_managed_login(
+                paths,
+                accounts,
+                username,
+                parent_pid=parent_pid,
+                who_output=who_output,
+                now=now,
+            )
+    except Exception:
+        message = ""
+        if paths.banner_flag.is_file():
+            message = render_banner(
+                paths,
+                username,
+                0,
+                account.limit,
+                reason="policy_error",
+            )
+        return LoginDecision(message, False, "policy_error")
 
 
 def main() -> int:
     try:
-        message = process_authenticated_login()
-        if message:
-            sys.stdout.write(message + "\n")
+        decision = process_authenticated_login()
+        if decision.message:
+            sys.stdout.write(decision.message + "\n")
             sys.stdout.flush()
-    except Exception as exc:  # PAM helper must never turn a login into an outage.
+        return 0 if decision.allowed else 1
+    except Exception as exc:
         try:
             syslog.openlog("tdztunnel-ssh-auth")
             syslog.syslog(syslog.LOG_ERR, "post-auth helper failed: %s" % exc)
         except Exception:
             pass
-    return 0
+        # Preserve emergency/admin SSH access, but fail closed for accounts
+        # owned by TDZ when their policy helper cannot complete safely.
+        return 1 if is_tdztunnel_system_user(os.environ.get("PAM_USER", "")) else 0
 
 
 if __name__ == "__main__":

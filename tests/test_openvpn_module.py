@@ -56,6 +56,7 @@ class ModuleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             database = root / "users.db"
+            manual_locks = root / "manual-locks.db"
             lock_input = root / "lock-input"
             unlock_input = root / "unlock-input"
             database.write_text(
@@ -63,12 +64,14 @@ class ModuleTests(unittest.TestCase):
                 "bob:pass:Never:1:0\n"
                 "carol:pass:Never:1:0\n"
             )
+            manual_locks.write_text("bob\n")
             lock_input.write_text("all\n")
             unlock_input.write_text("all\n")
 
             result = self.run_menu_bash(
                 f"""
                 DB_FILE={database}
+                MANUAL_LOCK_FILE={manual_locks}
                 clear() {{ :; }}
                 show_banner() {{ :; }}
                 tdz_box_top() {{ :; }}
@@ -83,16 +86,6 @@ class ModuleTests(unittest.TestCase):
                         *) return 1 ;;
                     esac
                 }}
-                passwd() {{
-                    [[ "$1" == "-S" ]] || return 1
-                    case "$2" in
-                        alice) printf 'alice P 2026-07-20 0 99999 7 -1\n' ;;
-                        bob) printf 'bob L 2026-07-20 0 99999 7 -1\n' ;;
-                        carol) printf 'carol NP 2026-07-20 0 99999 7 -1\n' ;;
-                        *) return 1 ;;
-                    esac
-                }}
-
                 _select_multi_user_interface "LOCK ACCOUNTS" false unlocked < {lock_input}
                 [[ "${{SELECTED_USERS[*]}}" == "alice carol" ]] || {{
                     printf 'lock-list=%s\n' "${{SELECTED_USERS[*]}}" >&2
@@ -137,6 +130,8 @@ class ModuleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             database = root / "users.db"
+            manual_locks = root / "manual-locks.db"
+            manual_mutex = root / ".manual-locks.lock"
             lock_input = root / "lock-input"
             unlock_input = root / "unlock-input"
             original_row = "alice:pass:Never:2:10\n"
@@ -147,7 +142,9 @@ class ModuleTests(unittest.TestCase):
             result = self.run_menu_bash(
                 f"""
                 DB_FILE={database}
-                mock_passwd_state=P
+                DB_DIR={root}
+                MANUAL_LOCK_FILE={manual_locks}
+                MANUAL_LOCK_MUTEX={manual_mutex}
                 vpn_kills=0
                 process_kills=0
                 clear() {{ :; }}
@@ -159,33 +156,230 @@ class ModuleTests(unittest.TestCase):
                 tdz_menu1() {{ :; }}
                 tdz_row() {{ :; }}
                 id() {{ [[ "$1" == alice ]]; }}
-                passwd() {{
-                    [[ "$1" == "-S" && "$2" == alice ]] || return 1
-                    printf 'alice %s 2026-07-20 0 99999 7 -1\n' "$mock_passwd_state"
-                }}
-                usermod() {{
-                    case "$1:$2" in
-                        -L:alice) mock_passwd_state=L ;;
-                        -U:alice) mock_passwd_state=P ;;
-                        *) return 1 ;;
-                    esac
-                }}
                 tdz_openvpn_kill_user() {{ ((vpn_kills += 1)); }}
                 killall() {{ ((process_kills += 1)); }}
 
                 lock_user < {lock_input}
-                [[ "$mock_passwd_state" == L ]] || exit 30
+                grep -Fxq alice "$MANUAL_LOCK_FILE" || exit 30
                 [[ "$vpn_kills" == 1 && "$process_kills" == 1 ]] || exit 31
                 [[ "$(cat "$DB_FILE")" == 'alice:pass:Never:2:10' ]] || exit 32
 
                 unlock_user < {unlock_input}
-                [[ "$mock_passwd_state" == P ]] || exit 33
+                ! grep -Fxq alice "$MANUAL_LOCK_FILE" || exit 33
                 [[ "$(cat "$DB_FILE")" == 'alice:pass:Never:2:10' ]] || exit 34
                 """
             )
             self.assertEqual(
                 result.returncode, 0, result.stderr + "\n" + result.stdout
             )
+
+    def test_numeric_multi_select_never_appends_an_empty_username(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = root / "users.db"
+            selection = root / "selection"
+            database.write_text("alice:pass:Never:1:0\nbob:pass:Never:1:0\n")
+            selection.write_text("1\n")
+            result = self.run_menu_bash(
+                f"""
+                DB_FILE={database}
+                clear() {{ :; }}
+                show_banner() {{ :; }}
+                tdz_box_top() {{ :; }}
+                tdz_box_header() {{ :; }}
+                tdz_box_divider() {{ :; }}
+                tdz_box_bot() {{ :; }}
+                tdz_menu1() {{ :; }}
+                tdz_row() {{ :; }}
+                _select_multi_user_interface "TEST" false any < {selection}
+                [[ "${{#SELECTED_USERS[@]}}" == 1 ]] || exit 40
+                [[ "${{SELECTED_USERS[0]}}" == alice ]] || exit 41
+                [[ -n "${{SELECTED_USERS[0]}}" ]] || exit 42
+                """
+            )
+            self.assertEqual(
+                result.returncode, 0, result.stderr + "\n" + result.stdout
+            )
+
+    def test_expiry_and_quota_are_not_manual_unlock_states(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = root / "users.db"
+            locks = root / "manual-locks.db"
+            bandwidth = root / "bandwidth"
+            bandwidth.mkdir()
+            database.write_text(
+                "expired:pass:2000-01-01:1:0\n"
+                "quota:pass:Never:1:1\n"
+                "manual:pass:Never:1:0\n"
+                "active:pass:Never:1:0\n"
+            )
+            locks.write_text("manual\n")
+            (bandwidth / "quota.usage").write_text(str(1024**3) + "\n")
+            result = self.run_menu_bash(
+                f"""
+                DB_FILE={database}
+                MANUAL_LOCK_FILE={locks}
+                BANDWIDTH_DIR={bandwidth}
+                id() {{ return 0; }}
+                [[ "$(tdz_user_policy_reason expired)" == expired ]] || exit 50
+                [[ "$(tdz_user_policy_reason quota)" == quota ]] || exit 51
+                [[ "$(tdz_account_lock_state expired)" == unlocked ]] || exit 52
+                [[ "$(tdz_account_lock_state quota)" == unlocked ]] || exit 53
+                [[ "$(tdz_account_lock_state manual)" == locked ]] || exit 54
+                """
+            )
+            self.assertEqual(
+                result.returncode, 0, result.stderr + "\n" + result.stdout
+            )
+
+    def test_legacy_shadow_locks_migrate_only_operator_intent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = root / "users.db"
+            locks = root / "manual-locks.db"
+            mutex = root / ".manual-locks.lock"
+            bandwidth = root / "bandwidth"
+            unlock_log = root / "unlocked.log"
+            bandwidth.mkdir()
+            database.write_text(
+                "active:pass:Never:1:0\n"
+                "expired:pass:2000-01-01:1:0\n"
+                "quota:pass:Never:1:1\n"
+            )
+            (bandwidth / "quota.usage").write_text(str(1024**3) + "\n")
+            result = self.run_menu_bash(
+                f"""
+                DB_DIR={root}
+                DB_FILE={database}
+                MANUAL_LOCK_FILE={locks}
+                MANUAL_LOCK_MUTEX={mutex}
+                BANDWIDTH_DIR={bandwidth}
+                id() {{ return 0; }}
+                passwd() {{ printf '%s L 2026-07-20 0 99999 7 -1\n' "$2"; }}
+                usermod() {{
+                    [[ "$1" == -U ]] || return 1
+                    printf '%s\n' "$2" >> {unlock_log}
+                }}
+                migrate_legacy_shadow_locks || exit 55
+                [[ "$(cat "$MANUAL_LOCK_FILE")" == active ]] || exit 56
+                [[ "$(sort {unlock_log} | tr '\n' ' ')" == 'active expired quota ' ]] || exit 57
+                """
+            )
+            self.assertEqual(
+                result.returncode, 0, result.stderr + "\n" + result.stdout
+            )
+
+    def test_manual_lock_backup_and_legacy_restore_keep_reasons_separate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db_dir = root / "tdztunnel"
+            bandwidth = db_dir / "bandwidth"
+            restore_root = root / "restore"
+            db_dir.mkdir()
+            bandwidth.mkdir()
+            restore_root.mkdir()
+            database = db_dir / "users.db"
+            manual_locks = db_dir / "manual-locks.db"
+            mutex = db_dir / ".manual-locks.lock"
+            database.write_text(
+                "active:pass:Never:1:0\n"
+                "expired:pass:2000-01-01:1:0\n"
+                "quota:pass:Never:1:1\n"
+            )
+            manual_locks.write_text("active\n")
+            (bandwidth / "quota.usage").write_text(str(1024**3) + "\n")
+            archive = root / "backup.tar.gz"
+
+            result = self.run_menu_bash(
+                f"""
+                DB_DIR={db_dir}
+                DB_FILE={database}
+                BANDWIDTH_DIR={bandwidth}
+                MANUAL_LOCK_FILE={manual_locks}
+                MANUAL_LOCK_MUTEX={mutex}
+                id() {{ return 0; }}
+                create_user_backup_archive {archive} || exit 60
+                : > "$MANUAL_LOCK_FILE"
+                printf 'active:locked\nexpired:locked\nquota:locked\n' > {restore_root}/locks.db
+                tdz_restore_manual_lock_archive {restore_root} || exit 61
+                [[ "$(cat "$MANUAL_LOCK_FILE")" == active ]] || {{
+                    printf 'restored=%s\n' "$(cat "$MANUAL_LOCK_FILE")" >&2
+                    exit 62
+                }}
+                """
+            )
+            self.assertEqual(
+                result.returncode, 0, result.stderr + "\n" + result.stdout
+            )
+            listed = subprocess.run(
+                ["tar", "-tzf", str(archive)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn("tdz-user-data/manual-locks.db", listed.stdout)
+            extracted = root / "extracted"
+            extracted.mkdir()
+            subprocess.run(
+                ["tar", "-xzf", str(archive), "-C", str(extracted)],
+                check=True,
+            )
+            backup_root = extracted / "tdz-user-data"
+            self.assertEqual((backup_root / "manual-locks.db").read_text(), "active\n")
+            self.assertIn("version=2", (backup_root / "meta.txt").read_text())
+            self.assertIn("active:locked", (backup_root / "locks.db").read_text())
+
+    def test_generated_account_workers_pass_shell_syntax(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            auto_worker = root / "auto-backup.sh"
+            trial_worker = root / "trial-cleanup.sh"
+            limiter_worker = root / "limiter.sh"
+            limiter_service = root / "limiter.service"
+            result = self.run_menu_bash(
+                f"""
+                AUTO_BACKUP_SCRIPT={auto_worker}
+                TRIAL_CLEANUP_SCRIPT={trial_worker}
+                LIMITER_SCRIPT={limiter_worker}
+                LIMITER_SERVICE={limiter_service}
+                systemctl() {{ return 0; }}
+                pkill() {{ return 0; }}
+                auto_backup_write_worker || exit 70
+                setup_trial_cleanup_script || exit 71
+                setup_limiter_service || exit 72
+                bash -n "$AUTO_BACKUP_SCRIPT" || exit 73
+                bash -n "$TRIAL_CLEANUP_SCRIPT" || exit 74
+                bash -n "$LIMITER_SCRIPT" || exit 75
+                """
+            )
+            self.assertEqual(
+                result.returncode, 0, result.stderr + "\n" + result.stdout
+            )
+            worker = auto_worker.read_text()
+            self.assertIn('MANUAL_LOCK_FILE="$DB_DIR/manual-locks.db"', worker)
+            self.assertIn("restore_manual_lock_policy", worker)
+            limiter = limiter_worker.read_text()
+            self.assertIn('MANUAL_LOCK_FILE="/etc/tdztunnel/manual-locks.db"', limiter)
+            self.assertNotIn("usermod -L", limiter)
+            self.assertIn("activate_pending_account() (", limiter)
+
+    def test_list_users_opens_filtered_views(self):
+        menu = MENU.read_text()
+        list_start = menu.index("list_users() {")
+        list_end = menu.index("\n}\n\nrenew_user()", list_start)
+        block = menu[list_start:list_end]
+        for label in (
+            "All Managed Users",
+            "Expired Users",
+            "Quota Ended Users",
+            "Online Users",
+        ):
+            self.assertIn(label, block)
+        self.assertIn('list_users_view expired "EXPIRED USERS"', block)
+        self.assertIn('list_users_view quota "QUOTA ENDED USERS"', block)
+        self.assertIn('list_users_view online "ONLINE USERS"', block)
 
     def test_host_and_forbidden_port_validation(self):
         result = self.run_bash(
@@ -1031,16 +1225,17 @@ class ModuleTests(unittest.TestCase):
 
     def test_limiter_uses_the_shared_first_use_lock(self):
         menu = (REPO / "menu.sh").read_text()
-        start = menu.index("activate_pending_account() {")
-        end = menu.index("\n}\n\nload_banner_identity", start)
+        start = menu.index("activate_pending_account() (")
+        end = menu.index("\n)\n\nload_banner_identity", start)
         activation = menu[start:end]
         self.assertIn('exec 8>"$USAGE_LOCK"', activation)
         self.assertIn("flock -x 8", activation)
         self.assertIn("active:*", activation)
+        self.assertNotIn("activate_pending_account() {", activation)
 
     def test_limiter_preserves_established_openvpn_sessions(self):
         menu = (REPO / "menu.sh").read_text()
-        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-20.2", menu)
+        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-20.4", menu)
         self.assertIn("if (( online_count > limit )); then", menu)
         self.assertIn("banner_session_count=$online_count", menu)
         self.assertNotIn("banner_session_count=$((online_count + 1))", menu)
@@ -1081,7 +1276,7 @@ class ModuleTests(unittest.TestCase):
         self.assertIn('rm -f "$DB_DIR/banners/${user}.txt"', provision)
         self.assertIn('refresh_dynamic_banner_routing_if_enabled "${users[@]}"', provision)
 
-        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-20.2")
+        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-20.4")
         limiter_end = menu.index("\nEOF\n    chmod +x \"$LIMITER_SCRIPT\"", limiter_start)
         limiter = menu[limiter_start:limiter_end]
         self.assertIn('${#unique_sshd_sessions[@]} -gt 0', limiter)
@@ -1112,8 +1307,13 @@ class ModuleTests(unittest.TestCase):
         hook_end = menu.index("\n}\n\nremove_ssh_auth_session_hook", hook_start)
         hook = menu[hook_start:hook_end]
         self.assertIn(
-            "account optional pam_exec.so quiet stdout type=account",
+            "account requisite pam_exec.so quiet stdout type=account",
             hook,
+        )
+        self.assertIn('cat "${tmp_file}.body"', hook)
+        self.assertLess(
+            hook.index('printf \'%s\\n%s\\n%s\\n\''),
+            hook.index('cat "${tmp_file}.body"'),
         )
         self.assertNotIn("expose_authtok", hook)
         self.assertIn(
@@ -1133,6 +1333,7 @@ class ModuleTests(unittest.TestCase):
         self.assertIn('env.get("PAM_SERVICE") != "sshd"', helper)
         self.assertIn('env.get("PAM_TYPE") != "account"', helper)
         self.assertIn("identity.start_time == expected_start", helper)
+        self.assertIn('return 0 if decision.allowed else 1', helper)
 
     def test_new_accounts_provision_dynamic_banner_before_follow_up_ui(self):
         menu = (REPO / "menu.sh").read_text()

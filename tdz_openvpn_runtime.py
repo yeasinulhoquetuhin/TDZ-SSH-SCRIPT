@@ -17,6 +17,7 @@ import json
 import os
 import pwd
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,9 @@ from typing import Iterable
 
 DB_FILE = Path(os.environ.get("TDZ_DB_FILE", "/etc/tdztunnel/users.db"))
 BW_DIR = Path(os.environ.get("TDZ_BW_DIR", "/etc/tdztunnel/bandwidth"))
+MANUAL_LOCK_FILE = Path(
+    os.environ.get("TDZ_MANUAL_LOCK_FILE", "/etc/tdztunnel/manual-locks.db")
+)
 OVPN_DIR = Path(os.environ.get("TDZ_OVPN_DIR", "/etc/tdztunnel/openvpn"))
 STATE_DIR = Path(os.environ.get("TDZ_OVPN_SESSION_DIR", str(BW_DIR / "openvpn-sessions")))
 ADMISSION_DIR = Path(
@@ -184,22 +188,32 @@ def account_expired(account: Account) -> bool:
 
 
 def account_locked(username: str) -> bool:
-    if TEST_MODE:
+    if TEST_MODE and "TDZ_TEST_LOCKED" in os.environ:
         return os.environ.get("TDZ_TEST_LOCKED") == "1"
     try:
-        result = subprocess.run(
-            ["passwd", "-S", username], capture_output=True, text=True, timeout=5, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
+        info = MANUAL_LOCK_FILE.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
         return True
-    parts = result.stdout.split()
-    return result.returncode != 0 or len(parts) < 2 or parts[1] in {"L", "LK"}
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        return True
+    if os.geteuid() == 0 and (
+        info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        return True
+    try:
+        with MANUAL_LOCK_FILE.open("r", encoding="utf-8", errors="strict") as handle:
+            return any(line.rstrip("\r\n") == username for line in handle)
+    except OSError:
+        return True
 
 
 def quota_exceeded(account: Account) -> bool:
     if account.quota_gb <= 0:
         return False
-    return read_usage(account.username) >= int(account.quota_gb * 1024**3)
+    quota_bytes = max(1, int(account.quota_gb * 1024**3))
+    return read_usage(account.username) >= quota_bytes
 
 
 def activate_pending(account: Account) -> Account:

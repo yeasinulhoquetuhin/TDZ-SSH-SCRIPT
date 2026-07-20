@@ -98,7 +98,7 @@ Account status, expiration, remaining validity, active connections, and compact 
 
 ### Bandwidth & Traffic
 - **Per-user bandwidth tracking** — real-time I/O monitoring via `/proc/<pid>/io` with per-PID delta calculation
-- **Data quotas** — set per-user bandwidth limits in GB; users exceeding quota are automatically locked
+- **Data quotas** — set per-user bandwidth limits in GB; exhausted accounts are denied and disconnected without being confused with an administrator lock
 - **Live traffic monitor** — real-time dashboard showing per-user data consumption
 - **Torrent blocking** — automatically block BitTorrent traffic per user
 
@@ -111,6 +111,7 @@ Account status, expiration, remaining validity, active connections, and compact 
 - **DarkTunnel optimized** — HTML banners render perfectly in DarkTunnel and similar SSH client apps
 - **Authenticated live banners** — account details are delivered only after successful SSH authentication; failed attempts receive no private account data and never enter the session count
 - **Immediate session lifecycle** — the successful connection is included in its own banner, while PID plus process-start-time tracking removes disconnected sessions and rejects stale PID reuse
+- **Reason-aware denial** — a correct password for an expired, quota-ended, or manually locked account receives its private reason banner and is then denied; an incorrect password receives neither the banner nor a session marker
 - **Auto-updating data** — generated banner data refreshes every second to reflect current bandwidth and established SSH/OpenVPN sessions
 - **Custom Admin & Channel usernames** — replace the default Telegram usernames with your own in the Dynamic Banner; matching `t.me/` links are generated automatically
 
@@ -135,7 +136,7 @@ Account status, expiration, remaining validity, active connections, and compact 
 - **Premium CLI theme** — professional color-coded terminal interface with Navy + Cyan theme
 
 ### Backup & Recovery
-- **Full user data backup** — archive all user configurations and data
+- **Full user data backup** — archive all user configurations, usage data, and explicit manual-lock policy
 - **Auto backup to Telegram** — scheduled automatic backups sent directly to your Telegram bot
 - **Data restore** — restore user data from backup archives
 - **Edge config backup** — backup HAProxy, Nginx, and SSL configurations
@@ -143,6 +144,7 @@ Account status, expiration, remaining validity, active connections, and compact 
 ### System & Monitoring
 - **Auto-reboot scheduler** — configure automatic VPS reboots at set intervals
 - **Connection limit enforcement** — automatically kill excess SSH sessions beyond per-user limits
+- **Filtered account views** — List Users provides All, Expired, Quota Ended, and Online views from the same live policy state used by enforcement
 - **Service management** — start/stop/restart all TDZ services from the menu
 - **X-UI panel integration** — optional X-UI panel installation for advanced proxy management
 
@@ -202,10 +204,11 @@ The portal uses the same validated outer certificate as WSS and SSL. A matching 
 
 - SSH and OpenVPN use the same TDZ user database and Linux password
 - Manual lock and account deletion terminate both SSH and OpenVPN sessions
+- Manual locks are stored separately from expiry and quota state, so the Unlock menu contains only accounts an administrator deliberately locked
 - Expiry and **Start After First Use** apply to the first successful SSH or OpenVPN login
 - The configured connection limit is shared across active SSH and OpenVPN sessions
 - Bandwidth usage from both transports is added to the same per-user quota without double counting
-- Expired or quota-exhausted accounts are disconnected and locked automatically
+- Expired or quota-exhausted accounts are disconnected and denied automatically, while renewing or topping up restores access without changing an independent manual lock
 - VPN clients are isolated from one another and cannot use the transport gateway as an open proxy
 
 Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores; modern TCP adapter clients prefer AES-128-GCM for lower mobile CPU cost while AES-256-GCM remains available as the compatibility fallback. Direct UDP retains AES-256-GCM priority.

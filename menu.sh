@@ -30,6 +30,8 @@ C_ACCENT=$C_CYAN     # Cyan accent (was Orange)
 
 DB_DIR="/etc/tdztunnel"
 DB_FILE="$DB_DIR/users.db"
+MANUAL_LOCK_FILE="$DB_DIR/manual-locks.db"
+MANUAL_LOCK_MUTEX="$DB_DIR/.manual-locks.lock"
 INSTALL_FLAG_FILE="$DB_DIR/.install"
 BADVPN_SERVICE_FILE="/etc/systemd/system/badvpn.service"
 BADVPN_BUILD_DIR="/root/badvpn-build"
@@ -820,6 +822,7 @@ check_environment() {
 ensure_tdztunnel_dirs() {
     mkdir -p "$DB_DIR" "$SSL_CERT_DIR" "$BANDWIDTH_DIR" /etc/ssh/sshd_config.d
     touch "$DB_FILE"
+    tdz_manual_lock_store_init
 }
 
 # Hardened sshd settings that complement the WS-bridge keepalive options.
@@ -905,6 +908,234 @@ ensure_tdztunnel_system_group() {
 db_has_user() {
     [[ -f "$DB_FILE" ]] || return 1
     awk -F: -v target="$1" '$1 == target { found=1; exit } END { exit(found ? 0 : 1) }' "$DB_FILE"
+}
+
+tdz_manual_lock_store_init() {
+    mkdir -p "$DB_DIR" || return 1
+    if [[ -L "$MANUAL_LOCK_FILE" || ( -e "$MANUAL_LOCK_FILE" && ! -f "$MANUAL_LOCK_FILE" ) ]]; then
+        return 1
+    fi
+    touch "$MANUAL_LOCK_FILE" "$MANUAL_LOCK_MUTEX" || return 1
+    chmod 600 "$MANUAL_LOCK_FILE" "$MANUAL_LOCK_MUTEX" || return 1
+    if (( EUID == 0 )); then
+        chown root:root "$MANUAL_LOCK_FILE" "$MANUAL_LOCK_MUTEX" || return 1
+    fi
+}
+
+tdz_user_is_manually_locked() {
+    local username="$1"
+    [[ -f "$MANUAL_LOCK_FILE" ]] || return 1
+    grep -Fxq -- "$username" "$MANUAL_LOCK_FILE" 2>/dev/null
+}
+
+tdz_set_manual_lock_state() {
+    local username="$1" requested_state="$2"
+    local tmp_file rc=0
+
+    is_valid_tdztunnel_username "$username" || return 1
+    [[ "$requested_state" == "locked" || "$requested_state" == "unlocked" ]] || return 1
+    tdz_manual_lock_store_init || return 1
+
+    exec 7>"$MANUAL_LOCK_MUTEX" || return 1
+    flock -x 7 || { exec 7>&-; return 1; }
+    tmp_file=$(mktemp "${MANUAL_LOCK_FILE}.tmp.XXXXXX") || {
+        flock -u 7
+        exec 7>&-
+        return 1
+    }
+
+    if ! awk -v target="$username" '
+        $0 != target && length($0) <= 32 && $0 ~ /^[A-Za-z_][A-Za-z0-9_-]*$/ { print }
+    ' "$MANUAL_LOCK_FILE" > "$tmp_file"; then
+        rc=1
+    elif [[ "$requested_state" == "locked" ]]; then
+        printf '%s\n' "$username" >> "$tmp_file" || rc=1
+    fi
+
+    if (( rc == 0 )); then
+        LC_ALL=C sort -u -o "$tmp_file" "$tmp_file" || rc=1
+        chmod 600 "$tmp_file" || rc=1
+        if (( EUID == 0 )); then
+            chown root:root "$tmp_file" || rc=1
+        fi
+    fi
+    if (( rc == 0 )); then
+        mv -f "$tmp_file" "$MANUAL_LOCK_FILE" || rc=1
+    fi
+    (( rc == 0 )) || rm -f "$tmp_file"
+    flock -u 7
+    exec 7>&-
+    return "$rc"
+}
+
+tdz_move_manual_lock_state() {
+    local old_username="$1" new_username="$2"
+    local tmp_file old_was_locked=false rc=0
+
+    is_valid_tdztunnel_username "$old_username" || return 1
+    is_valid_tdztunnel_username "$new_username" || return 1
+    [[ "$old_username" != "$new_username" ]] || return 0
+    tdz_manual_lock_store_init || return 1
+
+    exec 7>"$MANUAL_LOCK_MUTEX" || return 1
+    flock -x 7 || { exec 7>&-; return 1; }
+    if grep -Fxq -- "$new_username" "$MANUAL_LOCK_FILE" 2>/dev/null; then
+        flock -u 7
+        exec 7>&-
+        return 2
+    fi
+    grep -Fxq -- "$old_username" "$MANUAL_LOCK_FILE" 2>/dev/null && old_was_locked=true
+    tmp_file=$(mktemp "${MANUAL_LOCK_FILE}.tmp.XXXXXX") || {
+        flock -u 7
+        exec 7>&-
+        return 1
+    }
+    if ! awk -v old="$old_username" -v new="$new_username" '
+        $0 != old && $0 != new && length($0) <= 32 &&
+        $0 ~ /^[A-Za-z_][A-Za-z0-9_-]*$/ { print }
+    ' "$MANUAL_LOCK_FILE" > "$tmp_file"; then
+        rc=1
+    elif $old_was_locked; then
+        printf '%s\n' "$new_username" >> "$tmp_file" || rc=1
+    fi
+    if (( rc == 0 )); then
+        LC_ALL=C sort -u -o "$tmp_file" "$tmp_file" || rc=1
+        chmod 600 "$tmp_file" || rc=1
+        if (( EUID == 0 )); then
+            chown root:root "$tmp_file" || rc=1
+        fi
+    fi
+    (( rc == 0 )) && mv -f "$tmp_file" "$MANUAL_LOCK_FILE" || rc=1
+    (( rc == 0 )) || rm -f "$tmp_file"
+    flock -u 7
+    exec 7>&-
+    return "$rc"
+}
+
+tdz_clear_all_manual_locks() {
+    local tmp_file rc=0
+    tdz_manual_lock_store_init || return 1
+    exec 7>"$MANUAL_LOCK_MUTEX" || return 1
+    flock -x 7 || { exec 7>&-; return 1; }
+    tmp_file=$(mktemp "${MANUAL_LOCK_FILE}.tmp.XXXXXX") || {
+        flock -u 7
+        exec 7>&-
+        return 1
+    }
+    : > "$tmp_file" || rc=1
+    chmod 600 "$tmp_file" || rc=1
+    if (( EUID == 0 )); then
+        chown root:root "$tmp_file" || rc=1
+    fi
+    (( rc == 0 )) && mv -f "$tmp_file" "$MANUAL_LOCK_FILE" || rc=1
+    (( rc == 0 )) || rm -f "$tmp_file"
+    flock -u 7
+    exec 7>&-
+    return "$rc"
+}
+
+tdz_restore_manual_lock_archive() {
+    local restore_root="$1" source_file="" legacy_format=false
+    local username lock_state _extra reason
+
+    tdz_clear_all_manual_locks || return 1
+    if [[ -f "$restore_root/manual-locks.db" && ! -L "$restore_root/manual-locks.db" ]]; then
+        source_file="$restore_root/manual-locks.db"
+    elif [[ -f "$restore_root/locks.db" && ! -L "$restore_root/locks.db" ]]; then
+        source_file="$restore_root/locks.db"
+        legacy_format=true
+    else
+        return 0
+    fi
+
+    while IFS=: read -r username lock_state _extra; do
+        [[ -n "$username" && "$username" != \#* ]] || continue
+        is_valid_tdztunnel_username "$username" || continue
+        db_has_user "$username" && id "$username" >/dev/null 2>&1 || continue
+        if $legacy_format; then
+            [[ "$lock_state" == "locked" ]] || continue
+            reason=$(tdz_user_policy_reason "$username" 2>/dev/null || true)
+            # Old backups used shadow locks for both operator actions and
+            # automatic expiry/quota enforcement. Only an otherwise-valid
+            # legacy lock can safely be migrated as an operator lock.
+            [[ "$reason" != "expired" && "$reason" != "quota" ]] || continue
+        fi
+        tdz_set_manual_lock_state "$username" locked || return 1
+    done < "$source_file"
+}
+
+tdz_user_policy_reason() {
+    local username="$1" line _user _password expiry _limit quota_gb account_type metadata_value _rest
+    local now expiry_epoch=0 used_bytes=0 quota_bytes
+
+    line=$(awk -F: -v target="$username" '$1 == target { print; exit }' "$DB_FILE" 2>/dev/null)
+    if [[ -z "$line" ]]; then
+        printf '%s\n' "missing"
+        return 1
+    fi
+    IFS=: read -r _user _password expiry _limit quota_gb account_type metadata_value _rest <<< "$line"
+    now=$(date +%s)
+
+    if [[ "$account_type" == "trial" && "$metadata_value" =~ ^[0-9]+$ &&
+          "$metadata_value" -gt 0 && "$metadata_value" -le "$now" ]]; then
+        printf '%s\n' "expired"
+        return 0
+    fi
+    if [[ "$account_type" != "pending" && -n "$expiry" && "$expiry" != "Never" ]]; then
+        expiry_epoch=$(date -d "$expiry 23:59:59" +%s 2>/dev/null || echo 0)
+        if [[ "$expiry_epoch" =~ ^[0-9]+$ ]] && (( expiry_epoch > 0 && expiry_epoch < now )); then
+            printf '%s\n' "expired"
+            return 0
+        fi
+    fi
+
+    [[ "$quota_gb" =~ ^[0-9]+([.][0-9]+)?$ ]] || quota_gb=0
+    if ! tdz_quota_is_unlimited "$quota_gb"; then
+        if [[ -f "$BANDWIDTH_DIR/${username}.usage" ]]; then
+            read -r used_bytes < "$BANDWIDTH_DIR/${username}.usage" || used_bytes=0
+            [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
+        fi
+        quota_bytes=$(awk "BEGIN {printf \"%.0f\", $quota_gb * 1073741824}")
+        if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( used_bytes >= quota_bytes )); then
+            printf '%s\n' "quota"
+            return 0
+        fi
+    fi
+
+    if tdz_user_is_manually_locked "$username"; then
+        printf '%s\n' "manual_lock"
+    elif [[ "$account_type" == "pending" ]]; then
+        printf '%s\n' "pending"
+    else
+        printf '%s\n' "active"
+    fi
+}
+
+migrate_legacy_shadow_locks() {
+    local username _rest passwd_state policy_reason
+    [[ -s "$DB_FILE" ]] || return 0
+    tdz_manual_lock_store_init || return 1
+
+    while IFS=: read -r username _rest; do
+        [[ -n "$username" && "$username" != \#* ]] || continue
+        id "$username" >/dev/null 2>&1 || continue
+        passwd_state=$(passwd -S "$username" 2>/dev/null | awk 'NR == 1 { print $2 }')
+        [[ "$passwd_state" == "L" || "$passwd_state" == "LK" ]] || continue
+
+        if ! tdz_user_is_manually_locked "$username"; then
+            policy_reason=$(tdz_user_policy_reason "$username" 2>/dev/null || true)
+            # Before reason-aware policy existed, active shadow locks could only
+            # represent an operator lock. Expiry/quota locks are automatic and
+            # must not be imported into the manual Unlock list.
+            if [[ "$policy_reason" != "expired" && "$policy_reason" != "quota" ]]; then
+                tdz_set_manual_lock_state "$username" locked || return 1
+            fi
+        fi
+        # Password authentication must succeed before the PAM account hook can
+        # display a reason-specific denial banner. Access remains denied by the
+        # root-owned manual policy store, expiry, or quota check.
+        usermod -U "$username" >/dev/null 2>&1 || return 1
+    done < "$DB_FILE"
 }
 
 db_set_pending_validity() {
@@ -1006,6 +1237,8 @@ delete_tdztunnel_user_accounts() {
         fi
         rm -f "$BANDWIDTH_DIR/${username}.usage"
         rm -rf "$BANDWIDTH_DIR/pidtrack/${username}"
+        rm -f "$DB_DIR/banners/${username}.txt" 2>/dev/null
+        tdz_set_manual_lock_state "$username" unlocked >/dev/null 2>&1 || true
     done
 
     if [[ -f "$DB_FILE" ]]; then
@@ -1032,6 +1265,9 @@ initial_setup() {
     
     ensure_tdztunnel_dirs
     ensure_tdztunnel_system_group
+    migrate_legacy_shadow_locks || {
+        echo -e "${C_YELLOW}[WARNING] Could not migrate legacy account lock reasons.${C_RESET}"
+    }
     
     echo -e "${C_BLUE}Hardening sshd for TDZ SSH TUNNEL stability...${C_RESET}"
     harden_sshd_for_tunnel_stability
@@ -1077,6 +1313,9 @@ update_setup() {
     check_environment
     ensure_tdztunnel_dirs
     ensure_tdztunnel_system_group
+    migrate_legacy_shadow_locks || {
+        echo -e "${C_YELLOW}[WARNING] Could not migrate legacy account lock reasons.${C_RESET}"
+    }
     harden_sshd_for_tunnel_stability
     setup_limiter_service
     setup_ssh_auth_session_hook || {
@@ -1260,11 +1499,12 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-20.2
+# TDZ SSH TUNNEL limiter version 2026-07-20.4
 # Live session counts use authenticated `who`, sshd, and OpenVPN records only.
 # Per-user process scans remain traffic-accounting inputs, never session evidence.
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
+MANUAL_LOCK_FILE="/etc/tdztunnel/manual-locks.db"
 PID_DIR="$BW_DIR/pidtrack"
 BANNER_DIR="/etc/tdztunnel/banners"
 BANNER_IDENTITY_CONF="/etc/tdztunnel/banner_identity.conf"
@@ -1370,7 +1610,10 @@ format_bandwidth_usage() {
     printf '%s/%s' "$used_display" "$quota_display"
 }
 
-activate_pending_account() {
+# Run the first-use transaction in a subshell so every return path closes fd 8
+# and releases the shared admission lock immediately. A persistent descriptor
+# in the long-running limiter would otherwise block all later SSH/OVPN logins.
+activate_pending_account() (
     local target_user="$1" duration_days="$2"
     local activated_expiry tmp_file current_state current_expiry current_duration
 
@@ -1435,7 +1678,7 @@ activate_pending_account() {
 
     logger -t tdztunnel-limiter "First-use activation: ${target_user} expires ${activated_expiry}"
     printf '%s' "$activated_expiry"
-}
+)
 
 load_banner_identity
 
@@ -1448,7 +1691,7 @@ while true; do
     current_ts=$(date +%s)
     dynamic_banners_enabled=false
     declare -A session_pids=()
-    declare -A locked_users=()
+    declare -A manual_locked_users=()
     declare -A uid_to_user=()
     declare -A sshd_session_pids=()
     declare -A who_online=()
@@ -1538,9 +1781,12 @@ while true; do
         session_pids[$_u]="${session_pids[$_u]}$_pid "
     done < <(ps -eo uid=,pid= --no-headers 2>/dev/null)
 
-    while read -r passwd_user passwd_status _rest; do
-        [[ "$passwd_status" == "L" ]] && locked_users["$passwd_user"]=1
-    done < <(passwd -Sa 2>/dev/null)
+    if [[ -f "$MANUAL_LOCK_FILE" && ! -L "$MANUAL_LOCK_FILE" ]]; then
+        while IFS= read -r locked_user; do
+            [[ -n "$locked_user" && -n "${managed_user_lookup[$locked_user]+x}" ]] || continue
+            manual_locked_users["$locked_user"]=1
+        done < "$MANUAL_LOCK_FILE"
+    fi
 
     if [[ -f "/etc/tdztunnel/banners_enabled" ]]; then
         mkdir -p "$BANNER_DIR"
@@ -1605,7 +1851,7 @@ while true; do
         fi
 
         user_locked=false
-        if [[ -n "${locked_users[$user]+x}" ]]; then
+        if [[ -n "${manual_locked_users[$user]+x}" ]]; then
             user_locked=true
         fi
 
@@ -1690,13 +1936,28 @@ while true; do
             write_banner_if_changed "$user" "$banner_content"
         fi
 
-        # --- Lock expired users and skip ---
+        # --- Enforce reason-specific access policy and skip denied users. ---
+        # Password hashes stay usable so correct credentials can reach the PAM
+        # account hook and receive the Expired / Traffic Ended / Locked banner.
+        # Wrong passwords never reach that hook and never create a session.
         if $is_expired; then
-            if ! $user_locked; then
-                usermod -L "$user" &>/dev/null
+            if [[ "$local_user_online" == true ]]; then
                 killall -u "$user" -9 &>/dev/null
                 [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" expired >/dev/null 2>&1 || true
-                locked_users["$user"]=1
+            fi
+            continue
+        fi
+        if $traffic_exceeded; then
+            if [[ "$local_user_online" == true ]]; then
+                killall -u "$user" -9 &>/dev/null
+                [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" quota >/dev/null 2>&1 || true
+            fi
+            continue
+        fi
+        if $user_locked; then
+            if [[ "$local_user_online" == true ]]; then
+                killall -u "$user" -9 &>/dev/null
+                [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" locked >/dev/null 2>&1 || true
             fi
             continue
         fi
@@ -1790,11 +2051,9 @@ while true; do
         if ! quota_is_unlimited "$bandwidth_gb"; then
             quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
             if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( new_total >= quota_bytes )); then
-                if ! $user_locked; then
-                    usermod -L "$user" &>/dev/null
+                if [[ "$local_user_online" == true ]]; then
                     killall -u "$user" -9 &>/dev/null
                     [[ -x "$OVPN_RUNTIME" ]] && "$OVPN_RUNTIME" kill-user "$user" quota >/dev/null 2>&1 || true
-                    locked_users["$user"]=1
                 fi
             fi
         fi
@@ -1842,7 +2101,11 @@ EOF
 
 setup_ssh_auth_session_hook() {
     local hook_line tmp_file registry_security
-    hook_line="account optional pam_exec.so quiet stdout type=account $SSH_AUTH_SESSION_HELPER"
+    # This runs only after OpenSSH accepts an authentication method.  A
+    # requisite account hook can therefore show the private account banner to
+    # the rightful user, then deny expiry/quota/manual-lock policy before the
+    # normal PAM account stack continues.  Wrong passwords never reach it.
+    hook_line="account requisite pam_exec.so quiet stdout type=account $SSH_AUTH_SESSION_HELPER"
 
     [[ -x "$SSH_AUTH_SESSION_HELPER" && -f "$SSH_PAM_CONFIG" ]] || return 1
     if [[ -L "$SSH_AUTH_SESSION_DIR" || ( -e "$SSH_AUTH_SESSION_DIR" && ! -d "$SSH_AUTH_SESSION_DIR" ) ]]; then
@@ -1857,12 +2120,25 @@ setup_ssh_auth_session_hook() {
              -v begin="$SSH_PAM_HOOK_BEGIN" -v end="$SSH_PAM_HOOK_END" '
         $0 == begin || $0 == end || index($0, helper) { next }
         { print }
-    ' "$SSH_PAM_CONFIG" > "$tmp_file"; then
+    ' "$SSH_PAM_CONFIG" > "${tmp_file}.body"; then
+        rm -f "$tmp_file" "${tmp_file}.body"
+        return 1
+    fi
+    # Put TDZ before common-account/pam_unix so expired Linux shadow metadata
+    # cannot suppress the reason-specific TDZ banner first.
+    if ! {
+        printf '%s\n%s\n%s\n' \
+            "$SSH_PAM_HOOK_BEGIN" "$hook_line" "$SSH_PAM_HOOK_END"
+        cat "${tmp_file}.body"
+    } > "$tmp_file"; then
+        rm -f "$tmp_file" "${tmp_file}.body"
+        return 1
+    fi
+    rm -f "${tmp_file}.body"
+    if ! grep -Fxq "$hook_line" "$tmp_file"; then
         rm -f "$tmp_file"
         return 1
     fi
-    printf '\n%s\n%s\n%s\n' \
-        "$SSH_PAM_HOOK_BEGIN" "$hook_line" "$SSH_PAM_HOOK_END" >> "$tmp_file"
     chmod --reference="$SSH_PAM_CONFIG" "$tmp_file" 2>/dev/null || chmod 644 "$tmp_file"
     chown --reference="$SSH_PAM_CONFIG" "$tmp_file" 2>/dev/null || true
     if cmp -s "$tmp_file" "$SSH_PAM_CONFIG" 2>/dev/null; then
@@ -1894,8 +2170,9 @@ remove_ssh_auth_session_hook() {
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-20.2"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-20.4"
     cleanup_legacy_bandwidth_runtime
+    migrate_legacy_shadow_locks >/dev/null 2>&1 || true
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
     harden_sshd_for_tunnel_stability
@@ -1949,6 +2226,8 @@ setup_trial_cleanup_script() {
 # Usage (rename-safe): tdztunnel-trial-cleanup.sh --uid <uid> <expiry_epoch>
 DB_FILE="/etc/tdztunnel/users.db"
 BW_DIR="/etc/tdztunnel/bandwidth"
+MANUAL_LOCK_FILE="/etc/tdztunnel/manual-locks.db"
+MANUAL_LOCK_MUTEX="/etc/tdztunnel/.manual-locks.lock"
 
 expected_expiry_epoch=""
 if [[ "$1" == "--uid" ]]; then
@@ -1989,6 +2268,26 @@ sed -i "/^${username}:/d" "$DB_FILE"
 # Remove bandwidth tracking
 rm -f "$BW_DIR/${username}.usage"
 rm -rf "$BW_DIR/pidtrack/${username}"
+
+# Remove manual policy for the deleted identity so a later account that
+# reuses this username can never inherit stale lock state.
+if [[ -f "$MANUAL_LOCK_FILE" && ! -L "$MANUAL_LOCK_FILE" ]]; then
+    touch "$MANUAL_LOCK_MUTEX" 2>/dev/null || true
+    exec 9>"$MANUAL_LOCK_MUTEX"
+    if flock -x 9; then
+        lock_tmp=$(mktemp "${MANUAL_LOCK_FILE}.tmp.XXXXXX")
+        if awk -v target="$username" '$0 != target { print }' \
+            "$MANUAL_LOCK_FILE" > "$lock_tmp"; then
+            chmod 600 "$lock_tmp"
+            chown root:root "$lock_tmp" 2>/dev/null || true
+            mv -f "$lock_tmp" "$MANUAL_LOCK_FILE"
+        else
+            rm -f "$lock_tmp"
+        fi
+        flock -u 9
+    fi
+    exec 9>&-
+fi
 TREOF
     chmod +x "$TRIAL_CLEANUP_SCRIPT"
 }
@@ -2074,7 +2373,9 @@ provision_dynamic_banners_for_new_users() {
     # A deleted username may leave an old banner behind. Never treat that
     # stale file as proof that a newly-created account is ready.
     for user in "${users[@]}"; do
-        [[ -n "$user" ]] && rm -f "$DB_DIR/banners/${user}.txt" 2>/dev/null
+        [[ -n "$user" ]] || continue
+        tdz_set_manual_lock_state "$user" unlocked || return 1
+        rm -f "$DB_DIR/banners/${user}.txt" 2>/dev/null
     done
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled "${users[@]}"
@@ -2244,7 +2545,7 @@ _select_user_interface() {
     if [ ${#all_users[@]} -ge 15 ]; then
         read -r -p "$(echo -e "${C_PROMPT}  Search username (Enter = all): ${C_RESET}")" search_term
         if [[ -n "$search_term" ]]; then
-            mapfile -t users < <(printf "%s\n" "${all_users[@]}" | grep -i "$search_term")
+            mapfile -t users < <(printf "%s\n" "${all_users[@]}" | grep -iF -- "$search_term")
         else
             users=("${all_users[@]}")
         fi
@@ -2293,26 +2594,16 @@ _select_user_interface() {
 
 tdz_account_lock_state() {
     local username="$1"
-    local passwd_state=""
 
     if ! id "$username" &>/dev/null; then
         printf '%s\n' "missing"
         return 1
     fi
-
-    passwd_state=$(passwd -S "$username" 2>/dev/null | awk 'NR == 1 { print $2 }')
-    case "$passwd_state" in
-        L|LK)
-            printf '%s\n' "locked"
-            ;;
-        P|NP)
-            printf '%s\n' "unlocked"
-            ;;
-        *)
-            printf '%s\n' "unknown"
-            return 1
-            ;;
-    esac
+    if tdz_user_is_manually_locked "$username"; then
+        printf '%s\n' "locked"
+    else
+        printf '%s\n' "unlocked"
+    fi
 }
 
 _select_multi_user_interface() {
@@ -2390,7 +2681,7 @@ _select_multi_user_interface() {
     if [ ${#all_users[@]} -ge 15 ]; then
         read -r -p "$(echo -e "${C_PROMPT}  Search username (Enter = all): ${C_RESET}")" search_term
         if [[ -n "$search_term" ]]; then
-            mapfile -t users < <(printf "%s\n" "${all_users[@]}" | grep -i "$search_term")
+            mapfile -t users < <(printf "%s\n" "${all_users[@]}" | grep -iF -- "$search_term")
         else
             users=("${all_users[@]}")
         fi
@@ -2481,16 +2772,22 @@ _select_multi_user_interface() {
         done
         
         if [[ "$valid" == true && ( ${#selected_indices[@]} -gt 0 || ${#selected_names[@]} -gt 0 ) ]]; then
-            mapfile -t unique_indices < <(printf "%s\n" "${selected_indices[@]}" | sort -u -n)
-            for idx in "${unique_indices[@]}"; do
-                SELECTED_USERS+=("${users[$((idx-1))]}")
-            done
-            mapfile -t unique_names < <(printf "%s\n" "${selected_names[@]}" | sort -u)
-            for username in "${unique_names[@]}"; do
-                if ! printf "%s\n" "${SELECTED_USERS[@]}" | grep -Fxq "$username"; then
-                    SELECTED_USERS+=("$username")
-                fi
-            done
+            if (( ${#selected_indices[@]} > 0 )); then
+                mapfile -t unique_indices < <(printf "%s\n" "${selected_indices[@]}" | sort -u -n)
+                for idx in "${unique_indices[@]}"; do
+                    [[ "$idx" =~ ^[0-9]+$ ]] || continue
+                    SELECTED_USERS+=("${users[$((idx-1))]}")
+                done
+            fi
+            if (( ${#selected_names[@]} > 0 )); then
+                mapfile -t unique_names < <(printf "%s\n" "${selected_names[@]}" | sort -u)
+                for username in "${unique_names[@]}"; do
+                    [[ -n "$username" ]] || continue
+                    if ! printf "%s\n" "${SELECTED_USERS[@]}" | grep -Fxq "$username"; then
+                        SELECTED_USERS+=("$username")
+                    fi
+                done
+            fi
             return
         else
             echo -e "${C_RED}[ERROR] Invalid selection. Please check your numbers or usernames.${C_RESET}"
@@ -2504,17 +2801,16 @@ _select_multi_user_interface() {
 get_user_status() {
     local username="$1"
     if ! id "$username" &>/dev/null; then echo -e "${C_RED}Not Found${C_RESET}"; return; fi
-    local user_line expiry_date account_type
-    user_line=$(grep "^$username:" "$DB_FILE")
-    expiry_date=$(echo "$user_line" | cut -d: -f3)
-    account_type=$(echo "$user_line" | cut -d: -f6)
-    if passwd -S "$username" 2>/dev/null | grep -q " L "; then echo -e "${C_YELLOW}Locked${C_RESET}"; return; fi
-    if [[ "$account_type" == "pending" ]]; then echo -e "${C_CYAN}Waiting for First Use${C_RESET}"; return; fi
-    if [[ "$expiry_date" == "Never" || -z "$expiry_date" ]]; then echo -e "${C_GREEN}Active${C_RESET}"; return; fi
-    local expiry_ts=$(date -d "$expiry_date 23:59:59" +%s 2>/dev/null || echo 0)
-    local current_ts=$(date +%s)
-    if (( expiry_ts > 0 && expiry_ts < current_ts )); then echo -e "${C_RED}Expired${C_RESET}"; return; fi
-    echo -e "${C_GREEN}Active${C_RESET}"
+    local reason
+    reason=$(tdz_user_policy_reason "$username" 2>/dev/null || true)
+    case "$reason" in
+        manual_lock) echo -e "${C_YELLOW}Manually Locked${C_RESET}" ;;
+        expired) echo -e "${C_RED}Expired${C_RESET}" ;;
+        quota) echo -e "${C_RED}Quota Ended${C_RESET}" ;;
+        pending) echo -e "${C_CYAN}Waiting for First Use${C_RESET}" ;;
+        active) echo -e "${C_GREEN}Active${C_RESET}" ;;
+        *) echo -e "${C_RED}Unknown${C_RESET}" ;;
+    esac
 }
 
 is_valid_tdztunnel_username() {
@@ -2559,6 +2855,7 @@ rename_tdztunnel_user() {
     local primary_group new_home move_home=false
     local db_tmp="" db_backup="" banner_tmp=""
     local limiter_was_active=false group_renamed=false usage_moved=false banner_created=false
+    local manual_lock_was_set=false manual_lock_moved=false
     local confirm active_process_count
 
     if ! db_has_user "$old_username" || ! id "$old_username" >/dev/null 2>&1; then
@@ -2613,8 +2910,10 @@ rename_tdztunnel_user() {
             return 1
         fi
     fi
+    tdz_user_is_manually_locked "$old_username" && manual_lock_was_set=true
     if [[ -e "$BANDWIDTH_DIR/${new_username}.usage" ||
-          -e "$DB_DIR/banners/${new_username}.txt" ]]; then
+          -e "$DB_DIR/banners/${new_username}.txt" ]] ||
+       tdz_user_is_manually_locked "$new_username"; then
         echo -e "\n${C_RED}[ERROR] Stored data for '${new_username}' already exists; rename cancelled to prevent overwriting it.${C_RESET}"
         return 1
     fi
@@ -2775,9 +3074,24 @@ rename_tdztunnel_user() {
         return 1
     fi
 
+    if $manual_lock_was_set; then
+        if ! tdz_move_manual_lock_state "$old_username" "$new_username"; then
+            mv -f "$db_backup" "$DB_FILE" 2>/dev/null
+            rollback_tdztunnel_user_rename "$old_username" "$new_username" \
+                "$old_home" "$new_home" "$move_home" "$group_renamed" "$usage_moved" "$banner_created"
+            $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
+            echo -e "\n${C_RED}[ERROR] Manual-lock policy migration failed; the original username was restored.${C_RESET}"
+            return 1
+        fi
+        manual_lock_moved=true
+    fi
+
     if ! id "$new_username" >/dev/null 2>&1 || id "$old_username" >/dev/null 2>&1 ||
-       ! db_has_user "$new_username" || db_has_user "$old_username"; then
+       ! db_has_user "$new_username" || db_has_user "$old_username" ||
+       { $manual_lock_was_set && ! tdz_user_is_manually_locked "$new_username"; } ||
+       tdz_user_is_manually_locked "$old_username"; then
         mv -f "$db_backup" "$DB_FILE" 2>/dev/null
+        $manual_lock_moved && tdz_move_manual_lock_state "$new_username" "$old_username" >/dev/null 2>&1 || true
         rollback_tdztunnel_user_rename "$old_username" "$new_username" \
             "$old_home" "$new_home" "$move_home" "$group_renamed" "$usage_moved" "$banner_created"
         $limiter_was_active && systemctl start tdztunnel-limiter >/dev/null 2>&1 || true
@@ -2875,6 +3189,10 @@ create_user() {
         activation_display="After First Use"
     fi
     ensure_tdztunnel_system_group
+    if ! tdz_set_manual_lock_state "$username" unlocked; then
+        tdz_message ERROR "Could not prepare a clean account policy for '$username'."
+        return
+    fi
     if [[ "$adopt_existing" == "true" ]]; then
         usermod -s /usr/sbin/nologin "$username" &>/dev/null
     else
@@ -3059,19 +3377,9 @@ edit_user() {
                     sed -i "s/^$username:.*/$username:$cur_pass:$cur_expiry:$cur_limit:$new_bw$cur_metadata_suffix/" "$DB_FILE"
                    local bw_msg; bw_msg=$(tdz_format_quota_gb "$new_bw")
                    echo -e "\n${C_GREEN}[OK] Bandwidth limit for '$username' set to ${C_YELLOW}$bw_msg${C_RESET}."
-                   # Unlock user if they were locked due to bandwidth
-                   if tdz_quota_is_unlimited "$new_bw" || [[ -f "$BANDWIDTH_DIR/${username}.usage" ]]; then
-                       local used_bytes; used_bytes=$(cat "$BANDWIDTH_DIR/${username}.usage" 2>/dev/null || echo 0)
-                       local new_quota_bytes; new_quota_bytes=$(awk "BEGIN {printf \"%.0f\", $new_bw * 1073741824}")
-                       if tdz_quota_is_unlimited "$new_bw" || [[ "$used_bytes" -lt "$new_quota_bytes" ]]; then
-                           usermod -U "$username" &>/dev/null
-                       fi
-                   fi
                else echo -e "\n${C_RED}[ERROR] Invalid bandwidth value.${C_RESET}"; fi ;;
             6)
                echo "0" > "$BANDWIDTH_DIR/${username}.usage"
-               # Unlock user if they were locked due to bandwidth
-               usermod -U "$username" &>/dev/null
                echo -e "\n${C_GREEN}[OK] Bandwidth counter for '$username' has been reset to 0.${C_RESET}"
                ;;
             0) return ;;
@@ -3103,7 +3411,7 @@ lock_user() {
             continue
         fi
 
-        if usermod -L "$u"; then
+        if tdz_set_manual_lock_state "$u" locked; then
             if declare -F tdz_openvpn_kill_user >/dev/null 2>&1; then
                 tdz_openvpn_kill_user "$u"
             fi
@@ -3142,7 +3450,7 @@ unlock_user() {
             continue
         fi
 
-        if usermod -U "$u"; then
+        if tdz_set_manual_lock_state "$u" unlocked; then
             current_state=$(tdz_account_lock_state "$u" 2>/dev/null || true)
             if [[ "$current_state" == "unlocked" ]]; then
                 echo -e " [OK] ${C_YELLOW}$u${C_RESET} unlocked."
@@ -3155,78 +3463,60 @@ unlock_user() {
     done
 }
 
-list_users() {
-    clear; show_banner
-    local user_total=0
-    if [[ -s "$DB_FILE" ]]; then
-        user_total=$(awk -F: 'NF && $1 !~ /^#/ { count++ } END { print count + 0 }' "$DB_FILE")
-    fi
-
-    echo
-    tdz_box_top
-    tdz_box_header "MANAGED USERS"
-    tdz_box_divider
-
-    if (( user_total == 0 )); then
-        tdz_row "${C_YELLOW}[INFO] No users are currently being managed.${C_RESET}"
-        tdz_box_bot
-        return
-    fi
-
-    local current_ts
-    current_ts=$(date +%s)
+list_users_view() {
+    local view_filter="$1" view_title="$2"
     local -A system_user_lookup=()
-    local -A locked_user_lookup=()
     local user_count=0 active_count=0 pending_count=0 attention_count=0
     local first_account=true
 
+    clear; show_banner
     while IFS=: read -r system_user _rest; do
         [[ -n "$system_user" ]] && system_user_lookup["$system_user"]=1
     done < /etc/passwd
-
-    while read -r passwd_user passwd_status _rest; do
-        [[ -z "$passwd_user" ]] && continue
-        if [[ "$passwd_status" == "L" ]]; then
-            locked_user_lookup["$passwd_user"]=1
-        fi
-    done < <(passwd -Sa 2>/dev/null)
+    SSH_SESSION_CACHE_TS=0
     refresh_ssh_session_cache
+
+    echo
+    tdz_box_top
+    tdz_box_header "$view_title"
+    tdz_box_divider
 
     while IFS=: read -r user _password expiry limit bandwidth_gb account_type metadata_value _rest; do
         [[ -n "$user" && "$user" != \#* ]] || continue
-        user_count=$((user_count + 1))
+        local reason online_count manual_locked=false
+        reason=$(tdz_user_policy_reason "$user" 2>/dev/null || true)
+        online_count="${SSH_SESSION_COUNTS[$user]:-0}"
+        [[ "$online_count" =~ ^[0-9]+$ ]] || online_count=0
+        tdz_user_is_manually_locked "$user" && manual_locked=true
 
-        local online_count="${SSH_SESSION_COUNTS[$user]:-0}"
+        case "$view_filter" in
+            all) ;;
+            expired) [[ "$reason" == "expired" ]] || continue ;;
+            quota) [[ "$reason" == "quota" ]] || continue ;;
+            online) (( online_count > 0 )) || continue ;;
+            *) continue ;;
+        esac
+
+        user_count=$((user_count + 1))
         local connection_string="$online_count/${limit:-1}"
         local plain_status="ACTIVE" status_color="$C_GREEN"
-        local quota_exceeded=false
-        local pending_activation=false
-        local used_bytes=0 data_display
+        local pending_activation=false used_bytes=0 data_display
         local expiry_display expiry_check=0 time_left="Unknown"
         local account_number display_user
 
-        if ! [[ "$bandwidth_gb" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-            bandwidth_gb="0"
-        fi
+        [[ "$bandwidth_gb" =~ ^[0-9]+([.][0-9]+)?$ ]] || bandwidth_gb=0
         if [[ -f "$BANDWIDTH_DIR/${user}.usage" ]]; then
-            used_bytes=$(cat "$BANDWIDTH_DIR/${user}.usage" 2>/dev/null)
+            read -r used_bytes < "$BANDWIDTH_DIR/${user}.usage" || used_bytes=0
             [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
         fi
         data_display=$(tdz_format_bandwidth_usage "$used_bytes" "$bandwidth_gb")
-        if ! tdz_quota_is_unlimited "$bandwidth_gb"; then
-            local quota_bytes
-            quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
-            if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( used_bytes >= quota_bytes )); then
-                quota_exceeded=true
-            fi
-        fi
 
         if [[ "$account_type" == "pending" && "$metadata_value" =~ ^[1-9][0-9]*$ ]]; then
             pending_activation=true
             expiry_display="First use"
             time_left="${metadata_value}d after use"
         elif [[ "$account_type" == "trial" && "$metadata_value" =~ ^[0-9]+$ ]] &&
-           (( metadata_value > 0 )); then
+             (( metadata_value > 0 )); then
             expiry_display=$(tdz_format_epoch_datetime_display "$metadata_value")
             expiry_check=$metadata_value
         elif [[ -n "$expiry" && "$expiry" != "Never" ]]; then
@@ -3235,7 +3525,6 @@ list_users() {
         else
             expiry_display="${expiry:-Unknown}"
         fi
-
         if $pending_activation; then
             :
         elif [[ "$expiry" == "Never" || -z "$expiry" ]]; then
@@ -3247,35 +3536,32 @@ list_users() {
         if [[ -z "${system_user_lookup[$user]+x}" ]]; then
             plain_status="MISSING"
             status_color="$C_RED"
-        elif [[ "$expiry_check" =~ ^[0-9]+$ ]] &&
-             (( expiry_check > 0 && expiry_check < current_ts )); then
-            plain_status="EXPIRED"
-            status_color="$C_RED"
-        elif $pending_activation; then
-            plain_status="PENDING"
-            status_color="$C_CYAN"
-        fi
-
-        if [[ ( "$plain_status" == "ACTIVE" || "$plain_status" == "PENDING" ) && "$quota_exceeded" == true ]]; then
-            if [[ -n "${locked_user_lookup[$user]+x}" ]]; then
-                plain_status="BW LOCKED"
-            else
-                plain_status="QUOTA EXCEEDED"
-            fi
-            status_color="$C_RED"
-        elif [[ ( "$plain_status" == "ACTIVE" || "$plain_status" == "PENDING" ) && -n "${locked_user_lookup[$user]+x}" ]]; then
-            plain_status="LOCKED"
-            status_color="$C_YELLOW"
-        fi
-
-        if [[ "$plain_status" == "ACTIVE" ]]; then
-            active_count=$((active_count + 1))
-        elif [[ "$plain_status" == "PENDING" ]]; then
-            pending_count=$((pending_count + 1))
         else
-            attention_count=$((attention_count + 1))
+            case "$reason" in
+                expired) plain_status="EXPIRED"; status_color="$C_RED" ;;
+                quota) plain_status="QUOTA ENDED"; status_color="$C_RED" ;;
+                manual_lock) plain_status="MANUAL LOCK"; status_color="$C_YELLOW" ;;
+                pending) plain_status="PENDING"; status_color="$C_CYAN" ;;
+                active) plain_status="ACTIVE"; status_color="$C_GREEN" ;;
+                *) plain_status="POLICY ERROR"; status_color="$C_RED" ;;
+            esac
+            if $manual_locked && [[ "$reason" != "manual_lock" ]]; then
+                case "$plain_status" in
+                    EXPIRED) plain_status="EXPIRED+LOCK" ;;
+                    "QUOTA ENDED") plain_status="QUOTA+LOCK" ;;
+                esac
+            fi
         fi
 
+        if [[ -z "${system_user_lookup[$user]+x}" ]]; then
+            attention_count=$((attention_count + 1))
+        else
+            case "$reason" in
+                active) active_count=$((active_count + 1)) ;;
+                pending) pending_count=$((pending_count + 1)) ;;
+                *) attention_count=$((attention_count + 1)) ;;
+            esac
+        fi
         if [[ "$first_account" != true ]]; then
             tdz_box_divider
         fi
@@ -3283,9 +3569,7 @@ list_users() {
 
         printf -v account_number "%02d" "$user_count"
         display_user="$user"
-        if (( ${#display_user} > 22 )); then
-            display_user="${display_user:0:19}..."
-        fi
+        (( ${#display_user} > 22 )) && display_user="${display_user:0:19}..."
         expiry_display=$(_tdz_fit "$expiry_display" 20)
         time_left=$(_tdz_fit "$time_left" 20)
         connection_string=$(_tdz_fit "$connection_string" 20)
@@ -3297,13 +3581,50 @@ list_users() {
         tdz_kv2 "CONNS" "$connection_string" "DATA" "$data_display"
     done < <(sort "$DB_FILE")
 
-    tdz_box_divider
-    tdz_row2 "${C_GRAY}TOTAL${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
-        "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_CYAN}PENDING ${pending_count}${C_RESET}"
-    if (( attention_count > 0 )); then
-        tdz_row2 "" "${C_YELLOW}ATTENTION ${attention_count}${C_RESET}"
+    if (( user_count == 0 )); then
+        case "$view_filter" in
+            expired) tdz_row "${C_GREEN}[OK] No expired users found.${C_RESET}" ;;
+            quota) tdz_row "${C_GREEN}[OK] No users have exhausted their quota.${C_RESET}" ;;
+            online) tdz_row "${C_YELLOW}[INFO] No managed users are online now.${C_RESET}" ;;
+            *) tdz_row "${C_YELLOW}[INFO] No users are currently being managed.${C_RESET}" ;;
+        esac
+        tdz_box_bot
+        return
     fi
+
+    tdz_box_divider
+    tdz_row2 "${C_GRAY}SHOWN${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
+        "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_CYAN}PENDING ${pending_count}${C_RESET}"
+    (( attention_count > 0 )) && tdz_row2 "" "${C_YELLOW}ATTENTION ${attention_count}${C_RESET}"
     tdz_box_bot
+}
+
+list_users() {
+    while true; do
+        clear; show_banner
+        echo
+        tdz_box_top
+        tdz_box_header "LIST USERS"
+        tdz_box_divider
+        tdz_menu1 "[ 1]" "All Managed Users"
+        tdz_menu1 "[ 2]" "Expired Users"
+        tdz_menu1 "[ 3]" "Quota Ended Users"
+        tdz_menu1 "[ 4]" "Online Users"
+        tdz_box_divider
+        tdz_menu1 "[ 0]" "Return"
+        tdz_box_bot
+        echo
+        local list_choice
+        read -r -p "$(echo -e "${C_PROMPT}  Select a list: ${C_RESET}")" list_choice || return
+        case "$list_choice" in
+            1) list_users_view all "ALL MANAGED USERS"; return ;;
+            2) list_users_view expired "EXPIRED USERS"; return ;;
+            3) list_users_view quota "QUOTA ENDED USERS"; return ;;
+            4) list_users_view online "ONLINE USERS"; return ;;
+            0) return ;;
+            *) echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}"; sleep 1 ;;
+        esac
+    done
 }
 
 renew_user() {
@@ -3377,6 +3698,8 @@ cleanup_expired() {
             rm -rf "$BANDWIDTH_DIR/pidtrack/${user}"
             userdel -r "$user" &>/dev/null
             sed -i "/^$user:/d" "$DB_FILE"
+            rm -f "$DB_DIR/banners/${user}.txt" 2>/dev/null
+            tdz_set_manual_lock_state "$user" unlocked >/dev/null 2>&1 || true
         done
         echo -e "\n${C_GREEN}[OK] Expired users have been cleaned up.${C_RESET}"
         invalidate_banner_cache
@@ -3392,10 +3715,11 @@ create_user_backup_archive() {
     if [ ! -d "$DB_DIR" ] || [ ! -s "$DB_FILE" ]; then
         return 2
     fi
-    local temp_dir backup_root locks_file
+    local temp_dir backup_root locks_file manual_locks_file
     temp_dir=$(mktemp -d)
     backup_root="$temp_dir/tdz-user-data"
     locks_file="$backup_root/locks.db"
+    manual_locks_file="$backup_root/manual-locks.db"
 
     mkdir -p "$(dirname "$backup_path")" "$backup_root/bandwidth"
     cp "$DB_FILE" "$backup_root/users.db"
@@ -3404,20 +3728,32 @@ create_user_backup_archive() {
         cp "$BANDWIDTH_DIR"/*.usage "$backup_root/bandwidth/" 2>/dev/null || true
     fi
 
+    if [[ -f "$MANUAL_LOCK_FILE" && ! -L "$MANUAL_LOCK_FILE" ]]; then
+        cp "$MANUAL_LOCK_FILE" "$manual_locks_file"
+    else
+        : > "$manual_locks_file"
+    fi
+    chmod 600 "$manual_locks_file" 2>/dev/null || true
+
+    # Keep locks.db for older restore implementations, but derive it from the
+    # explicit operator policy rather than conflated Linux shadow state.
     : > "$locks_file"
     while IFS=: read -r user _pass _expiry _limit _bandwidth_gb _extra; do
         [[ -z "$user" || "$user" == \#* ]] && continue
         local passwd_status="missing"
         if id "$user" &>/dev/null; then
-            passwd_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
-            [[ "$passwd_status" == "L" ]] && passwd_status="locked" || passwd_status="unlocked"
+            if tdz_user_is_manually_locked "$user"; then
+                passwd_status="locked"
+            else
+                passwd_status="unlocked"
+            fi
         fi
         printf '%s:%s\n' "$user" "$passwd_status" >> "$locks_file"
     done < "$DB_FILE"
 
     cat > "$backup_root/meta.txt" <<EOF
 format=tdz-user-data
-version=1
+version=2
 created_at=$(date '+%Y-%m-%d %H:%M:%S %z')
 EOF
 
@@ -3511,16 +3847,11 @@ restore_user_data() {
         echo -e "    ${C_GRAY}Connections:${C_RESET} ${limit} (account worker)"
     done < "$DB_FILE"
 
-    if [ -f "$restore_root/locks.db" ]; then
-        echo -e "${C_BLUE}Restoring account lock states...${C_RESET}"
-        while IFS=: read -r lock_user lock_state _extra; do
-            [[ -z "$lock_user" || "$lock_user" == \#* ]] && continue
-            id "$lock_user" &>/dev/null || continue
-            case "$lock_state" in
-                locked) usermod -L "$lock_user" 2>/dev/null ;;
-                unlocked) usermod -U "$lock_user" 2>/dev/null ;;
-            esac
-        done < "$restore_root/locks.db"
+    echo -e "${C_BLUE}Restoring manual account lock policy...${C_RESET}"
+    if ! tdz_restore_manual_lock_archive "$restore_root"; then
+        rm -rf "$temp_dir"
+        echo -e "\n${C_RED}[ERROR] Manual lock policy could not be restored safely.${C_RESET}"
+        return
     fi
     rm -rf "$temp_dir"
     echo -e "\n${C_GREEN}[OK] User data restore completed.${C_RESET}"
@@ -3570,6 +3901,8 @@ CONF="/etc/tdztunnel-auto-backup-bot.conf"
 DB_DIR="/etc/tdztunnel"
 DB_FILE="$DB_DIR/users.db"
 BW_DIR="$DB_DIR/bandwidth"
+MANUAL_LOCK_FILE="$DB_DIR/manual-locks.db"
+MANUAL_LOCK_MUTEX="$DB_DIR/.manual-locks.lock"
 BACKUP_DIR="/root/tdztunnel-auto-backups"
 LAST_FILE="$BACKUP_DIR/last-backup.tar.gz"
 LOG_FILE="/var/log/tdztunnel-auto-backup.log"
@@ -3645,31 +3978,113 @@ tg_send_document() {
         "${API}${BOT_TOKEN}/sendDocument" 2>>"$LOG_FILE"
 }
 
+legacy_lock_is_manual() {
+    local username="$1" line _user _password expiry _limit quota account_type metadata _rest
+    local now expiry_epoch used_bytes=0 quota_bytes
+    line=$(awk -F: -v target="$username" '$1 == target { print; exit }' "$DB_FILE")
+    [[ -n "$line" ]] || return 1
+    IFS=: read -r _user _password expiry _limit quota account_type metadata _rest <<< "$line"
+    now=$(date +%s)
+    if [[ "$account_type" == "trial" && "$metadata" =~ ^[0-9]+$ ]] &&
+       (( metadata > 0 && metadata <= now )); then
+        return 1
+    fi
+    if [[ "$account_type" != "pending" && -n "$expiry" && "$expiry" != "Never" ]]; then
+        expiry_epoch=$(date -d "$expiry 23:59:59" +%s 2>/dev/null || echo 0)
+        (( expiry_epoch > 0 && expiry_epoch < now )) && return 1
+    fi
+    [[ "$quota" =~ ^[0-9]+([.][0-9]+)?$ ]] || quota=0
+    if ! awk -v value="$quota" 'BEGIN { exit !(value <= 0) }'; then
+        read -r used_bytes < "$BW_DIR/${username}.usage" 2>/dev/null || used_bytes=0
+        [[ "$used_bytes" =~ ^[0-9]+$ ]] || used_bytes=0
+        quota_bytes=$(awk "BEGIN {printf \"%.0f\", $quota * 1073741824}")
+        (( used_bytes >= quota_bytes )) && return 1
+    fi
+    return 0
+}
+
+restore_manual_lock_policy() {
+    local restore_root="$1" source_file="" legacy=false
+    local username state _extra tmp_file
+    mkdir -p "$DB_DIR"
+    touch "$MANUAL_LOCK_MUTEX" || return 1
+    chmod 600 "$MANUAL_LOCK_MUTEX" 2>/dev/null || true
+    exec 9>"$MANUAL_LOCK_MUTEX" || return 1
+    flock -x 9 || { exec 9>&-; return 1; }
+    tmp_file=$(mktemp "${MANUAL_LOCK_FILE}.tmp.XXXXXX") || {
+        flock -u 9
+        exec 9>&-
+        return 1
+    }
+    if [[ -f "$restore_root/manual-locks.db" && ! -L "$restore_root/manual-locks.db" ]]; then
+        source_file="$restore_root/manual-locks.db"
+    elif [[ -f "$restore_root/locks.db" && ! -L "$restore_root/locks.db" ]]; then
+        source_file="$restore_root/locks.db"
+        legacy=true
+    fi
+    if [[ -n "$source_file" ]]; then
+        while IFS=: read -r username state _extra; do
+            [[ "$username" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ]] || continue
+            awk -F: -v target="$username" '$1 == target { found=1; exit } END { exit !found }' \
+                "$DB_FILE" || continue
+            id "$username" >/dev/null 2>&1 || continue
+            if $legacy; then
+                [[ "$state" == "locked" ]] || continue
+                legacy_lock_is_manual "$username" || continue
+            fi
+            printf '%s\n' "$username" >> "$tmp_file"
+        done < "$source_file"
+    fi
+    LC_ALL=C sort -u -o "$tmp_file" "$tmp_file" || {
+        rm -f "$tmp_file"
+        flock -u 9
+        exec 9>&-
+        return 1
+    }
+    chmod 600 "$tmp_file"
+    chown root:root "$tmp_file" 2>/dev/null || true
+    mv -f "$tmp_file" "$MANUAL_LOCK_FILE"
+    local rc=$?
+    flock -u 9
+    exec 9>&-
+    return "$rc"
+}
+
 create_user_data_archive() {
     local archive="$1"
-    local temp_dir root locks_file
+    local temp_dir root locks_file manual_locks_file
     temp_dir=$(mktemp -d)
     root="$temp_dir/tdz-user-data"
     locks_file="$root/locks.db"
+    manual_locks_file="$root/manual-locks.db"
 
     mkdir -p "$(dirname "$archive")" "$root/bandwidth"
     cp "$DB_FILE" "$root/users.db"
     cp "$BW_DIR"/*.usage "$root/bandwidth/" 2>/dev/null || true
+    if [[ -f "$MANUAL_LOCK_FILE" && ! -L "$MANUAL_LOCK_FILE" ]]; then
+        cp "$MANUAL_LOCK_FILE" "$manual_locks_file"
+    else
+        : > "$manual_locks_file"
+    fi
+    chmod 600 "$manual_locks_file" 2>/dev/null || true
 
     : > "$locks_file"
     while IFS=: read -r user _pass _expiry _limit _bandwidth_gb _extra; do
         [ -z "$user" ] && continue
         state="missing"
         if id "$user" &>/dev/null; then
-            state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
-            [ "$state" = "L" ] && state="locked" || state="unlocked"
+            if grep -Fxq -- "$user" "$MANUAL_LOCK_FILE" 2>/dev/null; then
+                state="locked"
+            else
+                state="unlocked"
+            fi
         fi
         printf '%s:%s\n' "$user" "$state" >> "$locks_file"
     done < "$DB_FILE"
 
     cat > "$root/meta.txt" <<META_EOF
 format=tdz-user-data
-version=1
+version=2
 created_at=$(date '+%Y-%m-%d %H:%M:%S %z')
 META_EOF
 
@@ -3777,15 +4192,10 @@ do_restore() {
         fi
         log_msg "Restored user: $user"
     done < "$DB_FILE"
-    if [ -f "$restore_root/locks.db" ]; then
-        while IFS=: read -r lock_user lock_state _extra; do
-            [ -z "$lock_user" ] && continue
-            id "$lock_user" &>/dev/null || continue
-            case "$lock_state" in
-                locked) usermod -L "$lock_user" 2>/dev/null ;;
-                unlocked) usermod -U "$lock_user" 2>/dev/null ;;
-            esac
-        done < "$restore_root/locks.db"
+    if ! restore_manual_lock_policy "$restore_root"; then
+        tg_send "Restore stopped: manual lock policy could not be restored safely."
+        rm -rf "$temp_dir"
+        return 1
     fi
     systemctl restart tdztunnel-limiter >/dev/null 2>&1 || true
     rm -rf "$temp_dir"
@@ -7684,6 +8094,10 @@ create_trial_account() {
     
     # Create the system user
     ensure_tdztunnel_system_group
+    if ! tdz_set_manual_lock_state "$username" unlocked; then
+        echo -e "\n${C_RED}[ERROR] Could not prepare a clean account policy for '$username'.${C_RESET}"
+        return
+    fi
     useradd -m -s /usr/sbin/nologin "$username"
     usermod -aG "$TDZ_USERS_GROUP" "$username" 2>/dev/null
     echo "$username:$password" | chpasswd
@@ -7778,7 +8192,7 @@ list_trial_accounts() {
 
         local expiry_display time_left online_count connection_string
         local used_bytes=0 bandwidth_display status status_color
-        local expiry_check=0 passwd_state account_number display_user
+        local expiry_check=0 policy_reason account_number display_user
 
         online_count="${SSH_SESSION_COUNTS[$user]:-0}"
         connection_string="${online_count}/${limit:-1}"
@@ -7799,15 +8213,18 @@ list_trial_accounts() {
         fi
         bandwidth_display=$(tdz_format_bandwidth_usage "$used_bytes" "$bandwidth_gb")
 
-        passwd_state=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+        policy_reason=$(tdz_user_policy_reason "$user" 2>/dev/null || true)
         if ! id "$user" >/dev/null 2>&1; then
             status="MISSING"
             status_color="$C_RED"
         elif (( expiry_check > 0 && expiry_check <= now )); then
             status="EXPIRED"
             status_color="$C_RED"
-        elif [[ "$passwd_state" == "L" ]]; then
-            status="LOCKED"
+        elif [[ "$policy_reason" == "quota" ]]; then
+            status="QUOTA ENDED"
+            status_color="$C_RED"
+        elif [[ "$policy_reason" == "manual_lock" ]]; then
+            status="MANUAL LOCK"
             status_color="$C_YELLOW"
         else
             status="ACTIVE"
@@ -7892,7 +8309,7 @@ view_user_bandwidth() {
         printf "]${C_RESET} ${percentage}%%\n"
         
         if [[ "$used_bytes" -ge "$quota_bytes" ]]; then
-            tdz_message WARNING "Bandwidth quota exceeded; the account is locked."
+            tdz_message WARNING "Bandwidth quota ended; new connections are denied until top-up or reset."
         fi
     fi
 }
@@ -7954,6 +8371,10 @@ bulk_create_users() {
         local username="${prefix}${i}"
         if id "$username" &>/dev/null || grep -q "^$username:" "$DB_FILE"; then
             echo -e "${C_RED}  [WARNING] Skipping '$username' — already exists${C_RESET}"
+            continue
+        fi
+        if ! tdz_set_manual_lock_state "$username" unlocked; then
+            echo -e "${C_RED}  [WARNING] Skipping '$username' — policy store unavailable${C_RESET}"
             continue
         fi
         local password=$(head /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 8)

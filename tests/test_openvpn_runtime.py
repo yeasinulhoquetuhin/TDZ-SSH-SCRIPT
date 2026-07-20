@@ -17,6 +17,7 @@ class RuntimeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.db = root / "users.db"
+        self.manual_locks = root / "manual-locks.db"
         self.bw = root / "bandwidth"
         self.ovpn = root / "openvpn"
         (self.ovpn / "run").mkdir(parents=True)
@@ -26,6 +27,7 @@ class RuntimeTests(unittest.TestCase):
                 "TDZ_RUNTIME_TEST_MODE": "1",
                 "TDZ_DB_FILE": str(self.db),
                 "TDZ_BW_DIR": str(self.bw),
+                "TDZ_MANUAL_LOCK_FILE": str(self.manual_locks),
                 "TDZ_OVPN_DIR": str(self.ovpn),
                 "TDZ_OVPN_SESSION_DIR": str(self.bw / "sessions"),
                 "TDZ_USAGE_LOCK": str(self.bw / ".lock"),
@@ -106,6 +108,14 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertNotEqual(locked.returncode, 0)
         self.assertIn("locked", locked.stderr)
+
+        self.manual_locks.write_text("alice\n")
+        locked_from_policy = self.run_runtime(
+            "connect",
+            extra_env={"username": "alice"},
+        )
+        self.assertNotEqual(locked_from_policy.returncode, 0)
+        self.assertIn("locked", locked_from_policy.stderr)
 
     def test_pending_account_activates_atomically(self):
         self.db.write_text("alice:secret:Never:2:5:pending:30\n")
