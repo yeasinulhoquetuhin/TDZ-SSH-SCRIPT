@@ -52,6 +52,9 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             "<br><b>[-] Username:</b> E<br>"
             "<b>[-] Status:</b> Active<br>"
             "<b>[-] Active Session:</b> 0/2<br>"
+            "---------------------------------<br>"
+            '<b>[-] Admin:</b> <a href="https://t.me/TUSTDZ">@TUSTDZ</a><br>'
+            "---------------------------------"
         )
         self.paths.banner_flag.touch()
         self.env = {"PAM_SERVICE": "sshd", "PAM_TYPE": "account", "PAM_USER": "E"}
@@ -316,7 +319,31 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
         denied = self.login(403, 4003)
         self.assertFalse(denied.allowed)
         self.assertEqual(denied.reason, "connection_limit")
-        self.assertIn("Connection Limit Reached", denied.message)
+        self.assertIn("Status:</b> Session Full", denied.message)
+        self.assertNotIn("Connection Limit Reached", denied.message)
+        self.assertIn(auth_session.CONNECTION_LIMIT_MESSAGE, denied.message)
+        self.assertIn("Please disconnect another device", denied.message)
+        self.assertIn("your connection limit.", denied.message)
+        self.assertIn(
+            '<a href="https://t.me/TUSTDZ">@TUSTDZ</a>'
+            '<font color="red"> to increase',
+            denied.message,
+        )
+        self.assertEqual(
+            denied.message.count(auth_session.CONNECTION_LIMIT_MESSAGE), 1
+        )
+        self.assertLess(
+            denied.message.index("<b>[-] Active Session:</b>"),
+            denied.message.index(auth_session.CONNECTION_LIMIT_MESSAGE),
+        )
+        self.assertLess(
+            denied.message.index(auth_session.CONNECTION_LIMIT_MESSAGE),
+            denied.message.index("<b>[-] Admin:</b>"),
+        )
+        reinjected = auth_session._add_connection_limit_message(denied.message)
+        self.assertEqual(
+            reinjected.count(auth_session.CONNECTION_LIMIT_MESSAGE), 1
+        )
         self.assertEqual(
             auth_session.read_denial_guard(self.paths, "E"),
             "connection_limit",
@@ -337,6 +364,32 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
         counts, pids = auth_session.prune_and_count_markers(self.paths, {"E"})
         self.assertEqual(counts["E"], 2)
         self.assertEqual(pids["E"], (401, 402))
+
+    def test_connection_limit_missing_banner_has_short_fallback_guidance(self):
+        (self.paths.banner_dir / "E.txt").unlink()
+        message = auth_session.render_banner(
+            self.paths,
+            "E",
+            total=2,
+            limit=2,
+            reason="connection_limit",
+        )
+        self.assertIn("Status:</b> Session Full", message)
+        self.assertIn(auth_session.CONNECTION_LIMIT_MESSAGE, message)
+        self.assertIn("Or contact the admin to increase", message)
+        self.assertNotIn("Connection Limit Reached", message)
+
+    def test_connection_limit_copy_is_not_added_to_other_banner_states(self):
+        for reason in ("active", "expired", "quota", "manual_lock"):
+            with self.subTest(reason=reason):
+                message = auth_session.render_banner(
+                    self.paths,
+                    "E",
+                    total=1,
+                    limit=2,
+                    reason=reason,
+                )
+                self.assertNotIn(auth_session.CONNECTION_LIMIT_MESSAGE, message)
 
     def test_connection_limit_retry_guard_clears_as_soon_as_a_slot_opens(self):
         self.login(411, 4101)

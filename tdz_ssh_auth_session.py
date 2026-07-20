@@ -46,12 +46,20 @@ SESSION_TEXT = re.compile(
     r"(<b>\[-\] Active Session:</b>\s*)[0-9]+/[0-9]+"
 )
 STATUS_TEXT = re.compile(r"(<b>\[-\] Status:</b>\s*)[^<]*(<br>)")
+ADMIN_SECTION_TEXT = re.compile(
+    r"(?P<separator>-{3,}<br>)"
+    r"<b>\[-\] Admin:</b>\s*"
+    r'(?P<link><a href="https://t\.me/[A-Za-z0-9_]+">'
+    r"@[A-Za-z0-9_]+</a>)<br>"
+)
+BANNER_SEPARATOR = "---------------------------------"
+CONNECTION_LIMIT_MESSAGE = "Oops! Your session limit has been reached."
 
 POLICY_STATUS = {
     "expired": "Expired",
     "quota": "Traffic Ended",
     "manual_lock": "Locked",
-    "connection_limit": "Connection Limit Reached",
+    "connection_limit": "Session Full",
     "session_error": "Session Verification Failed",
     "policy_error": "Policy Check Failed",
 }
@@ -577,14 +585,66 @@ def _minimal_policy_banner(
     username: str, total: int, limit: int, reason: str
 ) -> str:
     status = POLICY_STATUS.get(reason, "Access Denied")
-    return (
-        "<br><br>---------------------------------<br>"
+    banner = (
+        f"<br><br>{BANNER_SEPARATOR}<br>"
         "<b>[!] ACCOUNT • DETAILS [!]</b><br>"
-        "---------------------------------<br>"
+        f"{BANNER_SEPARATOR}<br>"
         f"<b>[-] Username:</b> {username}<br>"
         f"<b>[-] Status:</b> {status}<br>"
         f"<b>[-] Active Session:</b> {max(0, total)}/{max(1, limit)}<br>"
-        "---------------------------------"
+    )
+    if reason == "connection_limit":
+        banner += (
+            f"{BANNER_SEPARATOR}<br>"
+            f"{_connection_limit_message()}<br>"
+        )
+    return banner + BANNER_SEPARATOR
+
+
+def _connection_limit_message(admin_link: str = "") -> str:
+    if admin_link:
+        return (
+            f'<font color="red">{CONNECTION_LIMIT_MESSAGE}<br>'
+            "Please disconnect another device<br>"
+            "Or contact </font>"
+            f"{admin_link}"
+            '<font color="red"> to increase<br>'
+            "your connection limit.</font>"
+        )
+    return (
+        f'<font color="red">{CONNECTION_LIMIT_MESSAGE}<br>'
+        "Please disconnect another device<br>"
+        "Or contact the admin to increase<br>"
+        "your connection limit.</font>"
+    )
+
+
+def _add_connection_limit_message(rendered: str) -> str:
+    if CONNECTION_LIMIT_MESSAGE.casefold() in rendered.casefold():
+        return rendered
+    admin_section = ADMIN_SECTION_TEXT.search(rendered)
+    if admin_section is not None:
+        message = _connection_limit_message(admin_section.group("link"))
+        insertion = (
+            admin_section.group("separator")
+            + message
+            + "<br>"
+            + admin_section.group(0)
+        )
+        return (
+            rendered[: admin_section.start()]
+            + insertion
+            + rendered[admin_section.end() :]
+        )
+    separator = "" if rendered.endswith("<br>") else "<br>"
+    return (
+        rendered
+        + separator
+        + BANNER_SEPARATOR
+        + "<br>"
+        + _connection_limit_message()
+        + "<br>"
+        + BANNER_SEPARATOR
     )
 
 
@@ -615,6 +675,8 @@ def render_banner(
         )
         if status_substitutions != 1:
             return _minimal_policy_banner(username, total, limit, reason)
+    if reason == "connection_limit":
+        rendered = _add_connection_limit_message(rendered)
     # pam_exec turns each physical output line into a separate PAM message.
     # The TDZ HTML already uses <br>, so send one atomic informational message.
     return rendered.replace("\r", "").replace("\n", "")

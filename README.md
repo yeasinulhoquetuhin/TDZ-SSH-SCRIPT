@@ -108,7 +108,7 @@ Account status, expiration, remaining validity, active connections, and compact 
   - **Expired** — renewal prompt with contact link
   - **Traffic Ended** — data top-up prompt with contact link
   - **Locked** — unlock request message with contact link
-  - **Connection Limit Reached** — the rejected extra connection is shown without entering the live count
+  - **Session Full** — the rejected extra connection receives clear guidance without entering the live count
 - **DarkTunnel optimized** — HTML banners render perfectly in DarkTunnel and similar SSH client apps
 - **Authenticated live banners** — account details are delivered only after successful SSH authentication; failed attempts receive no private account data and never enter the session count
 - **Immediate session lifecycle** — the successful connection is included in its own banner, while PID plus process-start-time tracking removes disconnected sessions and rejects stale PID reuse
