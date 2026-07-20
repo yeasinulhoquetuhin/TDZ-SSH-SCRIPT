@@ -218,6 +218,16 @@ tdz_openvpn_requested_ports_valid() {
     done
 }
 
+tdz_openvpn_ports_match_layout() {
+    (( $# == 6 )) || return 1
+    [[ "$1" == "$TDZ_OVPN_PORTAL_PORT" &&
+       "$2" == "$TDZ_OVPN_SSL_PORT" &&
+       "$3" == "$TDZ_OVPN_TCP_PORT" &&
+       "$4" == "$TDZ_OVPN_UDP_PORT" &&
+       "$5" == "$TDZ_OVPN_HTTP_PORT" &&
+       "$6" == "$TDZ_OVPN_WSS_PORT" ]]
+}
+
 tdz_openvpn_apply_fixed_port_mapping() {
     TDZ_OVPN_PORTAL_PORT="$TDZ_OVPN_FIXED_PORTAL_PORT"
     TDZ_OVPN_SSL_PORT="$TDZ_OVPN_FIXED_SSL_PORT"
@@ -228,12 +238,9 @@ tdz_openvpn_apply_fixed_port_mapping() {
 }
 
 tdz_openvpn_ports_match_fixed_mapping() {
-    [[ "$TDZ_OVPN_PORTAL_PORT" == "$TDZ_OVPN_FIXED_PORTAL_PORT" &&
-       "$TDZ_OVPN_SSL_PORT" == "$TDZ_OVPN_FIXED_SSL_PORT" &&
-       "$TDZ_OVPN_TCP_PORT" == "$TDZ_OVPN_FIXED_TCP_PORT" &&
-       "$TDZ_OVPN_UDP_PORT" == "$TDZ_OVPN_FIXED_UDP_PORT" &&
-       "$TDZ_OVPN_HTTP_PORT" == "$TDZ_OVPN_FIXED_HTTP_PORT" &&
-       "$TDZ_OVPN_WSS_PORT" == "$TDZ_OVPN_FIXED_WSS_PORT" ]]
+    tdz_openvpn_ports_match_layout "$TDZ_OVPN_FIXED_PORTAL_PORT" "$TDZ_OVPN_FIXED_SSL_PORT" \
+        "$TDZ_OVPN_FIXED_TCP_PORT" "$TDZ_OVPN_FIXED_UDP_PORT" \
+        "$TDZ_OVPN_FIXED_HTTP_PORT" "$TDZ_OVPN_FIXED_WSS_PORT"
 }
 
 tdz_openvpn_valid_subnet() {
@@ -1694,12 +1701,8 @@ tdz_openvpn_apply_port_layout() {
         echo -e "${C_RED}[ERROR] Ports must be unique numbers from 1-65535 and must not conflict with TDZ system ports.${C_RESET}"
         return 1
     fi
-    if [[ "$requested_portal" == "$TDZ_OVPN_PORTAL_PORT" &&
-          "$requested_ssl" == "$TDZ_OVPN_SSL_PORT" &&
-          "$requested_tcp" == "$TDZ_OVPN_TCP_PORT" &&
-          "$requested_udp" == "$TDZ_OVPN_UDP_PORT" &&
-          "$requested_http" == "$TDZ_OVPN_HTTP_PORT" &&
-          "$requested_wss" == "$TDZ_OVPN_WSS_PORT" ]]; then
+    if tdz_openvpn_ports_match_layout "$requested_portal" "$requested_ssl" \
+        "$requested_tcp" "$requested_udp" "$requested_http" "$requested_wss"; then
         echo -e "${C_YELLOW}[INFO] The OpenVPN port layout is already unchanged.${C_RESET}"
         return 0
     fi
@@ -1783,8 +1786,12 @@ tdz_openvpn_prompt_port() {
 
 tdz_openvpn_configure_ports() {
     local new_portal new_ssl new_tcp new_udp new_http new_wss confirm
-    tdz_openvpn_load_state || {
+    tdz_openvpn_is_installed || {
         echo -e "${C_RED}[ERROR] OpenVPN must be installed first.${C_RESET}"
+        return 1
+    }
+    tdz_openvpn_load_state || {
+        echo -e "${C_RED}[ERROR] Saved OpenVPN settings are invalid. Run OpenVPN repair first.${C_RESET}"
         return 1
     }
     echo
@@ -1811,10 +1818,18 @@ tdz_openvpn_configure_ports() {
         echo -e "${C_RED}[ERROR] Ports must be unique and cannot overlap TDZ system services.${C_RESET}"
         return 1
     fi
+    if tdz_openvpn_ports_match_layout "$new_portal" "$new_ssl" "$new_tcp" \
+        "$new_udp" "$new_http" "$new_wss"; then
+        echo -e "\n${C_YELLOW}[INFO] No port changes were entered. Existing OpenVPN ports were kept.${C_RESET}"
+        return 0
+    fi
     echo
     printf '  Portal %-5s  SSL %-5s  TCP %-5s  UDP %-5s  HTTP %-5s  WSS %-5s\n' \
         "$new_portal" "$new_ssl" "$new_tcp" "$new_udp" "$new_http" "$new_wss"
-    read -r -p "$(echo -e "${C_PROMPT}  Apply this layout? Type yes: ${C_RESET}")" confirm
+    echo -e "${C_YELLOW}[WARNING] Applying changed ports restarts OpenVPN and disconnects active OpenVPN sessions.${C_RESET}"
+    if ! read -r -p "$(echo -e "${C_PROMPT}  Apply this layout? Type yes: ${C_RESET}")" confirm; then
+        confirm=""
+    fi
     [[ "$confirm" == "yes" ]] || {
         echo -e "${C_YELLOW}[CANCELLED] Existing OpenVPN ports were kept.${C_RESET}"
         return 0
@@ -1829,7 +1844,18 @@ tdz_openvpn_restore_default_ports() {
         echo -e "${C_RED}[ERROR] OpenVPN must be installed first.${C_RESET}"
         return 1
     }
-    read -r -p "$(echo -e "${C_PROMPT}  Restore Portal 1180 and methods 446-450? Type yes: ${C_RESET}")" confirm
+    tdz_openvpn_load_state || {
+        echo -e "${C_RED}[ERROR] Saved OpenVPN settings are invalid. Run OpenVPN repair first.${C_RESET}"
+        return 1
+    }
+    if tdz_openvpn_ports_match_fixed_mapping; then
+        echo -e "${C_YELLOW}[INFO] Default OpenVPN ports are already active. Nothing was changed.${C_RESET}"
+        return 0
+    fi
+    echo -e "${C_YELLOW}[WARNING] Restoring default ports restarts OpenVPN and disconnects active OpenVPN sessions.${C_RESET}"
+    if ! read -r -p "$(echo -e "${C_PROMPT}  Restore Portal 1180 and methods 446-450? Type yes: ${C_RESET}")" confirm; then
+        confirm=""
+    fi
     [[ "$confirm" == "yes" ]] || {
         echo -e "${C_YELLOW}[CANCELLED] Existing OpenVPN ports were kept.${C_RESET}"
         return 0

@@ -81,6 +81,8 @@ class ModuleTests(unittest.TestCase):
                 tdz_openvpn_requested_ports_valid 25000 25001 25002 25003 25004 25005 || exit 36
                 ! tdz_openvpn_requested_ports_valid 25000 25001 25002 25003 25004 25004 || exit 37
                 ! tdz_openvpn_requested_ports_valid 25000 25001 25002 25003 25004 443 || exit 38
+                tdz_openvpn_ports_match_layout 1180 446 447 448 449 450 || exit 43
+                ! tdz_openvpn_ports_match_layout 1180 446 447 448 449 451 || exit 44
 
                 TDZ_OVPN_ROOT={root}/openvpn
                 TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
@@ -109,6 +111,100 @@ class ModuleTests(unittest.TestCase):
                 """
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unchanged_interactive_ports_skip_confirmation_and_rebuild(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_file = root / "input.txt"
+            input_file.write_text("\n" * 6 + "yes\n")
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                TDZ_OVPN_HOST=vpn.example.com
+                tdz_openvpn_apply_fixed_port_mapping
+                TDZ_OVPN_TCP_SUBNET=10.100.10.0
+                TDZ_OVPN_UDP_SUBNET=10.101.11.0
+                mkdir -p "$TDZ_OVPN_PKI"
+                printf 'test\n' > "$TDZ_OVPN_PKI/ca.crt"
+                printf 'test\n' > "$TDZ_OVPN_PKI/server.key"
+                tdz_openvpn_save_state || exit 20
+
+                tdz_openvpn_apply_port_layout() {{ printf 'APPLY_CALLED\n'; return 90; }}
+                exec 9<{input_file}
+                tdz_openvpn_configure_ports <&9 || exit 21
+                IFS= read -r remaining <&9 || exit 22
+                [[ "$remaining" == yes ]] || exit 23
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("No port changes were entered", result.stdout)
+            self.assertNotIn("APPLY_CALLED", result.stdout)
+            self.assertNotIn("disconnects active OpenVPN sessions", result.stdout)
+
+    def test_changed_interactive_ports_warn_and_apply_exact_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_file = root / "input.txt"
+            input_file.write_text("25100\n\n\n\n\n\nyes\n")
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                TDZ_OVPN_HOST=vpn.example.com
+                tdz_openvpn_apply_fixed_port_mapping
+                TDZ_OVPN_TCP_SUBNET=10.100.10.0
+                TDZ_OVPN_UDP_SUBNET=10.101.11.0
+                mkdir -p "$TDZ_OVPN_PKI"
+                printf 'test\n' > "$TDZ_OVPN_PKI/ca.crt"
+                printf 'test\n' > "$TDZ_OVPN_PKI/server.key"
+                tdz_openvpn_save_state || exit 30
+
+                tdz_openvpn_apply_port_layout() {{
+                    [[ "$#" == 6 ]] || return 91
+                    [[ "$1 $2 $3 $4 $5 $6" == "25100 446 447 448 449 450" ]] || return 92
+                    printf 'APPLIED:%s\n' "$*"
+                }}
+                tdz_openvpn_configure_ports < {input_file} || exit 31
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("disconnects active OpenVPN sessions", result.stdout)
+            self.assertIn("APPLIED:25100 446 447 448 449 450", result.stdout)
+            self.assertNotIn("No port changes were entered", result.stdout)
+
+    def test_restore_defaults_is_a_noop_when_defaults_are_active(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_file = root / "input.txt"
+            input_file.write_text("yes\n")
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                TDZ_OVPN_HOST=vpn.example.com
+                tdz_openvpn_apply_fixed_port_mapping
+                TDZ_OVPN_TCP_SUBNET=10.100.10.0
+                TDZ_OVPN_UDP_SUBNET=10.101.11.0
+                mkdir -p "$TDZ_OVPN_PKI"
+                printf 'test\n' > "$TDZ_OVPN_PKI/ca.crt"
+                printf 'test\n' > "$TDZ_OVPN_PKI/server.key"
+                tdz_openvpn_save_state || exit 40
+
+                tdz_openvpn_apply_port_layout() {{ printf 'APPLY_CALLED\n'; return 93; }}
+                exec 9<{input_file}
+                tdz_openvpn_restore_default_ports <&9 || exit 41
+                IFS= read -r remaining <&9 || exit 42
+                [[ "$remaining" == yes ]] || exit 43
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Default OpenVPN ports are already active", result.stdout)
+            self.assertNotIn("APPLY_CALLED", result.stdout)
+            self.assertNotIn("disconnects active OpenVPN sessions", result.stdout)
 
     def test_legacy_state_without_portal_port_uses_default(self):
         with tempfile.TemporaryDirectory() as temp:
