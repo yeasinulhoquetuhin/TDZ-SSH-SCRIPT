@@ -2,7 +2,7 @@
 # TDZ SSH TUNNEL optional OpenVPN protocol module.
 # This file is sourced by menu.sh; it does not execute actions on its own.
 
-TDZ_OVPN_MODULE_VERSION="2026-07-20.5"
+TDZ_OVPN_MODULE_VERSION="2026-07-20.6"
 TDZ_OVPN_ROOT="${TDZ_OVPN_ROOT:-/etc/tdztunnel/openvpn}"
 TDZ_OVPN_STATE="${TDZ_OVPN_STATE:-$TDZ_OVPN_ROOT/state.conf}"
 TDZ_OVPN_PKI="${TDZ_OVPN_PKI:-$TDZ_OVPN_ROOT/pki}"
@@ -924,7 +924,7 @@ Portal: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/
 Portal (HTTP): http://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/
 Online documentation: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/docs
 Download page: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/download
-Telegram contact for account/support: @$TDZ_OVPN_SUPPORT_USERNAME (https://t.me/$TDZ_OVPN_SUPPORT_USERNAME)
+Contact for account/support: @$TDZ_OVPN_SUPPORT_USERNAME (https://t.me/$TDZ_OVPN_SUPPORT_USERNAME)
 
 Official OpenVPN compatible
 - UDP: $TDZ_OVPN_UDP_PORT
@@ -1030,7 +1030,7 @@ tdz_openvpn_portal_write_support() {
   <div class="support-copy">
     <div class="kicker">Get Account or Support</div>
     <h2 id="account-support-title">No SSH/OVPN account yet? Start here.</h2>
-    <p>An active SSH/OVPN account is required to sign in after importing a profile. Message the Telegram contact to request an account or get connection help.</p>
+    <p>An active SSH/OVPN account is required to sign in after importing a profile. Message the contact to request an account or get connection help.</p>
   </div>
   <a class="button telegram" href="https://t.me/$TDZ_OVPN_SUPPORT_USERNAME" target="_blank" rel="noopener noreferrer"><span>Message @$TDZ_OVPN_SUPPORT_USERNAME</span><i aria-hidden="true">↗</i></a>
 </section>
@@ -1053,7 +1053,7 @@ tdz_openvpn_portal_write_footer() {
     </section>
     <section class="footer-column">
       <h2>Need an account?</h2>
-      <p class="developer-line footer-contact-line"><span>Telegram:</span><a class="developer-link" href="https://t.me/$TDZ_OVPN_SUPPORT_USERNAME" target="_blank" rel="noopener noreferrer">@$TDZ_OVPN_SUPPORT_USERNAME</a></p>
+      <p class="developer-line footer-contact-line"><span>Contact:</span><a class="developer-link" href="https://t.me/$TDZ_OVPN_SUPPORT_USERNAME" target="_blank" rel="noopener noreferrer">@$TDZ_OVPN_SUPPORT_USERNAME</a></p>
       <p class="footer-note">Account requests and connection support.</p>
     </section>
     <section class="footer-column footer-developer">
@@ -1074,8 +1074,8 @@ tdz_openvpn_portal_write_assets() {
   --bg:#eef1f5;--bg-elevated:#f7f8fa;--panel:rgba(255,255,255,.78);--panel-solid:#fff;
   --panel-soft:#f3f5f8;--header:rgba(248,250,252,.76);--text:#11151d;--text-soft:#3d4655;
   --muted:#70798a;--line:rgba(19,28,42,.12);--line-strong:rgba(19,28,42,.2);
-  --accent:#ef4050;--accent-hover:#d92d3e;--accent-soft:rgba(239,64,80,.1);--accent-glow:rgba(239,64,80,.22);
-  --blue:#2878ff;--blue-hover:#1263e6;--blue-soft:rgba(40,120,255,.11);--green:#18a875;
+  --accent:#047857;--accent-hover:#065f46;--accent-soft:rgba(4,120,87,.1);--accent-glow:rgba(4,120,87,.22);
+  --blue:#2878ff;--blue-hover:#1263e6;--blue-soft:rgba(40,120,255,.11);--green:#059669;
   --code:#10141b;--code-text:#e8edf5;--shadow:0 24px 70px rgba(21,32,49,.12);
   --shadow-soft:0 10px 30px rgba(21,32,49,.08);--grid:rgba(40,54,75,.055);
   --button-text:#fff;--radius:18px;--radius-lg:28px
@@ -1085,13 +1085,13 @@ tdz_openvpn_portal_write_assets() {
   --bg:#090d13;--bg-elevated:#0d121a;--panel:rgba(18,24,34,.78);--panel-solid:#121822;
   --panel-soft:#171f2b;--header:rgba(13,18,26,.76);--text:#f5f7fb;--text-soft:#c3cad5;
   --muted:#8791a1;--line:rgba(225,233,245,.11);--line-strong:rgba(225,233,245,.19);
-  --accent:#ff5262;--accent-hover:#ff6e7b;--accent-soft:rgba(255,82,98,.12);--accent-glow:rgba(255,82,98,.24);
+  --accent:#34d399;--accent-hover:#6ee7b7;--accent-soft:rgba(52,211,153,.12);--accent-glow:rgba(52,211,153,.24);
   --blue:#4d8dff;--blue-hover:#75a7ff;--blue-soft:rgba(77,141,255,.13);--green:#45d3a0;
   --code:#070a0f;--code-text:#e8edf5;--shadow:0 28px 80px rgba(0,0,0,.42);
-  --shadow-soft:0 12px 34px rgba(0,0,0,.27);--grid:rgba(184,202,229,.045);--button-text:#fff
+  --shadow-soft:0 12px 34px rgba(0,0,0,.27);--grid:rgba(184,202,229,.045);--button-text:#052e21
 }
 @media(prefers-color-scheme:dark){
-  :root:not([data-theme]){color-scheme:dark;--bg:#090d13;--bg-elevated:#0d121a;--panel:rgba(18,24,34,.78);--panel-solid:#121822;--panel-soft:#171f2b;--header:rgba(13,18,26,.76);--text:#f5f7fb;--text-soft:#c3cad5;--muted:#8791a1;--line:rgba(225,233,245,.11);--line-strong:rgba(225,233,245,.19);--accent:#ff5262;--accent-hover:#ff6e7b;--accent-soft:rgba(255,82,98,.12);--accent-glow:rgba(255,82,98,.24);--blue:#4d8dff;--blue-hover:#75a7ff;--blue-soft:rgba(77,141,255,.13);--green:#45d3a0;--code:#070a0f;--code-text:#e8edf5;--shadow:0 28px 80px rgba(0,0,0,.42);--shadow-soft:0 12px 34px rgba(0,0,0,.27);--grid:rgba(184,202,229,.045)}
+  :root:not([data-theme]){color-scheme:dark;--bg:#090d13;--bg-elevated:#0d121a;--panel:rgba(18,24,34,.78);--panel-solid:#121822;--panel-soft:#171f2b;--header:rgba(13,18,26,.76);--text:#f5f7fb;--text-soft:#c3cad5;--muted:#8791a1;--line:rgba(225,233,245,.11);--line-strong:rgba(225,233,245,.19);--accent:#34d399;--accent-hover:#6ee7b7;--accent-soft:rgba(52,211,153,.12);--accent-glow:rgba(52,211,153,.24);--blue:#4d8dff;--blue-hover:#75a7ff;--blue-soft:rgba(77,141,255,.13);--green:#34d399;--code:#070a0f;--code-text:#e8edf5;--shadow:0 28px 80px rgba(0,0,0,.42);--shadow-soft:0 12px 34px rgba(0,0,0,.27);--grid:rgba(184,202,229,.045);--button-text:#052e21}
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;background:var(--bg)}
@@ -1745,9 +1745,9 @@ tdz_openvpn_show_details() {
         tdz_detail "SSL / SNI" "$TDZ_OVPN_SSL_PORT / $TDZ_OVPN_HOST"
         tdz_detail "Outer TLS" "$tls_label"
         tdz_detail "Download Portal" "https://${TDZ_OVPN_HOST}:${TDZ_OVPN_PORTAL_PORT}${TDZ_OVPN_PUBLIC_PATH}/" "$C_CYAN"
-        tdz_detail "Telegram Contact" "@${TDZ_OVPN_SUPPORT_USERNAME} / https://t.me/${TDZ_OVPN_SUPPORT_USERNAME}" "$C_CYAN"
+        tdz_detail "Contact" "@${TDZ_OVPN_SUPPORT_USERNAME} / https://t.me/${TDZ_OVPN_SUPPORT_USERNAME}" "$C_CYAN"
     else
-        printf '  Server: %s\n  Portal: https://%s:%s%s/\n  Telegram Contact: @%s\n' \
+        printf '  Server: %s\n  Portal: https://%s:%s%s/\n  Contact: @%s\n' \
             "$TDZ_OVPN_HOST" "$TDZ_OVPN_HOST" "$TDZ_OVPN_PORTAL_PORT" "$TDZ_OVPN_PUBLIC_PATH" \
             "$TDZ_OVPN_SUPPORT_USERNAME"
     fi
@@ -2028,20 +2028,20 @@ tdz_openvpn_configure_support_contact() {
     current="$TDZ_OVPN_SUPPORT_USERNAME"
     echo
     if declare -F tdz_section >/dev/null 2>&1; then
-        tdz_section "TELEGRAM CONTACT USERNAME"
+        tdz_section "CONTACT USERNAME"
     fi
-    echo -e "${C_DIM}This Telegram username is shown for account requests and support on every portal page.${C_RESET}"
-    if ! read -r -p "$(echo -e "${C_PROMPT}  Telegram username [@${current}]: ${C_RESET}")" input; then
+    echo -e "${C_DIM}This contact username is shown for account requests and support on every portal page.${C_RESET}"
+    if ! read -r -p "$(echo -e "${C_PROMPT}  Contact username [@${current}]: ${C_RESET}")" input; then
         return 1
     fi
     input=${input:-$current}
     input=${input#@}
     if ! tdz_openvpn_valid_telegram_username "$input"; then
-        echo -e "${C_RED}[ERROR] Use a valid Telegram username: 5-32 letters, numbers, or underscores; start with a letter.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Use a valid contact username: 5-32 letters, numbers, or underscores; start with a letter.${C_RESET}"
         return 1
     fi
     if [[ "$input" == "$current" ]]; then
-        echo -e "${C_YELLOW}[INFO] Telegram contact is already @${current}. Nothing was changed.${C_RESET}"
+        echo -e "${C_YELLOW}[INFO] Contact is already @${current}. Nothing was changed.${C_RESET}"
         return 0
     fi
 
@@ -2049,7 +2049,7 @@ tdz_openvpn_configure_support_contact() {
     TDZ_OVPN_SUPPORT_USERNAME="$input"
     if tdz_openvpn_save_state && tdz_openvpn_generate_profiles &&
        tdz_openvpn_apply_private_permissions; then
-        echo -e "${C_GREEN}[OK] Portal Telegram contact changed to @${TDZ_OVPN_SUPPORT_USERNAME}.${C_RESET}"
+        echo -e "${C_GREEN}[OK] Portal contact changed to @${TDZ_OVPN_SUPPORT_USERNAME}.${C_RESET}"
         echo -e "${C_DIM}OpenVPN listeners and active VPN sessions were not restarted.${C_RESET}"
         return 0
     fi
@@ -2120,7 +2120,7 @@ tdz_openvpn_menu() {
                 "SSL / TCP" "${TDZ_OVPN_SSL_PORT} / ${TDZ_OVPN_TCP_PORT}"
             tdz_kv2 "UDP / HTTP" "${TDZ_OVPN_UDP_PORT} / ${TDZ_OVPN_HTTP_PORT}" \
                 "WSS" "$TDZ_OVPN_WSS_PORT"
-            tdz_row2 "${C_GRAY}TELEGRAM${C_RESET}" "${C_CYAN}@${TDZ_OVPN_SUPPORT_USERNAME}${C_RESET}"
+            tdz_row2 "${C_GRAY}CONTACT${C_RESET}" "${C_CYAN}@${TDZ_OVPN_SUPPORT_USERNAME}${C_RESET}"
         fi
         tdz_box_divider
         tdz_menu1 "[ 1]" "Install or Repair OpenVPN"
@@ -2130,7 +2130,7 @@ tdz_openvpn_menu() {
         tdz_menu1 "[ 5]" "Regenerate Download Profiles"
         tdz_menu1 "[ 6]" "Restart and Verify Services"
         tdz_menu1 "[ 7]" "Uninstall OpenVPN Suite"
-        tdz_menu1 "[ 8]" "Change Telegram Contact Username"
+        tdz_menu1 "[ 8]" "Change Contact Username"
         tdz_box_divider
         tdz_menu1 "[ 0]" "Return to Protocol Manager"
         tdz_box_bot
