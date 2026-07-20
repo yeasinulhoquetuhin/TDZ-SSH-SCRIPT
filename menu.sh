@@ -1503,7 +1503,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-20.4
+# TDZ SSH TUNNEL limiter version 2026-07-20.5
 # Live session counts use authenticated `who`, sshd, and OpenVPN records only.
 # Per-user process scans remain traffic-accounting inputs, never session evidence.
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1967,27 +1967,12 @@ while true; do
         fi
 
         [[ "$limit" =~ ^[0-9]+$ ]] || limit=1
-        # OpenVPN performs atomic admission before a VPN session becomes
-        # active.  If a later SSH login pushes the shared total over limit,
-        # close the excess SSH side without resetting a healthy VPN tunnel.
-        if (( online_count > limit )); then
-            excess=$((online_count - limit))
-            killed=0
-            if (( ${#unique_pam_sessions[@]} >= ${#unique_sshd_sessions[@]} )); then
-                kill_candidates="${!unique_pam_sessions[*]}"
-            else
-                kill_candidates="${!unique_sshd_sessions[*]}"
-            fi
-            for pid in $(printf "%s\n" $kill_candidates | sort -nr); do
-                [[ "$pid" =~ ^[0-9]+$ ]] || continue
-                kill -TERM "$pid" &>/dev/null || true
-                killed=$((killed + 1))
-                (( killed >= excess )) && break
-            done
-            if (( killed == 0 )); then
-                killall -u "$user" -9 &>/dev/null
-            fi
-        fi
+        # Connection limits are enforced atomically by the SSH account hook
+        # and OpenVPN client-connect hook. Never evict an established session
+        # merely because a combined snapshot is briefly over limit or an
+        # administrator lowered the limit; the next arrival is rejected by
+        # whichever protocol receives it. Expiry, quota and manual lock remain
+        # immediate termination policies above.
 
         usagefile="$BW_DIR/${user}.usage"
         usage_lock_held=false
@@ -2209,7 +2194,7 @@ remove_ssh_auth_session_hook() {
 }
 
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-20.4"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-20.5"
     cleanup_legacy_bandwidth_runtime
     migrate_legacy_shadow_locks >/dev/null 2>&1 || true
     setup_trial_cleanup_script >/dev/null 2>&1

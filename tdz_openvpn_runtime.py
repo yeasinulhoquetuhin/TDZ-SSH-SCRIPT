@@ -15,7 +15,6 @@ import fcntl
 import hashlib
 import json
 import os
-import pwd
 import socket
 import stat
 import subprocess
@@ -26,6 +25,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+
+import tdz_ssh_auth_session as ssh_auth_session
 
 
 DB_FILE = Path(os.environ.get("TDZ_DB_FILE", "/etc/tdztunnel/users.db"))
@@ -49,6 +50,10 @@ SESSION_SNAPSHOT = Path(
 SSH_SESSION_SNAPSHOT = Path(
     os.environ.get("TDZ_SSH_SESSION_SNAPSHOT", str(BW_DIR / "ssh-sessions.tsv"))
 )
+SSH_AUTH_SESSION_DIR = Path(
+    os.environ.get("TDZ_SSH_AUTH_SESSION_DIR", "/run/tdztunnel/ssh-auth-sessions")
+)
+PROC_ROOT = Path(os.environ.get("TDZ_PROC_ROOT", "/proc"))
 TEST_MODE = os.environ.get("TDZ_RUNTIME_TEST_MODE") == "1"
 
 
@@ -272,16 +277,21 @@ def activate_pending(account: Account) -> Account:
     )
 
 
-def count_ssh_sessions(username: str) -> int:
-    if TEST_MODE:
+def count_ssh_sessions(
+    username: str, managed_users: Iterable[str] = ()
+) -> int:
+    if TEST_MODE and "TDZ_TEST_SSH_SESSIONS" in os.environ:
         try:
-            return max(0, int(os.environ.get("TDZ_TEST_SSH_SESSIONS", "0")))
+            return max(0, int(os.environ["TDZ_TEST_SSH_SESSIONS"]))
         except ValueError:
             return 0
-    # The TDZ limiter publishes its own authoritative SSH count once per
-    # second.  Reusing that value keeps the combined SSH + OpenVPN limit
-    # consistent even for payload/no-PTY sessions that no longer appear as a
-    # conventional sshd child.
+
+    # The limiter snapshot is a compatibility fallback, not immediate
+    # admission evidence: it can be one scan behind a newly authenticated SSH
+    # connection.  Read the root-private PAM markers under the shared account
+    # lock as well, so an established SSH session always wins against a later
+    # OpenVPN client-connect request.
+    snapshot_count = 0
     try:
         if SSH_SESSION_SNAPSHOT.stat().st_mtime >= time.time() - 5:
             for line in SSH_SESSION_SNAPSHOT.read_text(
@@ -289,46 +299,36 @@ def count_ssh_sessions(username: str) -> int:
             ).splitlines():
                 fields = line.split("\t")
                 if len(fields) == 2 and fields[0] == username:
-                    return max(0, int(fields[1]))
+                    snapshot_count = max(0, int(fields[1]))
+                    break
     except (OSError, ValueError):
         pass
 
-    counts = 0
-    try:
-        result = subprocess.run(["who"], capture_output=True, text=True, timeout=5, check=False)
-        counts = sum(1 for line in result.stdout.splitlines() if line.split()[:1] == [username])
-    except (OSError, subprocess.SubprocessError):
-        pass
-    try:
-        result = subprocess.run(
-            ["ps", "-C", "sshd", "-o", "user="],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        sshd_count = sum(1 for line in result.stdout.splitlines() if line.strip() == username)
-        counts = max(counts, sshd_count)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    if counts == 0:
-        # Fallback for a non-interactive SSH tunnel whose sshd child has
-        # already exec'd the user process and therefore is absent from `who`
-        # and `ps -C sshd`.
-        try:
-            uid = pwd.getpwnam(username).pw_uid
-            result = subprocess.run(
-                ["ps", "-eo", "uid="],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if any(line.strip() == str(uid) for line in result.stdout.splitlines()):
-                counts = 1
-        except (KeyError, OSError, subprocess.SubprocessError):
-            pass
-    return counts
+    paths = ssh_auth_session.RuntimePaths(
+        db_file=DB_FILE,
+        manual_lock_file=MANUAL_LOCK_FILE,
+        bandwidth_dir=BW_DIR,
+        usage_lock=LOCK_FILE,
+        session_dir=SSH_AUTH_SESSION_DIR,
+        openvpn_snapshot=SESSION_SNAPSHOT,
+        openvpn_admission_dir=ADMISSION_DIR,
+        openvpn_status_tcp=STATUS_TCP,
+        openvpn_status_udp=STATUS_UDP,
+        proc_root=PROC_ROOT,
+    )
+    managed = tuple(managed_users) or tuple(read_accounts())
+    marker_counts, _marker_pids = ssh_auth_session.prune_and_count_markers(
+        paths, managed
+    )
+    process_counts = ssh_auth_session.count_authenticated_children(paths)
+    who_output = os.environ.get("TDZ_TEST_WHO_OUTPUT", "") if TEST_MODE else None
+    who_counts = ssh_auth_session.count_who_sessions(who_output)
+    live_count = max(
+        marker_counts.get(username, 0),
+        process_counts.get(username, 0),
+        who_counts.get(username, 0),
+    )
+    return max(snapshot_count, live_count)
 
 
 def _parse_int(value: str, default: int = 0) -> int:
@@ -435,13 +435,15 @@ def reserve_admission(
     ADMISSION_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     signature = peer_signature(username, instance, remote_ip, remote_port)
     target = ADMISSION_DIR / f"{signature}.json"
+    created = int(time.time())
     data = {
         "signature": signature,
         "username": username,
         "instance": instance,
         "remote_ip": remote_ip,
         "remote_port": remote_port,
-        "created": int(time.time()),
+        "created": created,
+        "expires_at": created + ADMISSION_TTL_SECONDS,
     }
     fd, name = tempfile.mkstemp(prefix=".admission.", dir=ADMISSION_DIR, text=True)
     try:
@@ -588,7 +590,8 @@ def command_connect() -> int:
         return 1
     signature = peer_signature(username, instance, trusted_ip, trusted_port)
     with state_lock():
-        account = read_accounts().get(username)
+        accounts = read_accounts()
+        account = accounts.get(username)
         if account is None:
             print("TDZ account was not found", file=sys.stderr)
             return 1
@@ -620,7 +623,12 @@ def command_connect() -> int:
             and not session_matches_peer(session, username, instance, trusted_ip, trusted_port)
         )
         pending_count = count_admissions(username, signature)
-        if count_ssh_sessions(username) + ovpn_count + pending_count >= account.limit:
+        if (
+            count_ssh_sessions(username, accounts)
+            + ovpn_count
+            + pending_count
+            >= account.limit
+        ):
             print("TDZ connection limit reached", file=sys.stderr)
             return 1
         if not current_is_live:
@@ -747,6 +755,8 @@ def write_session_snapshot(sessions: Iterable[Session]) -> None:
                             session.instance,
                             session.client_id,
                             str(session.connected_epoch),
+                            session.remote_ip,
+                            session.remote_port,
                         ]
                     )
                     + "\n"

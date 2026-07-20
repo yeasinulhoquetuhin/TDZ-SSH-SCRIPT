@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import tempfile
@@ -44,6 +45,9 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             banner_flag=self.root / "banners_enabled",
             session_dir=self.root / "run/ssh-auth-sessions",
             openvpn_snapshot=self.root / "openvpn-sessions.tsv",
+            openvpn_admission_dir=self.root / "openvpn-admissions",
+            openvpn_status_tcp=self.root / "status-tcp.tsv",
+            openvpn_status_udp=self.root / "status-udp.tsv",
             proc_root=self.proc,
         )
         self.paths.db_file.write_text("E:secret:2099-12-31:2:10\n")
@@ -78,6 +82,37 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             who_output="",
             now=time.time(),
         )
+
+    def reserve_openvpn(
+        self,
+        username: str = "E",
+        instance: str = "tcp",
+        remote_ip: str = "198.51.100.8",
+        remote_port: str = "50000",
+        now: float = None,
+    ) -> Path:
+        now = time.time() if now is None else now
+        signature = auth_session._openvpn_peer_signature(
+            username, instance, remote_ip, remote_port
+        )
+        self.paths.openvpn_admission_dir.mkdir(parents=True, mode=0o700)
+        admission = self.paths.openvpn_admission_dir / (signature + ".json")
+        admission.write_text(
+            json.dumps(
+                {
+                    "signature": signature,
+                    "username": username,
+                    "instance": instance,
+                    "remote_ip": remote_ip,
+                    "remote_port": remote_port,
+                    "created": now,
+                    "expires_at": now + 10,
+                }
+            )
+            + "\n"
+        )
+        admission.chmod(0o600)
+        return admission
 
     def test_auth_phase_without_a_recent_denial_never_registers_or_displays(self):
         write_fake_process(self.proc, 100, 1, 1000, "sshd", "sshd: E [preauth]")
@@ -167,6 +202,49 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
         decision = self.login(106, 1600)
         self.assertTrue(decision.allowed)
         self.assertIn("Active Session:</b> 1/2", decision.message)
+
+    def test_openvpn_reservation_wins_before_ssh_can_claim_the_same_slot(self):
+        self.paths.db_file.write_text("E:secret:2099-12-31:1:10\n")
+        admission = self.reserve_openvpn()
+
+        denied = self.login(108, 1800)
+
+        self.assertFalse(denied.allowed)
+        self.assertEqual(denied.reason, "connection_limit")
+        self.assertIn("Active Session:</b> 1/1", denied.message)
+        self.assertTrue(admission.is_file())
+        self.assertFalse((self.paths.session_dir / "108.session").exists())
+
+        retry = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=108,
+            who_output="",
+        )
+        self.assertFalse(retry.allowed)
+        self.assertEqual(retry.reason, "retry_guard")
+
+    def test_live_openvpn_row_and_its_reservation_count_as_one_slot(self):
+        now = time.time()
+        self.reserve_openvpn(now=now)
+        self.paths.openvpn_snapshot.write_text(
+            "E\ttcp\t7\t1000\t198.51.100.8\t50000\n"
+        )
+        os.utime(self.paths.openvpn_snapshot, (now, now))
+
+        admitted = self.login(109, 1900)
+
+        self.assertTrue(admitted.allowed)
+        self.assertIn("Active Session:</b> 2/2", admitted.message)
+
+    def test_expired_openvpn_reservation_does_not_hold_a_slot(self):
+        self.paths.db_file.write_text("E:secret:2099-12-31:1:10\n")
+        self.reserve_openvpn(now=time.time() - 20)
+
+        admitted = self.login(110, 2000)
+
+        self.assertTrue(admitted.allowed)
+        self.assertIn("Active Session:</b> 1/1", admitted.message)
 
     def test_disabled_banner_still_registers_for_authoritative_accounting(self):
         self.paths.banner_flag.unlink()

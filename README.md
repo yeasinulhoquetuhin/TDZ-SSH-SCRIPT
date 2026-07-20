@@ -208,7 +208,7 @@ The portal uses the same validated outer certificate as WSS and SSL. A matching 
 - Manual lock and account deletion terminate both SSH and OpenVPN sessions
 - Manual locks are stored separately from expiry and quota state, so the Unlock menu contains only accounts an administrator deliberately locked
 - Expiry and **Start After First Use** apply to the first successful SSH or OpenVPN login
-- The configured connection limit is shared across active SSH and OpenVPN sessions
+- The configured connection limit is shared across SSH and OpenVPN with first-admitted-wins ordering: the later attempt is rejected without evicting an established session
 - Bandwidth usage from both transports is added to the same per-user quota without double counting
 - Expired or quota-exhausted accounts are disconnected and denied automatically, while renewing or topping up restores access without changing an independent manual lock
 - VPN clients are isolated from one another and cannot use the transport gateway as an open proxy

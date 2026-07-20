@@ -13,9 +13,13 @@ Marker identity is a PID plus the kernel process start time.  Checking both
 prevents a stale marker from becoming valid again after PID reuse.
 """
 
+import csv
 import datetime as dt
 import fcntl
 import grp
+import hashlib
+import json
+import math
 import os
 import pwd
 import re
@@ -35,6 +39,9 @@ from typing import Dict, FrozenSet, Iterable, Mapping, Optional, Tuple
 MARKER_VERSION = "v1"
 DENIAL_GUARD_VERSION = "v1"
 DENIAL_GUARD_TTL_SECONDS = 10.0
+OPENVPN_ADMISSION_DEFAULT_TTL_SECONDS = 10.0
+OPENVPN_ADMISSION_MAX_TTL_SECONDS = 60.0
+OPENVPN_STATE_CLOCK_SKEW_SECONDS = 5.0
 SSH_PROCESS_NAMES = frozenset(("sshd", "sshd-session"))
 MANAGED_SYSTEM_GROUP = "tdzusers"
 SAFE_USERNAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
@@ -79,6 +86,15 @@ class RuntimePaths:
     banner_flag: Path = Path("/etc/tdztunnel/banners_enabled")
     session_dir: Path = Path("/run/tdztunnel/ssh-auth-sessions")
     openvpn_snapshot: Path = Path("/etc/tdztunnel/openvpn/run/sessions.tsv")
+    openvpn_admission_dir: Path = Path(
+        "/etc/tdztunnel/bandwidth/openvpn-sessions/admissions"
+    )
+    openvpn_status_tcp: Path = Path(
+        "/etc/tdztunnel/openvpn/run/status-tcp.tsv"
+    )
+    openvpn_status_udp: Path = Path(
+        "/etc/tdztunnel/openvpn/run/status-udp.tsv"
+    )
     proc_root: Path = Path("/proc")
 
 
@@ -562,23 +578,248 @@ def count_who_sessions(who_output: Optional[str] = None) -> Counter:
     return counts
 
 
+def _fresh_file(path: Path, now: float) -> bool:
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        return False
+    return bool(
+        now - OPENVPN_STATE_CLOCK_SKEW_SECONDS
+        <= modified
+        <= now + OPENVPN_STATE_CLOCK_SKEW_SECONDS
+    )
+
+
+def _split_openvpn_real_address(value: str) -> Tuple[str, str]:
+    value = value.strip()
+    if value.startswith("["):
+        end = value.find("]")
+        if end > 1 and value[end + 1 :].startswith(":"):
+            return value[1:end], value[end + 2 :]
+    host, separator, port = value.rpartition(":")
+    if separator and host and port.isdigit():
+        return host, port
+    return value, ""
+
+
+def _openvpn_peer_signature(
+    username: str, instance: str, remote_ip: str, remote_port: str
+) -> str:
+    raw = "%s\0%s\0%s\0%s" % (username, instance, remote_ip, remote_port)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _snapshot_openvpn_slots(
+    snapshot: Path, username: str, now: float
+) -> Tuple[set, int]:
+    """Return identified slots plus legacy rows that lack peer identity."""
+
+    if not _fresh_file(snapshot, now):
+        return set(), 0
+    try:
+        rows = snapshot.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return set(), 0
+    slots = set()
+    legacy_count = 0
+    for row in rows:
+        fields = row.split("\t")
+        if not fields or fields[0] != username:
+            continue
+        if (
+            len(fields) >= 6
+            and fields[1] in ("tcp", "udp")
+            and fields[4]
+            and fields[5].isdigit()
+        ):
+            slots.add(
+                _openvpn_peer_signature(
+                    username, fields[1], fields[4], fields[5]
+                )
+            )
+        else:
+            legacy_count += 1
+    return slots, legacy_count
+
+
+def _status_openvpn_slots(
+    status_file: Path, instance: str, username: str, now: float
+) -> set:
+    if not _fresh_file(status_file, now):
+        return set()
+    slots = set()
+    try:
+        with status_file.open(
+            newline="", encoding="utf-8", errors="replace"
+        ) as handle:
+            rows = csv.reader(handle, delimiter="\t")
+            for row in rows:
+                if not row or row[0] != "CLIENT_LIST" or len(row) < 11:
+                    continue
+                row_username = row[9].strip()
+                if row_username in ("", "UNDEF"):
+                    row_username = row[1].strip()
+                if row_username != username:
+                    continue
+                remote_ip, remote_port = _split_openvpn_real_address(row[2])
+                if remote_ip and remote_port.isdigit():
+                    slots.add(
+                        _openvpn_peer_signature(
+                            username, instance, remote_ip, remote_port
+                        )
+                    )
+                else:
+                    # A malformed peer address cannot be merged with an
+                    # admission record, but it is still an occupied slot.
+                    slots.add(
+                        "status:%s:%s:%s"
+                        % (instance, row[10].strip(), row[8].strip())
+                    )
+    except OSError:
+        return set()
+    return slots
+
+
+def _read_openvpn_admission(path: Path) -> Optional[dict]:
+    descriptor = -1
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            return None
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            return None
+        if os.geteuid() == 0 and info.st_uid != 0:
+            return None
+        descriptor = os.open(
+            str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        opened_info = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_info.st_mode):
+            return None
+        if (opened_info.st_dev, opened_info.st_ino) != (info.st_dev, info.st_ino):
+            return None
+        with os.fdopen(
+            descriptor, "r", encoding="utf-8", errors="strict"
+        ) as handle:
+            descriptor = -1
+            payload = handle.read(4097)
+        if len(payload) > 4096:
+            return None
+        data = json.loads(payload)
+        return data if isinstance(data, dict) else None
+    except (OSError, UnicodeError, ValueError):
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _pending_openvpn_slots(
+    admission_dir: Path, username: str, now: float
+) -> set:
+    try:
+        directory_info = admission_dir.lstat()
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        return set()
+    if not stat.S_ISDIR(directory_info.st_mode) or stat.S_ISLNK(
+        directory_info.st_mode
+    ):
+        raise RuntimeError("OpenVPN admission registry is not a real directory")
+    if os.geteuid() == 0 and (
+        directory_info.st_uid != 0
+        or stat.S_IMODE(directory_info.st_mode) & 0o022
+    ):
+        raise RuntimeError("OpenVPN admission registry has unsafe permissions")
+
+    slots = set()
+    try:
+        candidates = list(admission_dir.glob("*.json"))
+    except OSError:
+        return slots
+    for path in candidates:
+        data = _read_openvpn_admission(path)
+        if data is None or data.get("username") != username:
+            continue
+        instance = str(data.get("instance", ""))
+        remote_ip = str(data.get("remote_ip", ""))
+        remote_port = str(data.get("remote_port", ""))
+        signature = str(data.get("signature", ""))
+        try:
+            created = float(data.get("created", 0))
+            expires_at = float(
+                data.get(
+                    "expires_at",
+                    created + OPENVPN_ADMISSION_DEFAULT_TTL_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+        expected_signature = _openvpn_peer_signature(
+            username, instance, remote_ip, remote_port
+        )
+        if (
+            instance not in ("tcp", "udp")
+            or not remote_ip
+            or not remote_port.isdigit()
+            or signature != expected_signature
+            or path.name != signature + ".json"
+            or not math.isfinite(created)
+            or not math.isfinite(expires_at)
+            or created > now + OPENVPN_STATE_CLOCK_SKEW_SECONDS
+            or not now < expires_at
+            or expires_at
+            > created
+            + OPENVPN_ADMISSION_MAX_TTL_SECONDS
+            + OPENVPN_STATE_CLOCK_SKEW_SECONDS
+        ):
+            continue
+        slots.add(signature)
+    return slots
+
+
 def count_openvpn_sessions(
     snapshot: Path, username: str, now: Optional[float] = None
 ) -> int:
+    """Compatibility count for callers that only have the published snapshot."""
+
     now = time.time() if now is None else now
-    try:
-        modified = snapshot.stat().st_mtime
-        if modified < now - 5 or modified > now + 5:
-            return 0
-        rows = snapshot.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0
-    total = 0
-    for row in rows:
-        fields = row.split("\t")
-        if fields and fields[0] == username:
-            total += 1
-    return total
+    slots, legacy_count = _snapshot_openvpn_slots(snapshot, username, now)
+    return len(slots) + legacy_count
+
+
+def count_openvpn_slots(
+    paths: RuntimePaths, username: str, now: Optional[float] = None
+) -> int:
+    """Count live and client-connect-reserved OpenVPN slots once.
+
+    OpenVPN writes an admission record while holding the same account lock as
+    this SSH account hook.  Counting that record closes the short interval
+    before the new client appears in a status file.  Peer signatures merge a
+    reservation with its eventual live row so a successful VPN connection is
+    never counted twice.
+    """
+
+    now = time.time() if now is None else now
+    snapshot_slots, legacy_count = _snapshot_openvpn_slots(
+        paths.openvpn_snapshot, username, now
+    )
+    live_slots = set(snapshot_slots)
+    live_slots.update(
+        _status_openvpn_slots(paths.openvpn_status_tcp, "tcp", username, now)
+    )
+    live_slots.update(
+        _status_openvpn_slots(paths.openvpn_status_udp, "udp", username, now)
+    )
+    admission_slots = _pending_openvpn_slots(
+        paths.openvpn_admission_dir, username, now
+    )
+    pending_slots = admission_slots.difference(live_slots)
+    # A four-column snapshot from an in-place upgrade has no peer signature.
+    # Treat it only as a live-count floor; a simultaneous reservation remains
+    # an additional occupied slot until the new snapshot format is published.
+    return max(len(live_slots), legacy_count) + len(pending_slots)
 
 
 def _minimal_policy_banner(
@@ -714,9 +955,7 @@ def _process_managed_login(
         process_counts.get(username, 0),
         who_counts.get(username, 0),
     )
-    total = ssh_total + count_openvpn_sessions(
-        paths.openvpn_snapshot, username, now=now
-    )
+    total = ssh_total + count_openvpn_slots(paths, username, now=now)
     if reason in POLICY_REASONS:
         message = ""
         if paths.banner_flag.is_file():
@@ -746,9 +985,7 @@ def _process_managed_login(
         process_counts.get(username, 0),
         who_counts.get(username, 0),
     )
-    total = ssh_total + count_openvpn_sessions(
-        paths.openvpn_snapshot, username, now=now
-    )
+    total = ssh_total + count_openvpn_slots(paths, username, now=now)
     if total > account.limit:
         try:
             (paths.session_dir / (str(sshd_identity.pid) + ".session")).unlink()
@@ -802,8 +1039,8 @@ def _process_auth_retry_guard(
             process_counts.get(account.username, 0),
             who_counts.get(account.username, 0),
         )
-        total = ssh_total + count_openvpn_sessions(
-            paths.openvpn_snapshot, account.username, now=now
+        total = ssh_total + count_openvpn_slots(
+            paths, account.username, now=now
         )
         if total >= account.limit:
             try:

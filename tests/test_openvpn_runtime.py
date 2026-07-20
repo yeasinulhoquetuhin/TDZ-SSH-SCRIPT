@@ -4,12 +4,31 @@ import os
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
 RUNTIME = REPO / "tdz_openvpn_runtime.py"
+
+
+def write_fake_process(
+    proc_root: Path,
+    pid: int,
+    parent_pid: int,
+    start_time: int,
+    command: str,
+    title: str,
+) -> None:
+    process_dir = proc_root / str(pid)
+    process_dir.mkdir(parents=True, exist_ok=True)
+    fields = ["S", str(parent_pid)] + ["0"] * 17 + [str(start_time)] + ["0"] * 8
+    (process_dir / "stat").write_text(
+        "%d (%s) %s\n" % (pid, command, " ".join(fields))
+    )
+    (process_dir / "comm").write_text(command + "\n")
+    (process_dir / "cmdline").write_bytes(title.encode() + b"\0")
 
 
 class RuntimeTests(unittest.TestCase):
@@ -20,8 +39,13 @@ class RuntimeTests(unittest.TestCase):
         self.manual_locks = root / "manual-locks.db"
         self.bw = root / "bandwidth"
         self.ovpn = root / "openvpn"
+        self.proc = root / "proc"
+        self.ssh_session_dir = root / "ssh-auth-sessions"
+        self.ssh_snapshot = self.bw / "ssh-sessions.tsv"
         (self.ovpn / "run").mkdir(parents=True)
+        self.proc.mkdir()
         self.env = os.environ.copy()
+        self.env.pop("TDZ_TEST_SSH_SESSIONS", None)
         self.env.update(
             {
                 "TDZ_RUNTIME_TEST_MODE": "1",
@@ -34,6 +58,10 @@ class RuntimeTests(unittest.TestCase):
                 "TDZ_OVPN_STATUS_TCP": str(self.ovpn / "run/status-tcp.tsv"),
                 "TDZ_OVPN_STATUS_UDP": str(self.ovpn / "run/status-udp.tsv"),
                 "TDZ_OVPN_ADMISSION_DIR": str(self.bw / "admissions"),
+                "TDZ_SSH_SESSION_SNAPSHOT": str(self.ssh_snapshot),
+                "TDZ_SSH_AUTH_SESSION_DIR": str(self.ssh_session_dir),
+                "TDZ_PROC_ROOT": str(self.proc),
+                "TDZ_TEST_WHO_OUTPUT": "",
                 "TDZ_OVPN_INSTANCE": "tcp",
                 "trusted_ip": "198.51.100.8",
                 "trusted_port": "50000",
@@ -145,6 +173,49 @@ class RuntimeTests(unittest.TestCase):
         reauth = self.run_runtime("connect", extra_env={"common_name": "alice"})
         self.assertEqual(reauth.returncode, 0, reauth.stderr)
 
+    def test_new_openvpn_arrival_cannot_replace_an_established_ssh_session(self):
+        self.db.write_text(
+            "alice:secret:2099-12-31:1:5\n"
+            "bob:secret:2099-12-31:1:5\n"
+        )
+        self.bw.mkdir(parents=True)
+        self.ssh_snapshot.write_text("alice\t0\n")
+        now = time.time()
+        os.utime(self.ssh_snapshot, (now, now))
+
+        write_fake_process(
+            self.proc,
+            pid=401,
+            parent_pid=1,
+            start_time=4001,
+            command="sshd",
+            title="sshd: alice [priv]",
+        )
+        self.ssh_session_dir.mkdir(mode=0o700)
+        marker = self.ssh_session_dir / "401.session"
+        marker.write_text("v1\talice\t401\t4001\n")
+        marker.chmod(0o600)
+        write_fake_process(
+            self.proc,
+            pid=402,
+            parent_pid=1,
+            start_time=4002,
+            command="sshd",
+            title="sshd: bob [priv]",
+        )
+        other_marker = self.ssh_session_dir / "402.session"
+        other_marker.write_text("v1\tbob\t402\t4002\n")
+        other_marker.chmod(0o600)
+
+        result = self.run_runtime("connect", extra_env={"common_name": "alice"})
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("connection limit", result.stderr)
+        self.assertTrue(marker.is_file())
+        self.assertTrue(other_marker.is_file())
+        self.assertTrue((self.proc / "401").is_dir())
+        self.assertFalse(list((self.bw / "admissions").glob("*.json")))
+
     def test_stale_admission_does_not_block_an_adapter_retry(self):
         self.db.write_text("alice:secret:2099-12-31:1:5\n")
         admissions = self.bw / "admissions"
@@ -224,6 +295,10 @@ class RuntimeTests(unittest.TestCase):
         first = self.run_runtime("sync")
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertTrue(first.stdout.startswith("alice\ttcp\t7\t"))
+        self.assertIn(
+            "alice\ttcp\t7\t1784340000\t198.51.100.8\t50000",
+            (self.ovpn / "run/sessions.tsv").read_text(),
+        )
         self.assertEqual((self.bw / "alice.usage").read_text().strip(), "300")
 
         second = self.run_runtime("sync")

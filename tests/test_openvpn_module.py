@@ -1233,10 +1233,14 @@ class ModuleTests(unittest.TestCase):
         self.assertIn("active:*", activation)
         self.assertNotIn("activate_pending_account() {", activation)
 
-    def test_limiter_preserves_established_openvpn_sessions(self):
+    def test_limiter_never_evicts_established_sessions_for_connection_limit(self):
         menu = (REPO / "menu.sh").read_text()
-        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-20.4", menu)
-        self.assertIn("if (( online_count > limit )); then", menu)
+        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-20.5", menu)
+        self.assertNotIn("if (( online_count > limit )); then", menu)
+        self.assertIn(
+            "Connection limits are enforced atomically by the SSH account hook",
+            menu,
+        )
         self.assertIn("banner_session_count=$online_count", menu)
         self.assertNotIn("banner_session_count=$((online_count + 1))", menu)
         self.assertIn(
@@ -1276,7 +1280,7 @@ class ModuleTests(unittest.TestCase):
         self.assertIn('rm -f "$DB_DIR/banners/${user}.txt"', provision)
         self.assertIn('refresh_dynamic_banner_routing_if_enabled "${users[@]}"', provision)
 
-        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-20.4")
+        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-20.5")
         limiter_end = menu.index("\nEOF\n    chmod +x \"$LIMITER_SCRIPT\"", limiter_start)
         limiter = menu[limiter_start:limiter_end]
         self.assertIn('${#unique_sshd_sessions[@]} -gt 0', limiter)
@@ -1339,6 +1343,14 @@ class ModuleTests(unittest.TestCase):
         self.assertNotIn("Match User", config)
 
         self.assertIn("tdz_ssh_auth_session.py|$PAYLOAD_SSH_AUTH_SESSION", installer)
+        self.assertLess(
+            installer.index(
+                'install -m 755 "$PAYLOAD_SSH_AUTH_SESSION" "$TARGET_SSH_AUTH_SESSION"'
+            ),
+            installer.index(
+                'install -m 755 "$PAYLOAD_OVPN_RUNTIME" "$TARGET_OVPN_RUNTIME"'
+            ),
+        )
         self.assertIn('env.get("PAM_SERVICE") != "sshd"', helper)
         self.assertIn('pam_type not in ("auth", "account")', helper)
         self.assertIn('return LoginDecision("", False, "retry_guard")', helper)
