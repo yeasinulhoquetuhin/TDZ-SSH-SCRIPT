@@ -50,6 +50,7 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
         self.paths.banner_dir.mkdir()
         (self.paths.banner_dir / "E.txt").write_text(
             "<br><b>[-] Username:</b> E<br>"
+            "<b>[-] Status:</b> Active<br>"
             "<b>[-] Active Session:</b> 0/2<br>"
         )
         self.paths.banner_flag.touch()
@@ -75,7 +76,7 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
             now=time.time(),
         )
 
-    def test_pre_auth_or_failed_auth_path_never_registers_or_displays(self):
+    def test_auth_phase_without_a_recent_denial_never_registers_or_displays(self):
         write_fake_process(self.proc, 100, 1, 1000, "sshd", "sshd: E [preauth]")
         decision = auth_session.process_authenticated_login(
             paths=self.paths,
@@ -85,7 +86,7 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
         )
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.message, "")
-        self.assertEqual(decision.reason, "not_applicable")
+        self.assertEqual(decision.reason, "active")
         self.assertFalse(self.paths.session_dir.exists())
 
     def test_missing_policy_row_fails_closed_only_for_tdz_system_users(self):
@@ -101,7 +102,8 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
         self.assertFalse(managed.allowed)
         self.assertEqual(managed.reason, "policy_error")
         self.assertIn("Policy Check Failed", managed.message)
-        self.assertFalse(self.paths.session_dir.exists())
+        self.assertTrue((self.paths.session_dir / "E.denied").is_file())
+        self.assertFalse(list(self.paths.session_dir.glob("*.session")))
 
         with mock.patch.object(
             auth_session, "is_tdztunnel_system_user", return_value=False
@@ -199,13 +201,114 @@ class AuthenticatedSshSessionTests(unittest.TestCase):
                     usage_file.unlink(missing_ok=True)
                 else:
                     usage_file.write_text(usage + "\n")
+                (self.paths.banner_dir / "E.txt").write_text(
+                    "<br><b>[-] Username:</b> E<br>"
+                    "<b>[-] Status:</b> Active<br>"
+                    "<b>[-] Active Session:</b> 0/2<br>"
+                    "<font color=\"red\">Owner-authored %s guidance.</font>"
+                    % reason
+                )
                 decision = self.login(300 + offset, 3000 + offset)
                 self.assertFalse(decision.allowed)
                 self.assertEqual(decision.reason, reason)
                 self.assertIn("Status:</b> " + status, decision.message)
+                self.assertIn("Owner-authored %s guidance." % reason, decision.message)
+                self.assertNotIn("Please renew it before reconnecting", decision.message)
+                self.assertNotIn("Please top up before reconnecting", decision.message)
+                self.assertNotIn("Please contact support", decision.message)
+                self.assertTrue((self.paths.session_dir / "E.denied").is_file())
                 self.assertFalse(
                     (self.paths.session_dir / (str(300 + offset) + ".session")).exists()
                 )
+
+    def test_recent_policy_denial_stops_retry_then_clears_after_unlock(self):
+        self.paths.manual_lock_file.write_text("E\n")
+        now = time.time()
+        first = self.login(350, 3500)
+        self.assertFalse(first.allowed)
+        self.assertEqual(first.reason, "manual_lock")
+        self.assertTrue((self.paths.session_dir / "E.denied").is_file())
+
+        retry = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=350,
+            who_output="",
+            now=now,
+        )
+        self.assertFalse(retry.allowed)
+        self.assertEqual(retry.reason, "retry_guard")
+        self.assertEqual(retry.message, "")
+        self.assertFalse(list(self.paths.session_dir.glob("*.session")))
+
+        self.paths.manual_lock_file.write_text("")
+        unlocked = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            parent_pid=350,
+            who_output="",
+            now=now + 1,
+        )
+        self.assertTrue(unlocked.allowed)
+        self.assertEqual(unlocked.reason, "active")
+        self.assertFalse((self.paths.session_dir / "E.denied").exists())
+
+    def test_expired_retry_guard_allows_a_fresh_banner_after_cooldown(self):
+        self.paths.manual_lock_file.write_text("E\n")
+        auth_session.write_denial_guard(
+            self.paths, "E", "manual_lock", now=1000.0
+        )
+        retry = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            who_output="",
+            now=1000.5,
+        )
+        self.assertFalse(retry.allowed)
+        after_cooldown = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            who_output="",
+            now=1011.0,
+        )
+        self.assertTrue(after_cooldown.allowed)
+        self.assertEqual(after_cooldown.reason, "manual_lock")
+        self.assertFalse((self.paths.session_dir / "E.denied").exists())
+
+    def test_untrusted_denial_guard_cannot_block_authentication(self):
+        self.paths.manual_lock_file.write_text("E\n")
+        self.paths.session_dir.mkdir(parents=True, mode=0o700)
+        guard = self.paths.session_dir / "E.denied"
+        guard.write_text(
+            "v1\tE\tmanual_lock\t%.6f\n"
+            % (time.time() + auth_session.DENIAL_GUARD_TTL_SECONDS)
+        )
+        guard.chmod(0o644)
+        decision = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            who_output="",
+        )
+        # An untrusted marker is ignored, so this first valid-password attempt
+        # may proceed to the account hook and receive the real private banner.
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "manual_lock")
+        self.assertFalse(list(self.paths.session_dir.glob("*.session")))
+
+    def test_malformed_denial_guard_is_ignored_and_removed(self):
+        self.paths.manual_lock_file.write_text("E\n")
+        self.paths.session_dir.mkdir(parents=True, mode=0o700)
+        guard = self.paths.session_dir / "E.denied"
+        guard.write_text("v1\tE\tmanual_lock\tnan\n")
+        guard.chmod(0o600)
+        decision = auth_session.process_authenticated_login(
+            paths=self.paths,
+            environment={"PAM_SERVICE": "sshd", "PAM_TYPE": "auth", "PAM_USER": "E"},
+            who_output="",
+        )
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "manual_lock")
+        self.assertFalse(guard.exists())
 
     def test_connection_limit_denial_removes_the_rejected_marker(self):
         self.login(401, 4001)

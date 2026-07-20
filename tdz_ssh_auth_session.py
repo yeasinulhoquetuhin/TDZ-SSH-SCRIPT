@@ -5,7 +5,9 @@ The OpenSSH ``Banner`` directive is intentionally not used for account data:
 it is delivered before authentication.  This helper is called only from the
 PAM *account* phase after an authentication method has succeeded.  It records
 the lifetime of the connection's privileged sshd process and returns the
-per-user banner through pam_exec's ``stdout``/PAM_TEXT_INFO path.
+per-user banner through pam_exec's ``stdout``/PAM_TEXT_INFO path.  A short,
+root-private PAM *auth* guard turns an immediate retry after a policy banner
+into a normal authentication failure so reconnecting clients do not loop.
 
 Marker identity is a PID plus the kernel process start time.  Checking both
 prevents a stale marker from becoming valid again after PID reuse.
@@ -31,6 +33,8 @@ from typing import Dict, FrozenSet, Iterable, Mapping, Optional, Tuple
 
 
 MARKER_VERSION = "v1"
+DENIAL_GUARD_VERSION = "v1"
+DENIAL_GUARD_TTL_SECONDS = 10.0
 SSH_PROCESS_NAMES = frozenset(("sshd", "sshd-session"))
 MANAGED_SYSTEM_GROUP = "tdzusers"
 SAFE_USERNAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
@@ -51,14 +55,10 @@ POLICY_STATUS = {
     "session_error": "Session Verification Failed",
     "policy_error": "Policy Check Failed",
 }
-POLICY_MESSAGE = {
-    "expired": "Your account has expired. Please renew it before reconnecting.",
-    "quota": "Your data limit has been reached. Please top up before reconnecting.",
-    "manual_lock": "Your account has been locked. Please contact support.",
-    "connection_limit": "Your connection limit has already been reached.",
-    "session_error": "The authenticated session could not be verified. Please retry.",
-    "policy_error": "The account policy could not be verified safely. Please contact support.",
-}
+POLICY_REASONS = frozenset(POLICY_STATUS)
+RETRY_GUARD_REASONS = frozenset(
+    ("expired", "quota", "manual_lock", "policy_error")
+)
 
 
 @dataclass(frozen=True)
@@ -277,6 +277,132 @@ def ensure_private_session_dir(session_dir: Path) -> None:
     os.chmod(str(session_dir), 0o700)
 
 
+def _denial_guard_path(paths: RuntimePaths, username: str) -> Path:
+    return paths.session_dir / (username + ".denied")
+
+
+def clear_denial_guard(paths: RuntimePaths, username: str) -> None:
+    try:
+        _denial_guard_path(paths, username).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def write_denial_guard(
+    paths: RuntimePaths,
+    username: str,
+    reason: str,
+    now: Optional[float] = None,
+) -> None:
+    """Atomically remember a recent post-auth policy denial.
+
+    The guard contains no password or account metadata. Its only purpose is
+    to make the next valid-password retry fail during PAM auth instead of
+    reaching OpenSSH's fatal PAM account rejection again.
+    """
+
+    if not SAFE_USERNAME.fullmatch(username) or reason not in RETRY_GUARD_REASONS:
+        raise ValueError("invalid SSH denial guard")
+    now = time.time() if now is None else now
+    ensure_private_session_dir(paths.session_dir)
+    destination = _denial_guard_path(paths, username)
+    payload = "\t".join(
+        (
+            DENIAL_GUARD_VERSION,
+            username,
+            reason,
+            "%.6f" % (now + DENIAL_GUARD_TTL_SECONDS),
+        )
+    ) + "\n"
+    temp_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=".%s." % username,
+            suffix=".tmp",
+            dir=str(paths.session_dir),
+            delete=False,
+        ) as handle:
+            temp_name = handle.name
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, str(destination))
+        temp_name = ""
+    finally:
+        if temp_name:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+
+
+def read_denial_guard(
+    paths: RuntimePaths,
+    username: str,
+    now: Optional[float] = None,
+) -> Optional[str]:
+    """Return the unexpired, securely stored policy reason for ``username``."""
+
+    if not SAFE_USERNAME.fullmatch(username):
+        return None
+    now = time.time() if now is None else now
+    path = _denial_guard_path(paths, username)
+    descriptor = -1
+    try:
+        directory_info = paths.session_dir.lstat()
+        if not stat.S_ISDIR(directory_info.st_mode) or stat.S_ISLNK(
+            directory_info.st_mode
+        ):
+            return None
+        if os.geteuid() == 0 and directory_info.st_uid != 0:
+            return None
+        if stat.S_IMODE(directory_info.st_mode) != 0o700:
+            return None
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            return None
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            return None
+        if os.geteuid() == 0 and info.st_uid != 0:
+            return None
+        descriptor = os.open(
+            str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        opened_info = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_info.st_mode):
+            return None
+        if (opened_info.st_dev, opened_info.st_ino) != (info.st_dev, info.st_ino):
+            return None
+        with os.fdopen(
+            descriptor, "r", encoding="utf-8", errors="strict"
+        ) as handle:
+            descriptor = -1
+            fields = handle.readline(512).rstrip("\r\n").split("\t")
+        if (
+            len(fields) != 4
+            or fields[0] != DENIAL_GUARD_VERSION
+            or fields[1] != username
+            or fields[2] not in RETRY_GUARD_REASONS
+        ):
+            return None
+        expires_at = float(fields[3])
+        if not now < expires_at <= now + DENIAL_GUARD_TTL_SECONDS + 1:
+            clear_denial_guard(paths, username)
+            return None
+        return fields[2]
+    except (OSError, UnicodeError, ValueError):
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def write_marker(
     paths: RuntimePaths, username: str, identity: ProcessIdentity
 ) -> Path:
@@ -451,7 +577,6 @@ def _minimal_policy_banner(
     username: str, total: int, limit: int, reason: str
 ) -> str:
     status = POLICY_STATUS.get(reason, "Access Denied")
-    message = POLICY_MESSAGE.get(reason, "Account access was denied.")
     return (
         "<br><br>---------------------------------<br>"
         "<b>[!] ACCOUNT • DETAILS [!]</b><br>"
@@ -459,8 +584,6 @@ def _minimal_policy_banner(
         f"<b>[-] Username:</b> {username}<br>"
         f"<b>[-] Status:</b> {status}<br>"
         f"<b>[-] Active Session:</b> {max(0, total)}/{max(1, limit)}<br>"
-        "---------------------------------<br>"
-        f'<font color="red"><b>[!] {message}</b></font><br>'
         "---------------------------------"
     )
 
@@ -476,29 +599,22 @@ def render_banner(
     try:
         content = banner_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        if reason in POLICY_MESSAGE:
+        if reason in POLICY_REASONS:
             return _minimal_policy_banner(username, total, limit, reason)
         return ""
     replacement = r"\g<1>%d/%d" % (max(0, total), max(1, limit))
     rendered, substitutions = SESSION_TEXT.subn(replacement, content, count=1)
     if substitutions != 1:
-        if reason in POLICY_MESSAGE:
+        if reason in POLICY_REASONS:
             return _minimal_policy_banner(username, total, limit, reason)
         return ""
-    if reason in POLICY_MESSAGE:
+    if reason in POLICY_REASONS:
         status = POLICY_STATUS[reason]
         rendered, status_substitutions = STATUS_TEXT.subn(
             r"\g<1>%s\g<2>" % status, rendered, count=1
         )
         if status_substitutions != 1:
             return _minimal_policy_banner(username, total, limit, reason)
-        policy_message = POLICY_MESSAGE[reason]
-        if policy_message.casefold() not in rendered.casefold():
-            rendered += (
-                '<br><font color="red"><b>[!] '
-                + policy_message
-                + "</b></font>"
-            )
     # pam_exec turns each physical output line into a separate PAM message.
     # The TDZ HTML already uses <br>, so send one atomic informational message.
     return rendered.replace("\r", "").replace("\n", "")
@@ -518,6 +634,16 @@ def _process_managed_login(
     except Exception:
         reason = "policy_error"
 
+    if reason in RETRY_GUARD_REASONS:
+        try:
+            write_denial_guard(paths, username, reason, now=now)
+        except Exception:
+            # Policy still fails closed if a damaged runtime filesystem stops
+            # the reconnect-loop guard from being persisted.
+            pass
+    else:
+        clear_denial_guard(paths, username)
+
     marker_counts, _marker_pids = prune_and_count_markers(paths, accounts)
     process_counts = count_authenticated_children(paths)
     who_counts = count_who_sessions(who_output)
@@ -529,7 +655,7 @@ def _process_managed_login(
     total = ssh_total + count_openvpn_sessions(
         paths.openvpn_snapshot, username, now=now
     )
-    if reason in POLICY_MESSAGE:
+    if reason in POLICY_REASONS:
         message = ""
         if paths.banner_flag.is_file():
             message = render_banner(
@@ -583,6 +709,55 @@ def _process_managed_login(
     )
 
 
+def _process_auth_retry_guard(
+    paths: RuntimePaths,
+    account: Account,
+    now: Optional[float] = None,
+) -> LoginDecision:
+    """Stop only a retry that follows a matching post-auth policy banner."""
+
+    try:
+        reason = account_policy_reason(paths, account, now=now)
+    except Exception:
+        reason = "policy_error"
+    guarded_reason = read_denial_guard(paths, account.username, now=now)
+    if reason in RETRY_GUARD_REASONS and guarded_reason == reason:
+        try:
+            # Sliding expiry keeps a persistently retrying client in the
+            # ordinary auth-failure path until it actually stops retrying.
+            write_denial_guard(paths, account.username, reason, now=now)
+        except Exception:
+            pass
+        return LoginDecision("", False, "retry_guard")
+    if guarded_reason is not None:
+        clear_denial_guard(paths, account.username)
+    return LoginDecision("", True, reason)
+
+
+def _missing_managed_policy_decision(
+    paths: RuntimePaths,
+    username: str,
+    pam_type: str,
+    now: Optional[float] = None,
+) -> LoginDecision:
+    if pam_type == "auth":
+        if read_denial_guard(paths, username, now=now) == "policy_error":
+            try:
+                write_denial_guard(paths, username, "policy_error", now=now)
+            except Exception:
+                pass
+            return LoginDecision("", False, "retry_guard")
+        return LoginDecision("", True, "policy_error")
+    try:
+        write_denial_guard(paths, username, "policy_error", now=now)
+    except Exception:
+        pass
+    message = ""
+    if paths.banner_flag.is_file():
+        message = _minimal_policy_banner(username, 0, 1, "policy_error")
+    return LoginDecision(message, False, "policy_error")
+
+
 def process_authenticated_login(
     paths: RuntimePaths = RuntimePaths(),
     environment: Optional[Mapping[str, str]] = None,
@@ -591,7 +766,8 @@ def process_authenticated_login(
     now: Optional[float] = None,
 ) -> LoginDecision:
     env = os.environ if environment is None else environment
-    if env.get("PAM_SERVICE") != "sshd" or env.get("PAM_TYPE") != "account":
+    pam_type = env.get("PAM_TYPE", "")
+    if env.get("PAM_SERVICE") != "sshd" or pam_type not in ("auth", "account"):
         return LoginDecision("", True, "not_applicable")
     username = env.get("PAM_USER", "")
     if not SAFE_USERNAME.fullmatch(username):
@@ -602,12 +778,9 @@ def process_authenticated_login(
         # bypass expiry/quota/manual-lock policy. Unrelated SSH admin accounts
         # remain outside this project and continue through the normal PAM stack.
         if is_tdztunnel_system_user(username):
-            message = ""
-            if paths.banner_flag.is_file():
-                message = _minimal_policy_banner(
-                    username, 0, 1, "policy_error"
-                )
-            return LoginDecision(message, False, "policy_error")
+            return _missing_managed_policy_decision(
+                paths, username, pam_type, now=now
+            )
         return LoginDecision("", True, "not_managed")
 
     account = accounts[username]
@@ -620,7 +793,11 @@ def process_authenticated_login(
             accounts = load_accounts(paths.db_file)
             account = accounts.get(username)
             if account is None:
-                return LoginDecision("", False, "policy_error")
+                return _missing_managed_policy_decision(
+                    paths, username, pam_type, now=now
+                )
+            if pam_type == "auth":
+                return _process_auth_retry_guard(paths, account, now=now)
             return _process_managed_login(
                 paths,
                 accounts,

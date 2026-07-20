@@ -1310,10 +1310,19 @@ class ModuleTests(unittest.TestCase):
             "account requisite pam_exec.so quiet stdout type=account",
             hook,
         )
-        self.assertIn('cat "${tmp_file}.body"', hook)
+        self.assertIn(
+            "auth requisite pam_exec.so quiet type=auth",
+            hook,
+        )
+        self.assertNotIn(
+            "auth requisite pam_exec.so quiet stdout type=auth",
+            hook,
+        )
+        self.assertIn("common-auth", hook)
+        self.assertIn('cat "$body_file"', hook)
         self.assertLess(
             hook.index('printf \'%s\\n%s\\n%s\\n\''),
-            hook.index('cat "${tmp_file}.body"'),
+            hook.index('cat "$body_file"'),
         )
         self.assertNotIn("expose_authtok", hook)
         self.assertIn(
@@ -1331,9 +1340,70 @@ class ModuleTests(unittest.TestCase):
 
         self.assertIn("tdz_ssh_auth_session.py|$PAYLOAD_SSH_AUTH_SESSION", installer)
         self.assertIn('env.get("PAM_SERVICE") != "sshd"', helper)
-        self.assertIn('env.get("PAM_TYPE") != "account"', helper)
+        self.assertIn('pam_type not in ("auth", "account")', helper)
+        self.assertIn('return LoginDecision("", False, "retry_guard")', helper)
         self.assertIn("identity.start_time == expected_start", helper)
         self.assertIn('return 0 if decision.allowed else 1', helper)
+
+    def test_pam_retry_guard_is_after_common_auth_and_hook_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pam_config = root / "sshd"
+            session_dir = root / "ssh-auth-sessions"
+            helper = REPO / "tdz_ssh_auth_session.py"
+            pam_config.write_text(
+                "# PAM configuration for sshd\n"
+                "@include common-auth\n"
+                "account required pam_nologin.so\n"
+                "@include common-account\n"
+            )
+            result = self.run_menu_bash(
+                f"""
+                SSH_PAM_CONFIG={pam_config}
+                SSH_AUTH_SESSION_DIR={session_dir}
+                SSH_AUTH_SESSION_HELPER={helper}
+                setup_ssh_auth_session_hook || exit 20
+                setup_ssh_auth_session_hook || exit 21
+                cat "$SSH_PAM_CONFIG"
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = result.stdout.splitlines()
+            account_line = (
+                "account requisite pam_exec.so quiet stdout type=account "
+                + str(helper)
+            )
+            auth_line = (
+                "auth requisite pam_exec.so quiet type=auth " + str(helper)
+            )
+            self.assertEqual(lines.count(account_line), 1)
+            self.assertEqual(lines.count(auth_line), 1)
+            self.assertLess(lines.index(account_line), lines.index("@include common-account"))
+            self.assertLess(lines.index("@include common-auth"), lines.index(auth_line))
+            self.assertEqual(session_dir.stat().st_mode & 0o777, 0o700)
+
+    def test_custom_pam_without_common_auth_keeps_account_hook_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pam_config = root / "sshd"
+            session_dir = root / "ssh-auth-sessions"
+            helper = REPO / "tdz_ssh_auth_session.py"
+            pam_config.write_text(
+                "auth required pam_unix.so\n"
+                "account required pam_unix.so\n"
+            )
+            result = self.run_menu_bash(
+                f"""
+                SSH_PAM_CONFIG={pam_config}
+                SSH_AUTH_SESSION_DIR={session_dir}
+                SSH_AUTH_SESSION_HELPER={helper}
+                setup_ssh_auth_session_hook || exit 30
+                cat "$SSH_PAM_CONFIG"
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("type=account", result.stdout)
+            self.assertNotIn("type=auth", result.stdout)
 
     def test_new_accounts_provision_dynamic_banner_before_follow_up_ui(self):
         menu = (REPO / "menu.sh").read_text()
@@ -1383,6 +1453,16 @@ class ModuleTests(unittest.TestCase):
         bulk_success = bulk.index('tdz_message OK "Created $created account(s).')
         self.assertLess(bulk_db, bulk_sync)
         self.assertLess(bulk_sync, bulk_success)
+
+        provision_start = menu.index("provision_dynamic_banners_for_new_users() {")
+        provision_end = menu.index("\n}\n\nupdate_ssh_banners_config", provision_start)
+        provision = menu[provision_start:provision_end]
+        self.assertIn('$SSH_AUTH_SESSION_DIR/${user}.denied', provision)
+
+        delete_start = menu.index("delete_tdztunnel_user_accounts() {")
+        delete_end = menu.index("\n}\n\nrequire_interactive_terminal", delete_start)
+        delete_accounts = menu[delete_start:delete_end]
+        self.assertIn('$SSH_AUTH_SESSION_DIR/${username}.denied', delete_accounts)
 
         setup_start = menu.index("setup_ssh_login_info() {")
         setup_end = menu.index("\n}\n\n\ndomain_cert_menu()", setup_start)

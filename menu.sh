@@ -95,6 +95,8 @@ SSH_AUTH_SESSION_DIR="/run/tdztunnel/ssh-auth-sessions"
 SSH_PAM_CONFIG="/etc/pam.d/sshd"
 SSH_PAM_HOOK_BEGIN="# TDZ SSH TUNNEL post-auth session banner - begin"
 SSH_PAM_HOOK_END="# TDZ SSH TUNNEL post-auth session banner - end"
+SSH_PAM_AUTH_GUARD_BEGIN="# TDZ SSH TUNNEL denied-account retry guard - begin"
+SSH_PAM_AUTH_GUARD_END="# TDZ SSH TUNNEL denied-account retry guard - end"
 TDZ_MENU_SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
 # OpenVPN is optional.  Installed systems load the managed module; repository
@@ -1238,6 +1240,8 @@ delete_tdztunnel_user_accounts() {
         rm -f "$BANDWIDTH_DIR/${username}.usage"
         rm -rf "$BANDWIDTH_DIR/pidtrack/${username}"
         rm -f "$DB_DIR/banners/${username}.txt" 2>/dev/null
+        is_valid_tdztunnel_username "$username" && \
+            rm -f "$SSH_AUTH_SESSION_DIR/${username}.denied" 2>/dev/null
         tdz_set_manual_lock_state "$username" unlocked >/dev/null 2>&1 || true
     done
 
@@ -2100,12 +2104,15 @@ EOF
 }
 
 setup_ssh_auth_session_hook() {
-    local hook_line tmp_file registry_security
-    # This runs only after OpenSSH accepts an authentication method.  A
-    # requisite account hook can therefore show the private account banner to
-    # the rightful user, then deny expiry/quota/manual-lock policy before the
-    # normal PAM account stack continues.  Wrong passwords never reach it.
-    hook_line="account requisite pam_exec.so quiet stdout type=account $SSH_AUTH_SESSION_HELPER"
+    local account_hook_line auth_guard_line tmp_file body_file registry_security
+    local auth_guard_supported=false
+    # The account hook shows the private TDZ banner only after a credential is
+    # accepted, then enforces expiry/quota/manual-lock policy. The auth guard is
+    # deliberately placed *after* common-auth: wrong passwords never invoke the
+    # helper, while an immediate valid-password retry after a denial becomes a
+    # normal auth failure instead of another fatal account-phase disconnect.
+    account_hook_line="account requisite pam_exec.so quiet stdout type=account $SSH_AUTH_SESSION_HELPER"
+    auth_guard_line="auth requisite pam_exec.so quiet type=auth $SSH_AUTH_SESSION_HELPER"
 
     [[ -x "$SSH_AUTH_SESSION_HELPER" && -f "$SSH_PAM_CONFIG" ]] || return 1
     if [[ -L "$SSH_AUTH_SESSION_DIR" || ( -e "$SSH_AUTH_SESSION_DIR" && ! -d "$SSH_AUTH_SESSION_DIR" ) ]]; then
@@ -2116,26 +2123,55 @@ setup_ssh_auth_session_hook() {
     [[ "$registry_security" == "0:0:700" ]] || return 1
 
     tmp_file=$(mktemp "${SSH_PAM_CONFIG}.tdz.XXXXXX") || return 1
+    body_file="${tmp_file}.body"
     if ! awk -v helper="$SSH_AUTH_SESSION_HELPER" \
-             -v begin="$SSH_PAM_HOOK_BEGIN" -v end="$SSH_PAM_HOOK_END" '
-        $0 == begin || $0 == end || index($0, helper) { next }
+             -v begin="$SSH_PAM_HOOK_BEGIN" -v end="$SSH_PAM_HOOK_END" \
+             -v auth_begin="$SSH_PAM_AUTH_GUARD_BEGIN" \
+             -v auth_end="$SSH_PAM_AUTH_GUARD_END" '
+        $0 == begin || $0 == end || $0 == auth_begin || $0 == auth_end ||
+        index($0, helper) { next }
         { print }
-    ' "$SSH_PAM_CONFIG" > "${tmp_file}.body"; then
-        rm -f "$tmp_file" "${tmp_file}.body"
+    ' "$SSH_PAM_CONFIG" > "$body_file"; then
+        rm -f "$tmp_file" "$body_file"
         return 1
+    fi
+    if grep -Eq '^[[:space:]]*(@include[[:space:]]+common-auth|auth[[:space:]]+include[[:space:]]+common-auth)([[:space:]]*(#.*)?)?$' "$body_file"; then
+        auth_guard_supported=true
     fi
     # Put TDZ before common-account/pam_unix so expired Linux shadow metadata
     # cannot suppress the reason-specific TDZ banner first.
     if ! {
         printf '%s\n%s\n%s\n' \
-            "$SSH_PAM_HOOK_BEGIN" "$hook_line" "$SSH_PAM_HOOK_END"
-        cat "${tmp_file}.body"
+            "$SSH_PAM_HOOK_BEGIN" "$account_hook_line" "$SSH_PAM_HOOK_END"
+        if $auth_guard_supported; then
+            awk -v begin="$SSH_PAM_AUTH_GUARD_BEGIN" \
+                -v line="$auth_guard_line" -v end="$SSH_PAM_AUTH_GUARD_END" '
+                {
+                    print
+                    if (!inserted &&
+                        ($0 ~ /^[[:space:]]*@include[[:space:]]+common-auth([[:space:]]|$)/ ||
+                         $0 ~ /^[[:space:]]*auth[[:space:]]+include[[:space:]]+common-auth([[:space:]]|$)/)) {
+                        print begin
+                        print line
+                        print end
+                        inserted=1
+                    }
+                }
+                END { if (!inserted) exit 1 }
+            ' "$body_file"
+        else
+            cat "$body_file"
+        fi
     } > "$tmp_file"; then
-        rm -f "$tmp_file" "${tmp_file}.body"
+        rm -f "$tmp_file" "$body_file"
         return 1
     fi
-    rm -f "${tmp_file}.body"
-    if ! grep -Fxq "$hook_line" "$tmp_file"; then
+    rm -f "$body_file"
+    if [[ $(grep -Fxc "$account_hook_line" "$tmp_file") -ne 1 ]]; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    if $auth_guard_supported && [[ $(grep -Fxc "$auth_guard_line" "$tmp_file") -ne 1 ]]; then
         rm -f "$tmp_file"
         return 1
     fi
@@ -2153,8 +2189,11 @@ remove_ssh_auth_session_hook() {
     [[ -f "$SSH_PAM_CONFIG" ]] || return 0
     tmp_file=$(mktemp "${SSH_PAM_CONFIG}.tdz.XXXXXX") || return 1
     if ! awk -v helper="$SSH_AUTH_SESSION_HELPER" \
-             -v begin="$SSH_PAM_HOOK_BEGIN" -v end="$SSH_PAM_HOOK_END" '
-        $0 == begin || $0 == end || index($0, helper) { next }
+             -v begin="$SSH_PAM_HOOK_BEGIN" -v end="$SSH_PAM_HOOK_END" \
+             -v auth_begin="$SSH_PAM_AUTH_GUARD_BEGIN" \
+             -v auth_end="$SSH_PAM_AUTH_GUARD_END" '
+        $0 == begin || $0 == end || $0 == auth_begin || $0 == auth_end ||
+        index($0, helper) { next }
         { print }
     ' "$SSH_PAM_CONFIG" > "$tmp_file"; then
         rm -f "$tmp_file"
@@ -2376,6 +2415,8 @@ provision_dynamic_banners_for_new_users() {
         [[ -n "$user" ]] || continue
         tdz_set_manual_lock_state "$user" unlocked || return 1
         rm -f "$DB_DIR/banners/${user}.txt" 2>/dev/null
+        is_valid_tdztunnel_username "$user" && \
+            rm -f "$SSH_AUTH_SESSION_DIR/${user}.denied" 2>/dev/null
     done
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled "${users[@]}"
@@ -3100,6 +3141,8 @@ rename_tdztunnel_user() {
     fi
 
     rm -f "$db_backup" "$DB_DIR/banners/${old_username}.txt"
+    rm -f "$SSH_AUTH_SESSION_DIR/${old_username}.denied" \
+        "$SSH_AUTH_SESSION_DIR/${new_username}.denied" 2>/dev/null
     rm -rf "$BANDWIDTH_DIR/pidtrack/${old_username}" 2>/dev/null
     rm -f "$BANDWIDTH_DIR/pidtrack/${old_username}__"*.last 2>/dev/null
     if ! id -nG "$new_username" 2>/dev/null | tr ' ' '\n' | grep -Fxq "$TDZ_USERS_GROUP"; then
