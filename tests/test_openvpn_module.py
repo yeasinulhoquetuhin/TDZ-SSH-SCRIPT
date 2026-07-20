@@ -10,6 +10,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 MODULE = REPO / "openvpn_module.sh"
+MENU = REPO / "menu.sh"
 
 
 class LinkCollector(HTMLParser):
@@ -42,6 +43,149 @@ class ModuleTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
+
+    def run_menu_bash(self, body: str):
+        return subprocess.run(
+            ["bash", "-c", f"source {MENU!s} --source-only\n{body}"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_lock_and_unlock_selectors_only_show_actionable_accounts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = root / "users.db"
+            lock_input = root / "lock-input"
+            unlock_input = root / "unlock-input"
+            database.write_text(
+                "alice:pass:Never:1:0\n"
+                "bob:pass:Never:1:0\n"
+                "carol:pass:Never:1:0\n"
+            )
+            lock_input.write_text("all\n")
+            unlock_input.write_text("all\n")
+
+            result = self.run_menu_bash(
+                f"""
+                DB_FILE={database}
+                clear() {{ :; }}
+                show_banner() {{ :; }}
+                tdz_box_top() {{ :; }}
+                tdz_box_header() {{ :; }}
+                tdz_box_divider() {{ :; }}
+                tdz_box_bot() {{ :; }}
+                tdz_menu1() {{ :; }}
+                tdz_row() {{ :; }}
+                id() {{
+                    case "$1" in
+                        alice|bob|carol) return 0 ;;
+                        *) return 1 ;;
+                    esac
+                }}
+                passwd() {{
+                    [[ "$1" == "-S" ]] || return 1
+                    case "$2" in
+                        alice) printf 'alice P 2026-07-20 0 99999 7 -1\n' ;;
+                        bob) printf 'bob L 2026-07-20 0 99999 7 -1\n' ;;
+                        carol) printf 'carol NP 2026-07-20 0 99999 7 -1\n' ;;
+                        *) return 1 ;;
+                    esac
+                }}
+
+                _select_multi_user_interface "LOCK ACCOUNTS" false unlocked < {lock_input}
+                [[ "${{SELECTED_USERS[*]}}" == "alice carol" ]] || {{
+                    printf 'lock-list=%s\n' "${{SELECTED_USERS[*]}}" >&2
+                    exit 20
+                }}
+
+                _select_multi_user_interface "UNLOCK ACCOUNTS" false locked < {unlock_input}
+                [[ "${{SELECTED_USERS[*]}}" == "bob" ]] || {{
+                    printf 'unlock-list=%s\n' "${{SELECTED_USERS[*]}}" >&2
+                    exit 21
+                }}
+                """
+            )
+            self.assertEqual(
+                result.returncode, 0, result.stderr + "\n" + result.stdout
+            )
+
+        menu = MENU.read_text()
+        lock_start = menu.index("lock_user() {")
+        unlock_start = menu.index("unlock_user() {")
+        list_start = menu.index("list_users() {")
+        lock = menu[lock_start:unlock_start]
+        unlock = menu[unlock_start:list_start]
+        self.assertIn(
+            '_select_multi_user_interface "LOCK ACCOUNTS" "false" "unlocked"',
+            lock,
+        )
+        self.assertIn(
+            '_select_multi_user_interface "UNLOCK ACCOUNTS" "false" "locked"',
+            unlock,
+        )
+        self.assertIn('current_state=$(tdz_account_lock_state "$u"', lock)
+        self.assertIn('current_state=$(tdz_account_lock_state "$u"', unlock)
+        self.assertGreaterEqual(
+            lock.count('current_state=$(tdz_account_lock_state "$u"'), 2
+        )
+        self.assertGreaterEqual(
+            unlock.count('current_state=$(tdz_account_lock_state "$u"'), 2
+        )
+
+    def test_lock_and_unlock_actions_transition_state_without_moving_database_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = root / "users.db"
+            lock_input = root / "lock-input"
+            unlock_input = root / "unlock-input"
+            original_row = "alice:pass:Never:2:10\n"
+            database.write_text(original_row)
+            lock_input.write_text("all\n")
+            unlock_input.write_text("all\n")
+
+            result = self.run_menu_bash(
+                f"""
+                DB_FILE={database}
+                mock_passwd_state=P
+                vpn_kills=0
+                process_kills=0
+                clear() {{ :; }}
+                show_banner() {{ :; }}
+                tdz_box_top() {{ :; }}
+                tdz_box_header() {{ :; }}
+                tdz_box_divider() {{ :; }}
+                tdz_box_bot() {{ :; }}
+                tdz_menu1() {{ :; }}
+                tdz_row() {{ :; }}
+                id() {{ [[ "$1" == alice ]]; }}
+                passwd() {{
+                    [[ "$1" == "-S" && "$2" == alice ]] || return 1
+                    printf 'alice %s 2026-07-20 0 99999 7 -1\n' "$mock_passwd_state"
+                }}
+                usermod() {{
+                    case "$1:$2" in
+                        -L:alice) mock_passwd_state=L ;;
+                        -U:alice) mock_passwd_state=P ;;
+                        *) return 1 ;;
+                    esac
+                }}
+                tdz_openvpn_kill_user() {{ ((vpn_kills += 1)); }}
+                killall() {{ ((process_kills += 1)); }}
+
+                lock_user < {lock_input}
+                [[ "$mock_passwd_state" == L ]] || exit 30
+                [[ "$vpn_kills" == 1 && "$process_kills" == 1 ]] || exit 31
+                [[ "$(cat "$DB_FILE")" == 'alice:pass:Never:2:10' ]] || exit 32
+
+                unlock_user < {unlock_input}
+                [[ "$mock_passwd_state" == P ]] || exit 33
+                [[ "$(cat "$DB_FILE")" == 'alice:pass:Never:2:10' ]] || exit 34
+                """
+            )
+            self.assertEqual(
+                result.returncode, 0, result.stderr + "\n" + result.stdout
+            )
 
     def test_host_and_forbidden_port_validation(self):
         result = self.run_bash(
@@ -896,7 +1040,7 @@ class ModuleTests(unittest.TestCase):
 
     def test_limiter_preserves_established_openvpn_sessions(self):
         menu = (REPO / "menu.sh").read_text()
-        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-20.1", menu)
+        self.assertIn("# TDZ SSH TUNNEL limiter version 2026-07-20.2", menu)
         self.assertIn("if (( online_count > limit )); then", menu)
         self.assertIn("banner_session_count=$online_count", menu)
         self.assertNotIn("banner_session_count=$((online_count + 1))", menu)
@@ -937,12 +1081,58 @@ class ModuleTests(unittest.TestCase):
         self.assertIn('rm -f "$DB_DIR/banners/${user}.txt"', provision)
         self.assertIn('refresh_dynamic_banner_routing_if_enabled "${users[@]}"', provision)
 
-        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-20.1")
+        limiter_start = menu.index("# TDZ SSH TUNNEL limiter version 2026-07-20.2")
         limiter_end = menu.index("\nEOF\n    chmod +x \"$LIMITER_SCRIPT\"", limiter_start)
         limiter = menu[limiter_start:limiter_end]
         self.assertIn('${#unique_sshd_sessions[@]} -gt 0', limiter)
+        self.assertIn('${#unique_pam_sessions[@]} -gt 0', limiter)
         self.assertNotIn('${#unique_pids[@]} -gt 0', limiter)
         self.assertNotIn('online_count=1\n', limiter)
+        self.assertIn(
+            'printf \'%s\\t%s\\n\' "$user" "$online_count" >> "$SSH_SESSION_SNAPSHOT_TMP"',
+            limiter,
+        )
+        self.assertIn(
+            'mv -f "$SSH_SESSION_SNAPSHOT_TMP" "$SSH_SESSION_SNAPSHOT"',
+            limiter,
+        )
+
+        cache_start = menu.index("refresh_ssh_session_cache() {")
+        cache_end = menu.index("\n}\n\ncount_managed_online_sessions", cache_start)
+        cache = menu[cache_start:cache_end]
+        self.assertIn('pam_session_pids["$marker_user"]', cache)
+        self.assertIn('SSH_SESSION_COUNTS["$user"]=$_conns', cache)
+
+    def test_dynamic_banner_uses_authenticated_pam_account_delivery(self):
+        menu = (REPO / "menu.sh").read_text()
+        installer = (REPO / "install.sh").read_text()
+        helper = (REPO / "tdz_ssh_auth_session.py").read_text()
+
+        hook_start = menu.index("setup_ssh_auth_session_hook() {")
+        hook_end = menu.index("\n}\n\nremove_ssh_auth_session_hook", hook_start)
+        hook = menu[hook_start:hook_end]
+        self.assertIn(
+            "account optional pam_exec.so quiet stdout type=account",
+            hook,
+        )
+        self.assertNotIn("expose_authtok", hook)
+        self.assertIn(
+            'install -d -o root -g root -m 700 "$SSH_AUTH_SESSION_DIR"',
+            hook,
+        )
+        self.assertIn('[[ "$registry_security" == "0:0:700" ]]', hook)
+
+        config_start = menu.index("update_ssh_banners_config() {")
+        config_end = menu.index("\n}\n\nsetup_ssh_login_info", config_start)
+        config = menu[config_start:config_end]
+        self.assertIn("authenticated dynamic account banners", config)
+        self.assertNotIn("Banner /etc/tdztunnel/banners/", config)
+        self.assertNotIn("Match User", config)
+
+        self.assertIn("tdz_ssh_auth_session.py|$PAYLOAD_SSH_AUTH_SESSION", installer)
+        self.assertIn('env.get("PAM_SERVICE") != "sshd"', helper)
+        self.assertIn('env.get("PAM_TYPE") != "account"', helper)
+        self.assertIn("identity.start_time == expected_start", helper)
 
     def test_new_accounts_provision_dynamic_banner_before_follow_up_ui(self):
         menu = (REPO / "menu.sh").read_text()

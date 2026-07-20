@@ -25,6 +25,7 @@ TARGET_OVPN_MODULE="$TARGET_LIB_DIR/openvpn_module.sh"
 TARGET_OVPN_GATEWAY="$TARGET_LIB_DIR/tdz_openvpn_gateway.py"
 TARGET_OVPN_PORTAL="$TARGET_LIB_DIR/tdz_openvpn_portal.py"
 TARGET_OVPN_RUNTIME="$TARGET_LIB_DIR/tdz_openvpn_runtime.py"
+TARGET_SSH_AUTH_SESSION="$TARGET_LIB_DIR/tdz_ssh_auth_session.py"
 DATA_DIR="/etc/tdztunnel"
 INSTALL_FLAG="$DATA_DIR/.install"
 SSHD_CONFIG="/etc/ssh/sshd_config"
@@ -37,6 +38,7 @@ OVPN_MODULE_URL="${OVPN_MODULE_URL:-https://raw.githubusercontent.com/yeasinulho
 OVPN_GATEWAY_URL="${OVPN_GATEWAY_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/tdz_openvpn_gateway.py}"
 OVPN_PORTAL_URL="${OVPN_PORTAL_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/tdz_openvpn_portal.py}"
 OVPN_RUNTIME_URL="${OVPN_RUNTIME_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/tdz_openvpn_runtime.py}"
+SSH_AUTH_SESSION_URL="${SSH_AUTH_SESSION_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/tdz_ssh_auth_session.py}"
 
 WORK_DIR="$(mktemp -d /tmp/tdz-installer.XXXXXX)"
 LOG_FILE="$WORK_DIR/install.log"
@@ -46,6 +48,7 @@ PAYLOAD_OVPN_MODULE="$WORK_DIR/openvpn_module.sh"
 PAYLOAD_OVPN_GATEWAY="$WORK_DIR/tdz_openvpn_gateway.py"
 PAYLOAD_OVPN_PORTAL="$WORK_DIR/tdz_openvpn_portal.py"
 PAYLOAD_OVPN_RUNTIME="$WORK_DIR/tdz_openvpn_runtime.py"
+PAYLOAD_SSH_AUTH_SESSION="$WORK_DIR/tdz_ssh_auth_session.py"
 OLD_MENU="$WORK_DIR/menu.previous"
 OLD_LIB_DIR="$WORK_DIR/lib.previous"
 OLD_SSHD_CONFIG="$WORK_DIR/sshd_config.previous"
@@ -253,12 +256,14 @@ openvpn_module.sh|$PAYLOAD_OVPN_MODULE|$OVPN_MODULE_URL
 tdz_openvpn_gateway.py|$PAYLOAD_OVPN_GATEWAY|$OVPN_GATEWAY_URL
 tdz_openvpn_portal.py|$PAYLOAD_OVPN_PORTAL|$OVPN_PORTAL_URL
 tdz_openvpn_runtime.py|$PAYLOAD_OVPN_RUNTIME|$OVPN_RUNTIME_URL
+tdz_ssh_auth_session.py|$PAYLOAD_SSH_AUTH_SESSION|$SSH_AUTH_SESSION_URL
 EOF
     bash -n "$PAYLOAD_OVPN_MODULE"
     if command -v python3 >/dev/null 2>&1 &&
        python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 7))'; then
         PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
-            "$PAYLOAD_OVPN_GATEWAY" "$PAYLOAD_OVPN_PORTAL" "$PAYLOAD_OVPN_RUNTIME"
+            "$PAYLOAD_OVPN_GATEWAY" "$PAYLOAD_OVPN_PORTAL" "$PAYLOAD_OVPN_RUNTIME" \
+            "$PAYLOAD_SSH_AUTH_SESSION"
     fi
 }
 
@@ -286,6 +291,7 @@ install_core() {
     install -m 755 "$PAYLOAD_OVPN_GATEWAY" "$TARGET_OVPN_GATEWAY"
     install -m 755 "$PAYLOAD_OVPN_PORTAL" "$TARGET_OVPN_PORTAL"
     install -m 755 "$PAYLOAD_OVPN_RUNTIME" "$TARGET_OVPN_RUNTIME"
+    install -m 755 "$PAYLOAD_SSH_AUTH_SESSION" "$TARGET_SSH_AUTH_SESSION"
 }
 
 configure_ssh() {

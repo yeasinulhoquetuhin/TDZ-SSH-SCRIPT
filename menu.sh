@@ -88,6 +88,11 @@ XUI_PATCHED_LABEL="v2.9.3 • Patched"
 XUI_INSTALLER_COMMIT="89fb75da778db776e6ec0a7f735c2a55626229aa"
 XUI_INSTALLER_SHA256="e3ae8c4d42e3f249ea5cad47d9d6b0e98daa675829daab57ffa214efce118186"
 TDZ_LIB_DIR="/usr/local/lib/tdz-ssh-tunnel"
+SSH_AUTH_SESSION_HELPER="$TDZ_LIB_DIR/tdz_ssh_auth_session.py"
+SSH_AUTH_SESSION_DIR="/run/tdztunnel/ssh-auth-sessions"
+SSH_PAM_CONFIG="/etc/pam.d/sshd"
+SSH_PAM_HOOK_BEGIN="# TDZ SSH TUNNEL post-auth session banner - begin"
+SSH_PAM_HOOK_END="# TDZ SSH TUNNEL post-auth session banner - end"
 TDZ_MENU_SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
 # OpenVPN is optional.  Installed systems load the managed module; repository
@@ -1033,6 +1038,9 @@ initial_setup() {
 
     echo -e "${C_BLUE}Configuring user limiter service...${C_RESET}"
     setup_limiter_service
+    setup_ssh_auth_session_hook || {
+        echo -e "${C_YELLOW}[WARNING] Could not install the authenticated SSH session hook.${C_RESET}"
+    }
     
     echo -e "${C_BLUE}Configuring bandwidth monitoring service...${C_RESET}"
     setup_bandwidth_service
@@ -1071,6 +1079,9 @@ update_setup() {
     ensure_tdztunnel_system_group
     harden_sshd_for_tunnel_stability
     setup_limiter_service
+    setup_ssh_auth_session_hook || {
+        echo -e "${C_YELLOW}[WARNING] Could not refresh the authenticated SSH session hook.${C_RESET}"
+    }
     setup_bandwidth_service
     setup_trial_cleanup_script
 
@@ -1249,7 +1260,7 @@ setup_limiter_service() {
     # Combined limiter + bandwidth monitoring
     cat > "$LIMITER_SCRIPT" << 'EOF'
 #!/bin/bash
-# TDZ SSH TUNNEL limiter version 2026-07-20.1
+# TDZ SSH TUNNEL limiter version 2026-07-20.2
 # Live session counts use authenticated `who`, sshd, and OpenVPN records only.
 # Per-user process scans remain traffic-accounting inputs, never session evidence.
 DB_FILE="/etc/tdztunnel/users.db"
@@ -1264,9 +1275,15 @@ OVPN_RUNTIME="/usr/local/lib/tdz-ssh-tunnel/tdz_openvpn_runtime.py"
 OVPN_SESSION_SNAPSHOT="/etc/tdztunnel/openvpn/run/sessions.tsv"
 SSH_SESSION_SNAPSHOT="$BW_DIR/ssh-sessions.tsv"
 SSH_SESSION_SNAPSHOT_TMP="${SSH_SESSION_SNAPSHOT}.tmp.$$"
+SSH_AUTH_SESSION_DIR="/run/tdztunnel/ssh-auth-sessions"
 USAGE_LOCK="$BW_DIR/.usage.lock"
 
 mkdir -p "$BW_DIR" "$PID_DIR"
+if [[ -L "$SSH_AUTH_SESSION_DIR" || ( -e "$SSH_AUTH_SESSION_DIR" && ! -d "$SSH_AUTH_SESSION_DIR" ) ]]; then
+    echo "Refusing unsafe SSH session registry path: $SSH_AUTH_SESSION_DIR" >&2
+    exit 1
+fi
+install -d -o root -g root -m 700 "$SSH_AUTH_SESSION_DIR" || exit 1
 shopt -s nullglob
 trap 'rm -f "$SSH_SESSION_SNAPSHOT_TMP"' EXIT
 
@@ -1433,9 +1450,10 @@ while true; do
     declare -A session_pids=()
     declare -A locked_users=()
     declare -A uid_to_user=()
-    declare -A loginuid_pids=()
     declare -A sshd_session_pids=()
     declare -A who_online=()
+    declare -A pam_online=()
+    declare -A pam_session_pids=()
     declare -A ovpn_online=()
     declare -A managed_user_lookup=()
     : > "$SSH_SESSION_SNAPSHOT_TMP"
@@ -1444,6 +1462,34 @@ while true; do
     while IFS=: read -r managed_user _rest; do
         [[ -n "$managed_user" && "$managed_user" != \#* ]] && managed_user_lookup["$managed_user"]=1
     done < "$DB_FILE"
+
+    # PAM account-phase markers are created only after OpenSSH has accepted an
+    # authentication method. A marker is live only while the same sshd PID and
+    # kernel process start time still exist; this rejects failed logins, stale
+    # files, and PID reuse without relying on timing guesses.
+    for auth_marker in "$SSH_AUTH_SESSION_DIR"/*.session; do
+        [[ -f "$auth_marker" && ! -L "$auth_marker" ]] || {
+            rm -f "$auth_marker" 2>/dev/null || true
+            continue
+        }
+        marker_security=$(stat -c '%u:%a' "$auth_marker" 2>/dev/null || true)
+        marker_version="" marker_user="" marker_pid="" marker_start="" marker_extra=""
+        IFS=$'\t' read -r marker_version marker_user marker_pid marker_start marker_extra < "$auth_marker" || true
+        marker_name=${auth_marker##*/}
+        marker_name=${marker_name%.session}
+        actual_start=$(awk '{print $22}' "/proc/$marker_pid/stat" 2>/dev/null || true)
+        actual_comm=$(cat "/proc/$marker_pid/comm" 2>/dev/null || true)
+        if [[ "$marker_security" == "0:600" && "$marker_version" == "v1" &&
+              "$marker_pid" =~ ^[0-9]+$ && "$marker_pid" == "$marker_name" &&
+              "$marker_start" =~ ^[0-9]+$ && "$actual_start" == "$marker_start" &&
+              ( "$actual_comm" == "sshd" || "$actual_comm" == "sshd-session" ) &&
+              -n "${managed_user_lookup[$marker_user]+x}" ]]; then
+            pam_online["$marker_user"]=$(( ${pam_online["$marker_user"]:-0} + 1 ))
+            pam_session_pids["$marker_user"]+="$marker_pid "
+        else
+            rm -f "$auth_marker" 2>/dev/null || true
+        fi
+    done
 
     snapshot_mtime=$(stat -c %Y "$OVPN_SESSION_SNAPSHOT" 2>/dev/null || echo 0)
     if [[ "$snapshot_mtime" =~ ^[0-9]+$ ]] && (( snapshot_mtime >= current_ts - 5 )); then
@@ -1466,25 +1512,20 @@ while true; do
         who_online["$who_user"]=$(( ${who_online["$who_user"]:-0} + 1 ))
     done < <(who 2>/dev/null)
 
-    # METHOD B: ps -C sshd — secondary, catches pre-shell sshd children
-    while read -r ssh_pid ssh_owner; do
+    # METHOD B: accept only OpenSSH's authenticated child process titles.
+    # Failed/password-prompt processes are labelled [preauth], [priv], or
+    # [net] and therefore can never become session evidence.
+    while read -r ssh_pid ssh_comm ssh_args; do
         [[ "$ssh_pid" =~ ^[0-9]+$ ]] || continue
-
-        if [[ -n "$ssh_owner" && "$ssh_owner" != "root" && "$ssh_owner" != "sshd" && -n "${managed_user_lookup[$ssh_owner]+x}" ]]; then
-            session_pids["$ssh_owner"]+="$ssh_pid "
-            sshd_session_pids["$ssh_owner"]+="$ssh_pid "
-        elif [[ -r "/proc/$ssh_pid/loginuid" ]]; then
-            login_uid=""
-            read -r login_uid < "/proc/$ssh_pid/loginuid" || login_uid=""
-            if [[ "$login_uid" =~ ^[0-9]+$ && "$login_uid" != "4294967295" ]]; then
-                candidate_user="${uid_to_user[$login_uid]}"
-                if [[ -n "$candidate_user" && -n "${managed_user_lookup[$candidate_user]+x}" ]]; then
-                    session_pids["$candidate_user"]+="$ssh_pid "
-                    sshd_session_pids["$candidate_user"]+="$ssh_pid "
-                fi
+        [[ "$ssh_comm" == "sshd" || "$ssh_comm" == "sshd-session" ]] || continue
+        if [[ "$ssh_args" =~ ^(sshd|sshd-session):[[:space:]]+([A-Za-z0-9_][A-Za-z0-9_.-]{0,31})@(notty|pts/[^[:space:]]+|tty[^[:space:]]*)$ ]]; then
+            ssh_user=${BASH_REMATCH[2]}
+            if [[ -n "${managed_user_lookup[$ssh_user]+x}" ]]; then
+                session_pids["$ssh_user"]+="$ssh_pid "
+                sshd_session_pids["$ssh_user"]+="$ssh_pid "
             fi
         fi
-    done < <(ps -C sshd -o pid=,user= 2>/dev/null)
+    done < <(ps -eo pid=,comm=,args= --no-headers 2>/dev/null)
 
     # METHOD C: UID-based process scan catches ALL PIDs owned by managed users.
     # (bash, sftp-server, scp, etc.). Critical for bandwidth tracking because
@@ -1520,11 +1561,17 @@ while true; do
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_sshd_sessions["$pid"]=1
         done
 
+        declare -A unique_pam_sessions=()
+        for pid in ${pam_session_pids[$user]:-}; do
+            [[ "$pid" =~ ^[0-9]+$ ]] && unique_pam_sessions["$pid"]=1
+        done
+
         # Only authenticated session sources may mark an account online.
         # A detached/background process owned by the user can outlive SSH and
         # must not leave a stale session in the banner or connection limit.
         local_user_online=false
         if [[ -n "${who_online[$user]+x}" || ${#unique_sshd_sessions[@]} -gt 0 ||
+              ${#unique_pam_sessions[@]} -gt 0 ||
               ${ovpn_online[$user]:-0} -gt 0 ]]; then
             local_user_online=true
         fi
@@ -1533,6 +1580,9 @@ while true; do
         online_count=${who_online[$user]:-0}
         if (( ${#unique_sshd_sessions[@]} > online_count )); then
             online_count=${#unique_sshd_sessions[@]}
+        fi
+        if (( ${#unique_pam_sessions[@]} > online_count )); then
+            online_count=${#unique_pam_sessions[@]}
         fi
         # Publish the SSH-only count for the OpenVPN admission hook. This is
         # written atomically after the complete database scan so the shared
@@ -1658,7 +1708,12 @@ while true; do
         if (( online_count > limit )); then
             excess=$((online_count - limit))
             killed=0
-            for pid in $(printf "%s\n" "${!unique_sshd_sessions[@]}" | sort -nr); do
+            if (( ${#unique_pam_sessions[@]} >= ${#unique_sshd_sessions[@]} )); then
+                kill_candidates="${!unique_pam_sessions[*]}"
+            else
+                kill_candidates="${!unique_sshd_sessions[*]}"
+            fi
+            for pid in $(printf "%s\n" $kill_candidates | sort -nr); do
                 [[ "$pid" =~ ^[0-9]+$ ]] || continue
                 kill -TERM "$pid" &>/dev/null || true
                 killed=$((killed + 1))
@@ -1785,12 +1840,66 @@ EOF
     fi
 }
 
+setup_ssh_auth_session_hook() {
+    local hook_line tmp_file registry_security
+    hook_line="account optional pam_exec.so quiet stdout type=account $SSH_AUTH_SESSION_HELPER"
+
+    [[ -x "$SSH_AUTH_SESSION_HELPER" && -f "$SSH_PAM_CONFIG" ]] || return 1
+    if [[ -L "$SSH_AUTH_SESSION_DIR" || ( -e "$SSH_AUTH_SESSION_DIR" && ! -d "$SSH_AUTH_SESSION_DIR" ) ]]; then
+        return 1
+    fi
+    install -d -o root -g root -m 700 "$SSH_AUTH_SESSION_DIR" || return 1
+    registry_security=$(stat -c '%u:%g:%a' "$SSH_AUTH_SESSION_DIR" 2>/dev/null || true)
+    [[ "$registry_security" == "0:0:700" ]] || return 1
+
+    tmp_file=$(mktemp "${SSH_PAM_CONFIG}.tdz.XXXXXX") || return 1
+    if ! awk -v helper="$SSH_AUTH_SESSION_HELPER" \
+             -v begin="$SSH_PAM_HOOK_BEGIN" -v end="$SSH_PAM_HOOK_END" '
+        $0 == begin || $0 == end || index($0, helper) { next }
+        { print }
+    ' "$SSH_PAM_CONFIG" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    printf '\n%s\n%s\n%s\n' \
+        "$SSH_PAM_HOOK_BEGIN" "$hook_line" "$SSH_PAM_HOOK_END" >> "$tmp_file"
+    chmod --reference="$SSH_PAM_CONFIG" "$tmp_file" 2>/dev/null || chmod 644 "$tmp_file"
+    chown --reference="$SSH_PAM_CONFIG" "$tmp_file" 2>/dev/null || true
+    if cmp -s "$tmp_file" "$SSH_PAM_CONFIG" 2>/dev/null; then
+        rm -f "$tmp_file"
+        return 0
+    fi
+    mv -f "$tmp_file" "$SSH_PAM_CONFIG"
+}
+
+remove_ssh_auth_session_hook() {
+    local tmp_file
+    [[ -f "$SSH_PAM_CONFIG" ]] || return 0
+    tmp_file=$(mktemp "${SSH_PAM_CONFIG}.tdz.XXXXXX") || return 1
+    if ! awk -v helper="$SSH_AUTH_SESSION_HELPER" \
+             -v begin="$SSH_PAM_HOOK_BEGIN" -v end="$SSH_PAM_HOOK_END" '
+        $0 == begin || $0 == end || index($0, helper) { next }
+        { print }
+    ' "$SSH_PAM_CONFIG" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    chmod --reference="$SSH_PAM_CONFIG" "$tmp_file" 2>/dev/null || chmod 644 "$tmp_file"
+    chown --reference="$SSH_PAM_CONFIG" "$tmp_file" 2>/dev/null || true
+    if cmp -s "$tmp_file" "$SSH_PAM_CONFIG" 2>/dev/null; then
+        rm -f "$tmp_file"
+        return 0
+    fi
+    mv -f "$tmp_file" "$SSH_PAM_CONFIG"
+}
+
 sync_runtime_components_if_needed() {
-    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-20.1"
+    local limiter_marker="# TDZ SSH TUNNEL limiter version 2026-07-20.2"
     cleanup_legacy_bandwidth_runtime
     setup_trial_cleanup_script >/dev/null 2>&1
     # Ensure sshd is hardened (idempotent — only writes if config differs)
     harden_sshd_for_tunnel_stability
+    setup_ssh_auth_session_hook >/dev/null 2>&1 || true
     if [[ ! -f "$LIMITER_SCRIPT" ]] || ! grep -Fqx "$limiter_marker" "$LIMITER_SCRIPT" 2>/dev/null; then
         setup_limiter_service >/dev/null 2>&1
     fi
@@ -1934,9 +2043,9 @@ refresh_dynamic_banner_routing_if_enabled() {
         systemctl start tdztunnel-limiter --no-block >/dev/null 2>&1 || true
     fi
 
-    # Publish the banner before exposing its Match User route through sshd.
-    # Otherwise an immediate first login can reach a route whose Banner file
-    # does not exist yet and that connection will never see the dynamic banner.
+    # Publish the banner before enabling its post-auth PAM delivery. Otherwise
+    # an account's very first successful login could arrive before the worker
+    # has produced the file that the authenticated hook must render.
     mkdir -p "$banner_dir"
     if (( ${#users[@]} > 0 )); then
         all_ready=false
@@ -1985,15 +2094,11 @@ update_ssh_banners_config() {
     ensure_tdztunnel_dirs
     mkdir -p "$(dirname "$SSHD_TDZ_CONFIG")" || return 1
     tmp_conf=$(mktemp "${SSHD_TDZ_CONFIG}.tmp.XXXXXX") || return 1
-    echo "# TDZ SSH TUNNEL - Dynamic per-user SSH banners" > "$tmp_conf"
-
-    if [[ -f "$DB_FILE" ]]; then
-        while IFS=: read -r u _rest; do
-            [[ -z "$u" || "$u" == \#* ]] && continue
-            echo "Match User $u" >> "$tmp_conf"
-            echo "    Banner /etc/tdztunnel/banners/${u}.txt" >> "$tmp_conf"
-        done < "$DB_FILE"
-    fi
+    {
+        echo "# TDZ SSH TUNNEL - authenticated dynamic account banners"
+        echo "# Account data is emitted by PAM only after successful authentication."
+        echo "# Never add per-user Banner directives here; OpenSSH sends them pre-auth."
+    } > "$tmp_conf"
 
     if ! cmp -s "$tmp_conf" "$SSHD_TDZ_CONFIG" 2>/dev/null; then
         chmod 644 "$tmp_conf"
@@ -2019,6 +2124,10 @@ update_ssh_banners_config() {
 
 setup_ssh_login_info() {
     ensure_tdztunnel_dirs || return 1
+    if ! setup_ssh_auth_session_hook; then
+        echo -e "${C_RED}[ERROR] Could not install the authenticated banner hook.${C_RESET}"
+        return 1
+    fi
     if ! touch "/etc/tdztunnel/banners_enabled"; then
         echo -e "${C_RED}[ERROR] Failed to enable dynamic SSH banners.${C_RESET}"
         return 1
@@ -2182,16 +2291,51 @@ _select_user_interface() {
     done
 }
 
+tdz_account_lock_state() {
+    local username="$1"
+    local passwd_state=""
+
+    if ! id "$username" &>/dev/null; then
+        printf '%s\n' "missing"
+        return 1
+    fi
+
+    passwd_state=$(passwd -S "$username" 2>/dev/null | awk 'NR == 1 { print $2 }')
+    case "$passwd_state" in
+        L|LK)
+            printf '%s\n' "locked"
+            ;;
+        P|NP)
+            printf '%s\n' "unlocked"
+            ;;
+        *)
+            printf '%s\n' "unknown"
+            return 1
+            ;;
+    esac
+}
+
 _select_multi_user_interface() {
     local title="$1"
     local include_orphan_users="${2:-false}"
+    local account_state_filter="${3:-any}"
     clear; show_banner
     SELECTED_USERS=()
     local -a all_users=() users=()
+    local -a state_filtered_users=()
     local -a orphan_users=()
     local -A all_user_lookup=()
     local -A orphan_user_lookup=()
-    local username search_term user_number
+    local username search_term user_number account_state
+
+    case "$account_state_filter" in
+        any|locked|unlocked) ;;
+        *)
+            echo -e "\n${C_RED}[ERROR] Invalid account-state filter: ${account_state_filter}.${C_RESET}"
+            SELECTED_USERS=("NO_USERS")
+            return 1
+            ;;
+    esac
 
     if [[ -s $DB_FILE ]]; then
         mapfile -t all_users < <(cut -d: -f1 "$DB_FILE" | sort)
@@ -2210,13 +2354,29 @@ _select_multi_user_interface() {
         fi
     fi
 
+    if [[ "$account_state_filter" != "any" ]]; then
+        for username in "${all_users[@]}"; do
+            account_state=$(tdz_account_lock_state "$username" 2>/dev/null || true)
+            if [[ "$account_state" == "$account_state_filter" ]]; then
+                state_filtered_users+=("$username")
+            fi
+        done
+        all_users=("${state_filtered_users[@]}")
+    fi
+
     if [[ ${#all_users[@]} -eq 0 ]]; then
         echo
         tdz_box_top
         tdz_box_header "$title"
         tdz_box_divider
-        tdz_row "${C_YELLOW}No managed users were found.${C_RESET}"
-        if [[ "$include_orphan_users" == "true" ]]; then
+        if [[ "$account_state_filter" == "locked" ]]; then
+            tdz_row "${C_YELLOW}No locked accounts are available to unlock.${C_RESET}"
+        elif [[ "$account_state_filter" == "unlocked" ]]; then
+            tdz_row "${C_YELLOW}No unlocked accounts are available to lock.${C_RESET}"
+        else
+            tdz_row "${C_YELLOW}No managed users were found.${C_RESET}"
+        fi
+        if [[ "$include_orphan_users" == "true" && "$account_state_filter" == "any" ]]; then
             tdz_row "${C_GRAY}No system-only accounts were found.${C_RESET}"
         fi
         tdz_box_bot
@@ -2922,7 +3082,7 @@ edit_user() {
 }
 
 lock_user() {
-    _select_multi_user_interface "LOCK ACCOUNTS"
+    _select_multi_user_interface "LOCK ACCOUNTS" "false" "unlocked"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
     echo -e "\n${C_BLUE}Locking selected users...${C_RESET}"
@@ -2931,14 +3091,29 @@ lock_user() {
              echo -e " [ERROR] User '${C_YELLOW}$u${C_RESET}' does not exist on this system."
              continue
         fi
-        
-        usermod -L "$u"
-        if [ $? -eq 0 ]; then
+
+        local current_state
+        current_state=$(tdz_account_lock_state "$u" 2>/dev/null || true)
+        if [[ "$current_state" == "locked" ]]; then
+            echo -e " [SKIP] ${C_YELLOW}$u${C_RESET} is already locked."
+            continue
+        fi
+        if [[ "$current_state" != "unlocked" ]]; then
+            echo -e " [ERROR] Could not verify the current lock state for ${C_YELLOW}$u${C_RESET}."
+            continue
+        fi
+
+        if usermod -L "$u"; then
             if declare -F tdz_openvpn_kill_user >/dev/null 2>&1; then
                 tdz_openvpn_kill_user "$u"
             fi
             killall -u "$u" -9 &>/dev/null
-            echo -e " [OK] ${C_YELLOW}$u${C_RESET} locked and active sessions killed."
+            current_state=$(tdz_account_lock_state "$u" 2>/dev/null || true)
+            if [[ "$current_state" == "locked" ]]; then
+                echo -e " [OK] ${C_YELLOW}$u${C_RESET} locked and active sessions killed."
+            else
+                echo -e " [ERROR] Lock command completed for ${C_YELLOW}$u${C_RESET}, but the resulting account state could not be verified."
+            fi
         else
             echo -e " [ERROR] Failed to lock ${C_YELLOW}$u${C_RESET}."
         fi
@@ -2946,7 +3121,7 @@ lock_user() {
 }
 
 unlock_user() {
-    _select_multi_user_interface "UNLOCK ACCOUNTS"
+    _select_multi_user_interface "UNLOCK ACCOUNTS" "false" "locked"
     if [[ ${#SELECTED_USERS[@]} -eq 0 || "${SELECTED_USERS[0]}" == "NO_USERS" ]]; then return; fi
     
     echo -e "\n${C_BLUE}Unlocking selected users...${C_RESET}"
@@ -2955,10 +3130,25 @@ unlock_user() {
              echo -e " [ERROR] User '${C_YELLOW}$u${C_RESET}' does not exist on this system."
              continue
         fi
-        
-        usermod -U "$u"
-        if [ $? -eq 0 ]; then
-            echo -e " [OK] ${C_YELLOW}$u${C_RESET} unlocked."
+
+        local current_state
+        current_state=$(tdz_account_lock_state "$u" 2>/dev/null || true)
+        if [[ "$current_state" == "unlocked" ]]; then
+            echo -e " [SKIP] ${C_YELLOW}$u${C_RESET} is already unlocked."
+            continue
+        fi
+        if [[ "$current_state" != "locked" ]]; then
+            echo -e " [ERROR] Could not verify the current lock state for ${C_YELLOW}$u${C_RESET}."
+            continue
+        fi
+
+        if usermod -U "$u"; then
+            current_state=$(tdz_account_lock_state "$u" 2>/dev/null || true)
+            if [[ "$current_state" == "unlocked" ]]; then
+                echo -e " [OK] ${C_YELLOW}$u${C_RESET} unlocked."
+            else
+                echo -e " [ERROR] Unlock command completed for ${C_YELLOW}$u${C_RESET}, but the resulting account state could not be verified."
+            fi
         else
             echo -e " [ERROR] Failed to unlock ${C_YELLOW}$u${C_RESET}."
         fi
@@ -6957,15 +7147,37 @@ refresh_ssh_session_cache() {
     local -A managed_user_lookup=()
     local -A uid_user_lookup=()
     local -A session_pids=()
-    local -A loginuid_pids=()
     local -A sshd_session_pids=()
     local -A who_online=()
+    local -A pam_online=()
+    local -A pam_session_pids=()
     local -A openvpn_online=()
-    local managed_user system_user system_uid ssh_pid ssh_owner candidate_user login_uid
+    local managed_user system_user system_uid ssh_pid ssh_comm ssh_args ssh_user
 
     while IFS=: read -r managed_user _rest; do
         [[ -n "$managed_user" && "$managed_user" != \#* ]] && managed_user_lookup["$managed_user"]=1
     done < "$DB_FILE"
+
+    local auth_marker marker_security marker_version marker_user marker_pid marker_start marker_extra marker_name actual_start actual_comm
+    shopt -s nullglob
+    for auth_marker in "$SSH_AUTH_SESSION_DIR"/*.session; do
+        [[ -f "$auth_marker" && ! -L "$auth_marker" ]] || continue
+        marker_security=$(stat -c '%u:%a' "$auth_marker" 2>/dev/null || true)
+        marker_version="" marker_user="" marker_pid="" marker_start="" marker_extra=""
+        IFS=$'\t' read -r marker_version marker_user marker_pid marker_start marker_extra < "$auth_marker" || true
+        marker_name=${auth_marker##*/}
+        marker_name=${marker_name%.session}
+        actual_start=$(awk '{print $22}' "/proc/$marker_pid/stat" 2>/dev/null || true)
+        actual_comm=$(cat "/proc/$marker_pid/comm" 2>/dev/null || true)
+        if [[ "$marker_security" == "0:600" && "$marker_version" == "v1" &&
+              "$marker_pid" =~ ^[0-9]+$ && "$marker_pid" == "$marker_name" &&
+              "$marker_start" =~ ^[0-9]+$ && "$actual_start" == "$marker_start" &&
+              ( "$actual_comm" == "sshd" || "$actual_comm" == "sshd-session" ) &&
+              -n "${managed_user_lookup[$marker_user]+x}" ]]; then
+            pam_online["$marker_user"]=$(( ${pam_online["$marker_user"]:-0} + 1 ))
+            pam_session_pids["$marker_user"]+="$marker_pid "
+        fi
+    done
 
     while IFS=: read -r system_user _ system_uid _rest; do
         [[ -n "$system_user" && "$system_uid" =~ ^[0-9]+$ ]] && uid_user_lookup["$system_uid"]="$system_user"
@@ -6984,27 +7196,19 @@ refresh_ssh_session_cache() {
         who_online["$who_user"]=$(( ${who_online["$who_user"]:-0} + 1 ))
     done < <(who 2>/dev/null)
 
-    # ── METHOD B: ps -C sshd — catches pre-shell sshd children owned by user.
-    # Backward-compatible secondary detector. Misses users whose shell already exec'd
-    # (process is no longer named "sshd"), but Method A covers that.
-    while read -r ssh_pid ssh_owner; do
+    # ── METHOD B: only authenticated OpenSSH child titles count. Pre-auth
+    # monitor/network processes are intentionally excluded.
+    while read -r ssh_pid ssh_comm ssh_args; do
         [[ "$ssh_pid" =~ ^[0-9]+$ ]] || continue
-
-        if [[ -n "$ssh_owner" && "$ssh_owner" != "root" && "$ssh_owner" != "sshd" && -n "${managed_user_lookup[$ssh_owner]+x}" ]]; then
-            session_pids["$ssh_owner"]+="$ssh_pid "
-            sshd_session_pids["$ssh_owner"]+="$ssh_pid "
-        elif [[ -r "/proc/$ssh_pid/loginuid" ]]; then
-            login_uid=""
-            read -r login_uid < "/proc/$ssh_pid/loginuid" || login_uid=""
-            if [[ "$login_uid" =~ ^[0-9]+$ && "$login_uid" != "4294967295" ]]; then
-                candidate_user="${uid_user_lookup[$login_uid]}"
-                if [[ -n "$candidate_user" && -n "${managed_user_lookup[$candidate_user]+x}" ]]; then
-                    loginuid_pids["$candidate_user"]+="$ssh_pid "
-                    sshd_session_pids["$candidate_user"]+="$ssh_pid "
-                fi
+        [[ "$ssh_comm" == "sshd" || "$ssh_comm" == "sshd-session" ]] || continue
+        if [[ "$ssh_args" =~ ^(sshd|sshd-session):[[:space:]]+([A-Za-z0-9_][A-Za-z0-9_.-]{0,31})@(notty|pts/[^[:space:]]+|tty[^[:space:]]*)$ ]]; then
+            ssh_user=${BASH_REMATCH[2]}
+            if [[ -n "${managed_user_lookup[$ssh_user]+x}" ]]; then
+                session_pids["$ssh_user"]+="$ssh_pid "
+                sshd_session_pids["$ssh_user"]+="$ssh_pid "
             fi
         fi
-    done < <(ps -C sshd -o pid=,user= 2>/dev/null)
+    done < <(ps -eo pid=,comm=,args= --no-headers 2>/dev/null)
 
     # ── METHOD C: UID-based process scan catches ALL PIDs owned by managed users
     # (bash, sftp-server, scp, etc.). Needed for bandwidth tracking via /proc/$pid/io
@@ -7038,11 +7242,7 @@ refresh_ssh_session_cache() {
     local user pid pid_candidates
     for user in "${!managed_user_lookup[@]}"; do
         declare -A unique_pids=()
-        if [[ -n "${session_pids[$user]}" ]]; then
-            pid_candidates="${session_pids[$user]}"
-        else
-            pid_candidates="${loginuid_pids[$user]}"
-        fi
+        pid_candidates="${session_pids[$user]:-}"
 
         for pid in $pid_candidates; do
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_pids["$pid"]=1
@@ -7053,15 +7253,24 @@ refresh_ssh_session_cache() {
             [[ "$pid" =~ ^[0-9]+$ ]] && unique_sshd_sessions["$pid"]=1
         done
 
+        declare -A unique_pam_sessions=()
+        for pid in ${pam_session_pids[$user]:-}; do
+            [[ "$pid" =~ ^[0-9]+$ ]] && unique_pam_sessions["$pid"]=1
+        done
+
         # Mark online only from authenticated SSH/OpenVPN records. Background
         # processes remain available for traffic accounting but cannot keep a
         # disconnected account falsely online.
         if [[ -n "${who_online[$user]+x}" || ${#unique_sshd_sessions[@]} -gt 0 ||
+              ${#unique_pam_sessions[@]} -gt 0 ||
               ${openvpn_online[$user]:-0} -gt 0 ]]; then
             # CONNS count: sshd sessions are authoritative for tunnel/no-PTY users.
             local _conns=${who_online[$user]:-0}
             if (( ${#unique_sshd_sessions[@]} > _conns )); then
                 _conns=${#unique_sshd_sessions[@]}
+            fi
+            if (( ${#unique_pam_sessions[@]} > _conns )); then
+                _conns=${#unique_pam_sessions[@]}
             fi
             _conns=$((_conns + ${openvpn_online[$user]:-0}))
             SSH_SESSION_COUNTS["$user"]=$_conns
@@ -7341,8 +7550,10 @@ uninstall_script() {
     rm -f "$TRIAL_CLEANUP_SCRIPT"
     
     echo -e "\n${C_BLUE}Removing SSH login banner...${C_RESET}"
+    remove_ssh_auth_session_hook >/dev/null 2>&1 || true
     rm -f "$LOGIN_INFO_SCRIPT"
     rm -f "$SSHD_TDZ_CONFIG"
+    rm -rf "$SSH_AUTH_SESSION_DIR"
     systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null
     
     chattr -i /etc/resolv.conf &>/dev/null

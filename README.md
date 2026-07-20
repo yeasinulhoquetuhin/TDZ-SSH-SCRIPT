@@ -109,7 +109,9 @@ Account status, expiration, remaining validity, active connections, and compact 
   - **Traffic Ended** — data top-up prompt with contact link
   - **Locked** — unlock request message with contact link
 - **DarkTunnel optimized** — HTML banners render perfectly in DarkTunnel and similar SSH client apps
-- **Auto-updating** — banners refresh every second to reflect current session counts and bandwidth
+- **Authenticated live banners** — account details are delivered only after successful SSH authentication; failed attempts receive no private account data and never enter the session count
+- **Immediate session lifecycle** — the successful connection is included in its own banner, while PID plus process-start-time tracking removes disconnected sessions and rejects stale PID reuse
+- **Auto-updating data** — generated banner data refreshes every second to reflect current bandwidth and established SSH/OpenVPN sessions
 - **Custom Admin & Channel usernames** — replace the default Telegram usernames with your own in the Dynamic Banner; matching `t.me/` links are generated automatically
 
 ### Tunnel Protocols
