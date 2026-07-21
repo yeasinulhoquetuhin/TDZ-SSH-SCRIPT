@@ -1,22 +1,6 @@
-# TDZ SSH SCRIPT - Binary releases & large files
-/releases/
+original/
+internal/mgr/scripts/
+tdz
+tdz-nopack
 *.tar.gz
-*.zip
-*.deb
-*.rpm
-/udp/
-/binaries/
-
-# OS / editor junk
-.DS_Store
-Thumbs.db
-*.swp
-*.swo
-*~
-.idea/
-.vscode/
-
-# Local test artifacts
-*.log
-test-output/
-.tmp/
+dist/
