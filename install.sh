@@ -388,14 +388,14 @@ run_step "Refreshing services" 100 refresh_and_finish
 
 FINISHED=true
 echo
-draw_live_progress 100 "Complete" ""
+draw_live_progress 100 "Completed" ""
 echo
 echo
 if [[ "$MODE" == "update" ]]; then
-    echo -e "  ${C_GREEN}${C_BOLD}✓ UPDATE COMPLETE${C_RESET}"
+    echo -e "  ${C_GREEN}${C_BOLD}✓ UPDATE COMPLETED${C_RESET}"
     echo -e "  ${C_GRAY}  All accounts and settings were preserved.${C_RESET}"
 else
-    echo -e "  ${C_GREEN}${C_BOLD}✓ INSTALLATION COMPLETE${C_RESET}"
+    echo -e "  ${C_GREEN}${C_BOLD}✓ INSTALLATION COMPLETED${C_RESET}"
 fi
 echo -e "  ${C_CYAN}  Run: ${C_BOLD}menu${C_RESET}"
 echo

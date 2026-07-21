@@ -301,7 +301,9 @@ class ModuleTests(unittest.TestCase):
             self.assertIn(step, installer)
         self.assertNotIn('run_step "Preparing installation files"', installer)
         self.assertIn("local -a spinners=(' ◐' ' ◓' ' ◑' ' ◒')", installer)
-        self.assertIn('draw_live_progress 100 "Complete" ""', installer)
+        self.assertIn('draw_live_progress 100 "Completed" ""', installer)
+        self.assertIn("✓ UPDATE COMPLETED", installer)
+        self.assertIn("✓ INSTALLATION COMPLETED", installer)
         self.assertIn("printf '\\r\\033[2K  %s✓%s %s\\n'", installer)
         self.assertNotIn("%s◐%s %s✓%s", installer)
 
@@ -311,6 +313,15 @@ class ModuleTests(unittest.TestCase):
         progress = menu[progress_start:progress_end]
         self.assertIn("local -a spinners=('◐' '◓' '◑' '◒')", progress)
         self.assertIn("sleep 0.1", progress)
+        self.assertNotIn('$C_CYAN" "${spinners[$index]}', progress)
+
+        openvpn = MODULE.read_text()
+        fallback_start = openvpn.index("tdz_openvpn_progress_begin() {")
+        fallback_end = openvpn.index(
+            "\n}\n\ntdz_openvpn_progress_done()", fallback_start
+        )
+        fallback = openvpn[fallback_start:fallback_end]
+        self.assertNotIn('$C_CYAN" "${spinners[$index]}', fallback)
 
     def test_action_progress_spinner_rotates_and_clears_before_success(self):
         master, slave = pty.openpty()

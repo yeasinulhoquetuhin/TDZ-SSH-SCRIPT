@@ -1660,7 +1660,7 @@ tdz_openvpn_progress_begin() {
             while true; do
                 printf '\r\033[2K  %b[%s/%s]%b %-40s %b%s%b' \
                     "$C_CYAN" "$current" "$total" "$C_RESET" "$label" \
-                    "$C_CYAN" "${spinners[$index]}" "$C_RESET"
+                    "$C_RESET" "${spinners[$index]}" "$C_RESET"
                 index=$(((index + 1) % ${#spinners[@]}))
                 sleep 0.1
             done
