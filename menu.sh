@@ -98,10 +98,6 @@ TDZ_CERTIFICATE_LOG="${TDZ_CERTIFICATE_LOG:-/var/log/tdz-certificate-setup.log}"
 TDZ_SERVICE_LOG="${TDZ_SERVICE_LOG:-/var/log/tdz-service-setup.log}"
 TDZ_UNINSTALL_LOG="${TDZ_UNINSTALL_LOG:-/var/log/tdz-uninstall.log}"
 FIREWALL_STATE_FILE="$DB_DIR/firewall-rules.db"
-XUI_PATCHED_TAG="v2.9.3-patched"
-XUI_PATCHED_LABEL="v2.9.3 • Patched"
-XUI_INSTALLER_COMMIT="89fb75da778db776e6ec0a7f735c2a55626229aa"
-XUI_INSTALLER_SHA256="e3ae8c4d42e3f249ea5cad47d9d6b0e98daa675829daab57ffa214efce118186"
 TDZ_LIB_DIR="/usr/local/lib/tdz-ssh-tunnel"
 SSH_AUTH_SESSION_HELPER="$TDZ_LIB_DIR/tdz_ssh_auth_session.py"
 SSH_AUTH_SESSION_DIR="/run/tdztunnel/ssh-auth-sessions"
@@ -525,11 +521,11 @@ tdz_message() {
 # exposing implementation dependencies; detailed command output stays quiet.
 tdz_progress_begin() {
     local current="$1" total="$2" label="$3"
-    local label_width=$((TDZ_BOX_WIDTH - 22))
+    local label_width=$((TDZ_BOX_WIDTH - 24))
     (( label_width < 18 )) && label_width=18
     (( label_width > 42 )) && label_width=42
     label=$(_tdz_fit "$label" "$label_width")
-    printf '  %b[%s/%s]%b %-*s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label_width" "$label"
+    printf '  %b◐ [%s/%s]%b %-*s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label_width" "$label"
 }
 
 tdz_progress_done() {
@@ -7674,89 +7670,6 @@ nginx_proxy_menu() {
     esac
 }
 
-install_xui_panel() {
-    clear; show_banner
-    echo
-    tdz_box_top
-    tdz_box_header "INSTALL X-UI PANEL"
-    tdz_box_divider
-    tdz_row "${C_GRAY}VERSION${C_RESET} ${C_WHITE}${XUI_PATCHED_LABEL}${C_RESET}"
-    tdz_box_divider
-    tdz_menu1 "[ 1]" "Install Patched X-UI"
-    tdz_menu1 "[ 0]" "Cancel Installation"
-    tdz_box_bot
-    echo
-    read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" choice
-    case $choice in
-        1)
-            local installer_file installer_hash installer_url
-            installer_file=$(mktemp /tmp/tdz-xui-installer.XXXXXX.sh) || {
-                echo -e "\n${C_RED}[ERROR] Could not create a temporary installer file.${C_RESET}"
-                return 1
-            }
-            installer_url="https://raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/${XUI_INSTALLER_COMMIT}/install.sh"
-            echo
-            tdz_section "INSTALLATION PROGRESS"
-            tdz_progress_begin 1 3 "Preparing installation files"
-            if ! curl -fLsS --retry 3 --connect-timeout 10 -o "$installer_file" "$installer_url"; then
-                tdz_progress_failed
-                rm -f "$installer_file"
-                echo -e "${C_RED}[ERROR] Installation files could not be prepared.${C_RESET}"
-                return 1
-            fi
-            tdz_progress_done
-
-            tdz_progress_begin 2 3 "Verifying installation package"
-            installer_hash=$(sha256sum "$installer_file" 2>/dev/null | awk '{print $1}')
-            if [[ "$installer_hash" != "$XUI_INSTALLER_SHA256" ]]; then
-                tdz_progress_failed
-                rm -f "$installer_file"
-                echo -e "${C_RED}[ERROR] Installer integrity check failed. Installation stopped.${C_RESET}"
-                return 1
-            fi
-
-            # The tagged upstream installer still points fallback files at a
-            # non-existent "main" branch. Pin every fallback to the same commit.
-            sed -i "s|raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/main/|raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/${XUI_INSTALLER_COMMIT}/|g" "$installer_file"
-            tdz_progress_done
-
-            tdz_progress_begin 3 3 "Installing and verifying service"
-            if bash "$installer_file" "$XUI_PATCHED_TAG" >/var/log/tdz-panel-install.log 2>&1; then
-                tdz_progress_done
-                echo -e "\n${C_GREEN}[OK] ${XUI_PATCHED_LABEL} installed successfully.${C_RESET}"
-            else
-                tdz_progress_failed
-                echo -e "\n${C_RED}[ERROR] X-UI installation failed.${C_RESET}"
-            fi
-            rm -f "$installer_file"
-            ;;
-        0)
-            tdz_message CANCELLED "Installation cancelled."
-            ;;
-        *)
-            echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}"
-            ;;
-    esac
-}
-
-tdz_xui_is_installed() {
-    systemctl is-active --quiet x-ui.service && return 0
-    [[ -f /etc/systemd/system/x-ui.service && -x /usr/local/x-ui/x-ui ]]
-}
-
-# The panel's own `x-ui uninstall` command remains the interactive uninstaller.
-# This non-interactive cleanup is used only by the complete script removal.
-tdz_cleanup_xui_files() {
-    systemctl stop x-ui.service >/dev/null 2>&1 || true
-    systemctl disable x-ui.service >/dev/null 2>&1 || true
-    rm -f /etc/systemd/system/x-ui.service /usr/local/bin/x-ui /usr/bin/x-ui
-    rm -rf /usr/local/x-ui /etc/x-ui
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    ! systemctl is-active --quiet x-ui.service &&
-        [[ ! -e /etc/systemd/system/x-ui.service && ! -e /usr/local/x-ui &&
-           ! -e /etc/x-ui && ! -e /usr/local/bin/x-ui && ! -e /usr/bin/x-ui ]]
-}
-
 refresh_ssh_session_cache() {
     local now db_mtime
     now=$(date +%s)
@@ -8088,7 +8001,6 @@ protocol_menu() {
         local ssl_tunnel_status="Inactive" ssl_tunnel_color="$C_RED"
         local dnstt_status="Inactive" dnstt_color="$C_RED"
         local nginx_status="Inactive" nginx_color="$C_RED"
-        local xui_status="Not Installed" xui_color="$C_RED"
         local openvpn_status="Not Installed" openvpn_color="$C_RED"
         if systemctl is-active --quiet badvpn; then badvpn_status="Active"; badvpn_color="$C_GREEN"; fi
         if systemctl is-active --quiet zivpn.service; then zivpn_status="Active"; zivpn_color="$C_GREEN"; fi
@@ -8098,7 +8010,6 @@ protocol_menu() {
         fi
         if systemctl is-active --quiet dnstt.service; then dnstt_status="Active"; dnstt_color="$C_GREEN"; fi
         if systemctl is-active --quiet nginx; then nginx_status="Active"; nginx_color="$C_GREEN"; fi
-        if tdz_xui_is_installed; then xui_status="Installed"; xui_color="$C_GREEN"; fi
         if declare -F tdz_openvpn_is_active >/dev/null 2>&1 && tdz_openvpn_is_active; then
             openvpn_status="Active"; openvpn_color="$C_GREEN"
         elif declare -F tdz_openvpn_is_installed >/dev/null 2>&1 && tdz_openvpn_is_installed; then
@@ -8123,9 +8034,6 @@ protocol_menu() {
             tdz_menu_status "[10]" "OpenVPN Protocol Suite" "$openvpn_status" "$openvpn_color"
         fi
         tdz_box_divider
-        tdz_row "${C_GRAY}MANAGEMENT PANELS${C_RESET}"
-        tdz_menu_status "[11]" "Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status" "$xui_color"
-        tdz_box_divider
         tdz_menu1 "[ 0]" "Return to Main Menu"
         tdz_box_bot
         echo
@@ -8140,7 +8048,6 @@ protocol_menu() {
             7) nginx_proxy_menu ;;
             8) tdz_run_action install_zivpn ;; 9) tdz_run_action uninstall_zivpn ;;
             10) if declare -F tdz_openvpn_menu >/dev/null 2>&1; then tdz_openvpn_menu; else invalid_option; fi ;;
-            11) tdz_run_action install_xui_panel ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -8226,7 +8133,6 @@ tdz_uninstall_optional_components() {
     uninstall_ssl_tunnel || cleanup_failed=true
     purge_nginx silent || cleanup_failed=true
     rm -rf /etc/nginx
-    tdz_cleanup_xui_files || cleanup_failed=true
     if dpkg-query -W -f='${Status}' haproxy 2>/dev/null | grep -q 'install ok installed'; then
         tdz_apt_purge haproxy || cleanup_failed=true
     fi
@@ -8265,7 +8171,6 @@ tdz_uninstall_application_files() {
         fi
         rm -f "$diagnostic"
     done
-    rm -f /var/log/tdz-panel-install.log
     systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
@@ -8283,8 +8188,7 @@ tdz_verify_uninstall_cleanup() {
         "$LEGACY_UDP_DIR" "$LEGACY_UDP_SERVICE" "$LEGACY_UDPGW_BINARY" \
         "$LEGACY_UDPGW_SERVICE" "$LEGACY_PROXY_BINARY" "$LEGACY_PROXY_SERVICE" \
         "$LEGACY_PROXY_CONFIG" \
-        /etc/nginx /etc/haproxy /usr/local/bin/x-ui /usr/bin/x-ui /usr/local/x-ui /etc/x-ui \
-        /etc/systemd/system/x-ui.service
+        /etc/nginx /etc/haproxy
     )
     if [[ -n "${TDZ_OVPN_ROOT:-}" ]]; then
         managed_paths+=(
@@ -8301,7 +8205,7 @@ tdz_verify_uninstall_cleanup() {
         [[ -e "$path" || -L "$path" ]] && leftovers+=("$path")
     done
     for unit in tdztunnel-limiter tdztunnel-bandwidth tdz-ws-ssh-bridge \
-        badvpn dnstt zivpn haproxy nginx x-ui udp-custom udpgw tdzproxy \
+        badvpn dnstt zivpn haproxy nginx udp-custom udpgw tdzproxy \
         tdz-openvpn-network tdz-openvpn-tcp tdz-openvpn-udp tdz-openvpn-http \
         tdz-openvpn-wss tdz-openvpn-ssl tdz-openvpn-portal tdz-openvpn-accounting; do
         if systemctl is-active --quiet "$unit.service"; then

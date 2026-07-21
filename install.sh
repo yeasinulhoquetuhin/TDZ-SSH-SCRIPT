@@ -183,7 +183,7 @@ ANIMATION_TICKS="${TDZ_INSTALL_ANIMATION_TICKS:-30}"
 [[ "$ANIMATION_TICKS" =~ ^[1-9][0-9]*$ ]] || ANIMATION_TICKS=30
 
 draw_live_progress() {
-    local percent=$1 label=$2 spinner=${3:-} width=28 filled empty fill_bar="" empty_bar=""
+    local percent=$1 label=$2 spinner="${3:- ◐}" width=28 filled empty fill_bar="" empty_bar=""
     filled=$((percent * width / 100))
     empty=$((width - filled))
     (( filled > 0 )) && printf -v fill_bar '%*s' "$filled" '' && fill_bar=${fill_bar// /█}
@@ -199,12 +199,11 @@ draw_live_progress() {
 run_step() {
     local label=$1 target_percent=$2
     shift 2
-    local job_pid tick percent spinner_index=0
-    local -a spinners=(' ◐' ' ◓' ' ◑' ' ◒')
+    local job_pid tick percent
     CURRENT_STEP=$((CURRENT_STEP + 1))
 
     if [[ ! -t 1 ]]; then
-        printf '  [%d/%d] %-28s' "$CURRENT_STEP" "$TOTAL_STEPS" "$label"
+        printf '  ◐ [%d/%d] %-28s' "$CURRENT_STEP" "$TOTAL_STEPS" "$label"
         if "$@" >>"$LOG_FILE" 2>&1; then
             echo " DONE"
             CURRENT_PERCENT=$target_percent
@@ -219,22 +218,20 @@ run_step() {
     for ((tick=1; tick<=ANIMATION_TICKS; tick++)); do
         percent=$((CURRENT_PERCENT + (target_percent - CURRENT_PERCENT) * tick / ANIMATION_TICKS))
         (( percent >= target_percent )) && percent=$((target_percent - 1))
-        draw_live_progress "$percent" "$label" "${spinners[$spinner_index]}"
-        spinner_index=$(((spinner_index + 1) % ${#spinners[@]}))
+        draw_live_progress "$percent" "$label" " ◐"
         sleep 0.1
     done
     while kill -0 "$job_pid" 2>/dev/null; do
-        draw_live_progress "$((target_percent - 1))" "$label" "${spinners[$spinner_index]}"
-        spinner_index=$(((spinner_index + 1) % ${#spinners[@]}))
+        draw_live_progress "$((target_percent - 1))" "$label" " ◐"
         sleep 0.1
     done
 
     if wait "$job_pid"; then
-        printf '\r\033[2K  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$label"
+        printf '\r\033[2K  %s◐%s %s✓%s %s\n' "$C_CYAN" "$C_RESET" "$C_GREEN" "$C_RESET" "$label"
         CURRENT_PERCENT=$target_percent
         return 0
     fi
-    printf '\r\033[2K  %s✗%s %s\n' "$C_RED" "$C_RESET" "$label"
+    printf '\r\033[2K  %s◐%s %s✗%s %s\n' "$C_CYAN" "$C_RESET" "$C_RED" "$C_RESET" "$label"
     return 1
 }
 
@@ -379,16 +376,16 @@ refresh_and_finish() {
 }
 
 show_header
-run_step "Preparing installation files" 20 prepare_payload
-run_step "Preserving current settings" 40 backup_current_state
-run_step "Installing core services" 60 install_core
+run_step "Checking latest release" 20 prepare_payload
+run_step "Saving current setup" 40 backup_current_state
+run_step "Updating core files" 60 install_core
 SSH_CHANGED=true
-run_step "Configuring secure access" 80 configure_ssh
-run_step "Starting and verifying services" 100 refresh_and_finish
+run_step "Validating SSH setup" 80 configure_ssh
+run_step "Refreshing services" 100 refresh_and_finish
 
 FINISHED=true
 echo
-draw_live_progress 100 "Complete" ""
+draw_live_progress 100 "Complete" " ◐"
 echo
 echo
 if [[ "$MODE" == "update" ]]; then

@@ -177,7 +177,6 @@ setup verification.
 - **Connection limit enforcement** — atomically rejects a new SSH/OpenVPN connection when the shared per-user limit is full, without evicting an established session
 - **Filtered account views** — List Users provides All, Expired, Quota Ended, and Online views from the same live policy state used by enforcement
 - **Service management** — start/stop/restart managed services from the menu
-- **X-UI panel integration** — optional X-UI panel installation for advanced proxy management
 
 ### Current Support
 
@@ -188,7 +187,6 @@ setup verification.
 | Direct OpenVPN UDP/TCP and HTTP CONNECT | **Supported** |
 | OpenVPN WS, WSS and SSL adapter profiles | **Supported with a compatible external injector/adapter** |
 | BadVPN, DNSTT and ZiVPN | **Optional and supported on an available CPU build** |
-| X-UI patched panel | **Optional; installed separately from managed SSH accounts** |
 
 ### Requirements
 
@@ -347,7 +345,7 @@ menu → 99) Uninstall
 ```
 
 The full uninstaller uses a compact six-stage progress view. It stops and
-disables managed background services, removes optional protocol and panel
+disables managed background services, removes optional protocol
 components, restores resolver and SSH integration, removes only firewall rules
 recorded by the installer, clears application files and logs, reloads systemd,
 and performs a final leftover-path verification before reporting success.
@@ -359,7 +357,7 @@ you explicitly approve the separate account-removal prompt.
 
 - **Developer:** [Yeasinul Hoque Tuhin](https://tuhinbro.com)
 - **Project:** TDZ SSH TUNNEL — independently developed from scratch
-- **Third-party components:** OpenVPN Community Edition, BadVPN, DNSTT, ZiVPN, HAProxy, Nginx, Certbot and X-UI (each retains its own license)
+- **Third-party components:** OpenVPN Community Edition, BadVPN, DNSTT, ZiVPN, HAProxy, Nginx and Certbot (each retains its own license)
 
 ---
 

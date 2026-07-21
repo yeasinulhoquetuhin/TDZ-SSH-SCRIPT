@@ -12,6 +12,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 MODULE = REPO / "openvpn_module.sh"
 MENU = REPO / "menu.sh"
+INSTALLER = REPO / "install.sh"
 
 
 class LinkCollector(HTMLParser):
@@ -283,6 +284,26 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(border.count("═"), 40)
         for line in plain.splitlines():
             self.assertLessEqual(len(line), 44, line)
+
+    def test_installer_keeps_original_step_copy_and_uses_progress_marker(self):
+        installer = INSTALLER.read_text()
+        expected_steps = (
+            'run_step "Checking latest release" 20 prepare_payload',
+            'run_step "Saving current setup" 40 backup_current_state',
+            'run_step "Updating core files" 60 install_core',
+            'run_step "Validating SSH setup" 80 configure_ssh',
+            'run_step "Refreshing services" 100 refresh_and_finish',
+        )
+        for step in expected_steps:
+            self.assertIn(step, installer)
+        self.assertNotIn('run_step "Preparing installation files"', installer)
+        self.assertIn("printf '  ◐ [%d/%d]", installer)
+        self.assertIn('draw_live_progress 100 "Complete" " ◐"', installer)
+
+        menu = MENU.read_text()
+        progress_start = menu.index("tdz_progress_begin() {")
+        progress_end = menu.index("\n}\n\ntdz_progress_done()", progress_start)
+        self.assertIn("◐ [%s/%s]", menu[progress_start:progress_end])
 
     def test_full_uninstall_cleans_legacy_dead_component_leftovers(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2112,20 +2133,12 @@ TEST TLS KEY
         end = menu.index("\n}\n\nuninstall_script()", start)
         protocol = menu[start:end]
         openvpn = protocol.index('tdz_menu_status "[10]" "OpenVPN Protocol Suite"')
-        install_xui = protocol.index('tdz_menu_status "[11]" "Install X-UI')
-        self.assertLess(openvpn, install_xui)
         self.assertIn("10) if declare -F tdz_openvpn_menu", protocol)
-        self.assertIn("11) tdz_run_action install_xui_panel", protocol)
-        self.assertNotIn("Uninstall X-UI Panel", protocol)
+        self.assertNotIn("MANAGEMENT PANELS", protocol)
+        self.assertNotIn("11)", protocol)
         self.assertNotIn("12) tdz_run_action", protocol)
-        self.assertIn("if tdz_xui_is_installed", protocol)
-
-        xui_start = menu.index("tdz_xui_is_installed() {")
-        xui_end = menu.index("\n}\n\n# The panel's own", xui_start)
-        xui_detection = menu[xui_start:xui_end]
-        self.assertNotIn("command -v x-ui", xui_detection)
-        self.assertIn("systemctl is-active --quiet x-ui.service", xui_detection)
-        self.assertIn("/usr/local/x-ui/x-ui", xui_detection)
+        self.assertNotRegex(menu, r"(?i)x[-_]?ui")
+        self.assertNotRegex((REPO / "README.md").read_text(), r"(?i)x[-_]?ui")
 
         traffic_start = menu.index("traffic_monitor_menu() {")
         traffic_end = menu.index("\n}\n\nauto_reboot_menu()", traffic_start)

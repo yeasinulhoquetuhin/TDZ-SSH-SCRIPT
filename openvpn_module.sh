@@ -1651,7 +1651,7 @@ tdz_openvpn_progress_begin() {
         tdz_progress_begin "$current" "$total" "$label"
         return
     fi
-    printf '  %b[%s/%s]%b %-42s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label"
+    printf '  %b◐ [%s/%s]%b %-40s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label"
 }
 
 tdz_openvpn_progress_done() {
