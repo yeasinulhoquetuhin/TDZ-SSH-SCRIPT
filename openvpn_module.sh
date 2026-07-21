@@ -1742,11 +1742,10 @@ tdz_openvpn_show_details() {
         tdz_detail "SSL / SNI" "$TDZ_OVPN_SSL_PORT / $TDZ_OVPN_HOST"
         tdz_detail "Outer TLS" "$tls_label"
         tdz_detail "Download Portal" "https://${TDZ_OVPN_HOST}:${TDZ_OVPN_PORTAL_PORT}${TDZ_OVPN_PUBLIC_PATH}/" "$C_CYAN"
-        tdz_detail "Contact" "@${TDZ_OVPN_SUPPORT_USERNAME} / https://t.me/${TDZ_OVPN_SUPPORT_USERNAME}" "$C_CYAN"
+
     else
-        printf '  Server: %s\n  Portal: https://%s:%s%s/\n  Contact: @%s\n' \
-            "$TDZ_OVPN_HOST" "$TDZ_OVPN_HOST" "$TDZ_OVPN_PORTAL_PORT" "$TDZ_OVPN_PUBLIC_PATH" \
-            "$TDZ_OVPN_SUPPORT_USERNAME"
+        printf '  Server: %s\n  Portal: https://%s:%s%s/\n' \
+            "$TDZ_OVPN_HOST" "$TDZ_OVPN_HOST" "$TDZ_OVPN_PORTAL_PORT" "$TDZ_OVPN_PUBLIC_PATH"
     fi
 }
 
@@ -2117,7 +2116,6 @@ tdz_openvpn_menu() {
                 "SSL / TCP" "${TDZ_OVPN_SSL_PORT} / ${TDZ_OVPN_TCP_PORT}"
             tdz_kv2 "UDP / HTTP" "${TDZ_OVPN_UDP_PORT} / ${TDZ_OVPN_HTTP_PORT}" \
                 "WSS" "$TDZ_OVPN_WSS_PORT"
-            tdz_row2 "${C_GRAY}CONTACT${C_RESET}" "${C_CYAN}@${TDZ_OVPN_SUPPORT_USERNAME}${C_RESET}"
         fi
         tdz_box_divider
         tdz_menu1 "[ 1]" "Install or Repair OpenVPN"
