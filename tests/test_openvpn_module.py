@@ -5,6 +5,9 @@ import shutil
 import tempfile
 import unittest
 import re
+import errno
+import os
+import pty
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -285,7 +288,7 @@ class ModuleTests(unittest.TestCase):
         for line in plain.splitlines():
             self.assertLessEqual(len(line), 44, line)
 
-    def test_installer_keeps_original_step_copy_and_uses_progress_marker(self):
+    def test_installer_keeps_original_step_copy_and_rotating_progress(self):
         installer = INSTALLER.read_text()
         expected_steps = (
             'run_step "Checking latest release" 20 prepare_payload',
@@ -297,13 +300,113 @@ class ModuleTests(unittest.TestCase):
         for step in expected_steps:
             self.assertIn(step, installer)
         self.assertNotIn('run_step "Preparing installation files"', installer)
-        self.assertIn("printf '  ◐ [%d/%d]", installer)
-        self.assertIn('draw_live_progress 100 "Complete" " ◐"', installer)
+        self.assertIn("local -a spinners=(' ◐' ' ◓' ' ◑' ' ◒')", installer)
+        self.assertIn('draw_live_progress 100 "Complete" ""', installer)
+        self.assertIn("printf '\\r\\033[2K  %s✓%s %s\\n'", installer)
+        self.assertNotIn("%s◐%s %s✓%s", installer)
 
         menu = MENU.read_text()
         progress_start = menu.index("tdz_progress_begin() {")
-        progress_end = menu.index("\n}\n\ntdz_progress_done()", progress_start)
-        self.assertIn("◐ [%s/%s]", menu[progress_start:progress_end])
+        progress_end = menu.index("\n}\n\ntdz_progress_finish()", progress_start)
+        progress = menu[progress_start:progress_end]
+        self.assertIn("local -a spinners=('◐' '◓' '◑' '◒')", progress)
+        self.assertIn("sleep 0.1", progress)
+
+    def test_action_progress_spinner_rotates_and_clears_before_success(self):
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                f"source {MENU!s} --source-only; "
+                "TDZ_BOX_WIDTH=64; "
+                'tdz_progress_begin 1 2 "Testing spinner"; '
+                "sleep 0.45; tdz_progress_done",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=slave,
+            stderr=slave,
+            close_fds=True,
+        )
+        os.close(slave)
+        chunks = []
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            except OSError as exc:
+                if exc.errno != errno.EIO:
+                    raise
+                break
+        os.close(master)
+        self.assertEqual(process.wait(timeout=3), 0)
+        output = b"".join(chunks).decode(errors="replace")
+        self.assertIn("◐", output)
+        self.assertIn("◓", output)
+        self.assertIn("✓", output)
+        self.assertNotIn("◐ ✓", output)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq is required for traffic history")
+    def test_empty_vnstat_history_uses_a_clean_collecting_state(self):
+        history = '{"interfaces":[{"name":"eth0","traffic":{"day":[],"month":[]}}]}'
+        result = self.run_menu_bash(
+            f"""
+            clear() {{ :; }}
+            show_banner() {{ :; }}
+            vnstat() {{ printf '%s\n' '{history}'; }}
+            show_vnstat_history eth0
+            """
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("COLLECTING TRAFFIC HISTORY", result.stdout)
+        self.assertIn("collecting its first sample", " ".join(result.stdout.split()))
+        self.assertNotIn("No data", result.stdout)
+        self.assertNotIn("Run 'vnstat", result.stdout)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq is required for traffic history")
+    def test_vnstat_history_renders_daily_and_monthly_rows(self):
+        history = (
+            '{"interfaces":[{"name":"eth0","traffic":{'
+            '"day":[{"date":{"year":2026,"month":7,"day":22},'
+            '"rx":1048576,"tx":2048}],'
+            '"month":[{"date":{"year":2026,"month":7},'
+            '"rx":1073741824,"tx":1048576}]}}]}'
+        )
+        result = self.run_menu_bash(
+            f"""
+            clear() {{ :; }}
+            show_banner() {{ :; }}
+            vnstat() {{ printf '%s\n' '{history}'; }}
+            show_vnstat_history eth0
+            """
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.stdout)
+        self.assertIn("LATEST DAILY USAGE", plain)
+        self.assertIn("22-07-2026", plain)
+        self.assertIn("1MB", plain)
+        self.assertIn("LATEST MONTHLY USAGE", plain)
+        self.assertIn("07-2026", plain)
+        self.assertIn("1GB", plain)
+        self.assertNotIn("No data", plain)
+
+    def test_traffic_monitor_menu_rows_do_not_wrap_on_mobile_width(self):
+        result = self.run_menu_bash(
+            """
+            TDZ_BOX_WIDTH=40
+            clear() { :; }
+            show_banner() { :; }
+            ip() { printf 'default via 192.0.2.1 dev eth0\n'; }
+            traffic_monitor_menu <<< '0'
+            """
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.stdout)
+        self.assertEqual(plain.count("Daily and Monthly History"), 1)
+        for line in plain.splitlines():
+            self.assertLessEqual(len(line), 44, line)
 
     def test_full_uninstall_cleans_legacy_dead_component_leftovers(self):
         with tempfile.TemporaryDirectory() as temp:

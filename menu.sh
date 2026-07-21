@@ -519,21 +519,75 @@ tdz_message() {
 
 # Consistent action progress. User-facing labels describe the phase without
 # exposing implementation dependencies; detailed command output stays quiet.
+TDZ_PROGRESS_DEPTH=0
+TDZ_PROGRESS_PIDS=()
+TDZ_PROGRESS_LABELS=()
+
 tdz_progress_begin() {
-    local current="$1" total="$2" label="$3"
+    local current="$1" total="$2" label="$3" depth spinner_pid=""
     local label_width=$((TDZ_BOX_WIDTH - 24))
     (( label_width < 18 )) && label_width=18
     (( label_width > 42 )) && label_width=42
     label=$(_tdz_fit "$label" "$label_width")
-    printf '  %b◐ [%s/%s]%b %-*s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label_width" "$label"
+    depth=$TDZ_PROGRESS_DEPTH
+    TDZ_PROGRESS_LABELS[$depth]="$label"
+    TDZ_PROGRESS_DEPTH=$((depth + 1))
+
+    if [[ -t 1 ]]; then
+        (
+            local index=0
+            local -a spinners=('◐' '◓' '◑' '◒')
+            while true; do
+                printf '\r\033[2K  %b[%s/%s]%b %-*s %b%s%b' \
+                    "$C_CYAN" "$current" "$total" "$C_RESET" \
+                    "$label_width" "$label" "$C_CYAN" "${spinners[$index]}" "$C_RESET"
+                index=$(((index + 1) % ${#spinners[@]}))
+                sleep 0.1
+            done
+        ) &
+        spinner_pid=$!
+    else
+        printf '  [%s/%s] %-*s' "$current" "$total" "$label_width" "$label"
+    fi
+    TDZ_PROGRESS_PIDS[$depth]="$spinner_pid"
+}
+
+tdz_progress_finish() {
+    local result="$1" depth pid label color symbol
+    if (( TDZ_PROGRESS_DEPTH <= 0 )); then
+        [[ "$result" == "done" ]] && printf ' %bDONE%b\n' "$C_GREEN" "$C_RESET" || printf ' %bFAILED%b\n' "$C_RED" "$C_RESET"
+        return
+    fi
+    depth=$((TDZ_PROGRESS_DEPTH - 1))
+    TDZ_PROGRESS_DEPTH=$depth
+    pid="${TDZ_PROGRESS_PIDS[$depth]:-}"
+    label="${TDZ_PROGRESS_LABELS[$depth]}"
+    if [[ -n "$pid" ]]; then
+        kill "$pid" >/dev/null 2>&1 || true
+        wait "$pid" 2>/dev/null || true
+    fi
+    if [[ "$result" == "done" ]]; then
+        color="$C_GREEN"; symbol="✓"
+    else
+        color="$C_RED"; symbol="✗"
+    fi
+    if [[ -t 1 ]]; then
+        printf '\r\033[2K  %b%s%b %s\n' \
+            "$color" "$symbol" "$C_RESET" "$label"
+    elif [[ "$result" == "done" ]]; then
+        printf ' %bDONE%b\n' "$C_GREEN" "$C_RESET"
+    else
+        printf ' %bFAILED%b\n' "$C_RED" "$C_RESET"
+    fi
+    unset 'TDZ_PROGRESS_PIDS[depth]' 'TDZ_PROGRESS_LABELS[depth]'
 }
 
 tdz_progress_done() {
-    printf ' %bDONE%b\n' "$C_GREEN" "$C_RESET"
+    tdz_progress_finish done
 }
 
 tdz_progress_failed() {
-    printf ' %bFAILED%b\n' "$C_RED" "$C_RESET"
+    tdz_progress_finish failed
 }
 
 tdz_progress_run() {
@@ -8828,6 +8882,95 @@ simple_live_monitor() {
     echo
 }
 
+prepare_traffic_history_service() {
+    local iface="$1"
+    tdz_apt_install vnstat >/dev/null 2>&1 || return 1
+    vnstat --add -i "$iface" >/dev/null 2>&1 || true
+    systemctl enable vnstat.service >/dev/null 2>&1 || return 1
+    systemctl restart vnstat.service >/dev/null 2>&1 || return 1
+    systemctl is-active --quiet vnstat.service
+}
+
+show_vnstat_history() {
+    local iface="$1" history_json sample_count row year month day rx tx
+    local rx_display tx_display
+    local -a daily_rows=() monthly_rows=()
+
+    clear; show_banner
+    echo
+    tdz_screen_title "DAILY & MONTHLY HISTORY" \
+        "Persistent traffic totals collected for ${iface}."
+
+    if ! history_json=$(vnstat --json -i "$iface" 2>/dev/null) ||
+       ! jq -e --arg iface "$iface" \
+           '.interfaces | map(select(.name == $iface)) | length > 0' \
+           >/dev/null 2>&1 <<<"$history_json"; then
+        tdz_message WARNING "Traffic history is not ready for ${iface}. The collector may still be creating its interface database."
+        return 0
+    fi
+
+    sample_count=$(jq -r --arg iface "$iface" '
+        [.interfaces[] | select(.name == $iface) |
+         ((.traffic.day // []) + (.traffic.month // []))[]] | length
+    ' <<<"$history_json" 2>/dev/null)
+    [[ "$sample_count" =~ ^[0-9]+$ ]] || sample_count=0
+    if (( sample_count == 0 )); then
+        tdz_box_top
+        tdz_box_header "COLLECTING TRAFFIC HISTORY"
+        tdz_box_divider
+        tdz_kv2 "INTERFACE" "$iface" "STATUS" "Collecting"
+        tdz_box_bot
+        tdz_message INFO "vnStat has started successfully and is collecting its first sample. Daily and monthly totals will appear here automatically after data is recorded."
+        return 0
+    fi
+
+    mapfile -t daily_rows < <(jq -r --arg iface "$iface" '
+        .interfaces[] | select(.name == $iface) |
+        (.traffic.day // []) | reverse | .[:7][] |
+        [.date.year, .date.month, .date.day, .rx, .tx] | @tsv
+    ' <<<"$history_json" 2>/dev/null)
+    mapfile -t monthly_rows < <(jq -r --arg iface "$iface" '
+        .interfaces[] | select(.name == $iface) |
+        (.traffic.month // []) | reverse | .[:6][] |
+        [.date.year, .date.month, .rx, .tx] | @tsv
+    ' <<<"$history_json" 2>/dev/null)
+
+    if (( ${#daily_rows[@]} > 0 )); then
+        tdz_box_top
+        tdz_box_header "LATEST DAILY USAGE"
+        tdz_box_divider
+        for row in "${daily_rows[@]}"; do
+            IFS=$'\t' read -r year month day rx tx <<<"$row"
+            [[ "$year" =~ ^[0-9]{4}$ && "$month" =~ ^[0-9]{1,2}$ &&
+               "$day" =~ ^[0-9]{1,2}$ ]] || continue
+            printf -v day '%02d' "$((10#$day))"
+            printf -v month '%02d' "$((10#$month))"
+            rx_display=$(tdz_format_file_size "$rx")
+            tx_display=$(tdz_format_file_size "$tx")
+            tdz_row2 "${C_WHITE}${day}-${month}-${year}${C_RESET}" \
+                "${C_GREEN}↓ ${rx_display}${C_RESET} ${C_CYAN}↑ ${tx_display}${C_RESET}"
+        done
+        tdz_box_bot
+        echo
+    fi
+
+    if (( ${#monthly_rows[@]} > 0 )); then
+        tdz_box_top
+        tdz_box_header "LATEST MONTHLY USAGE"
+        tdz_box_divider
+        for row in "${monthly_rows[@]}"; do
+            IFS=$'\t' read -r year month rx tx <<<"$row"
+            [[ "$year" =~ ^[0-9]{4}$ && "$month" =~ ^[0-9]{1,2}$ ]] || continue
+            printf -v month '%02d' "$((10#$month))"
+            rx_display=$(tdz_format_file_size "$rx")
+            tx_display=$(tdz_format_file_size "$tx")
+            tdz_row2 "${C_WHITE}${month}-${year}${C_RESET}" \
+                "${C_GREEN}↓ ${rx_display}${C_RESET} ${C_CYAN}↑ ${tx_display}${C_RESET}"
+        done
+        tdz_box_bot
+    fi
+}
+
 traffic_monitor_menu() {
     clear; show_banner
     # Find active interface
@@ -8875,30 +9018,17 @@ traffic_monitor_menu() {
                 if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
                     echo
                     tdz_section "PREPARATION"
-                    tdz_progress_begin 1 1 "Preparing traffic history"
-                    if ! tdz_apt_install vnstat >/dev/null 2>&1; then
-                        tdz_progress_failed
+                    if ! tdz_progress_run 1 1 "Preparing traffic history" \
+                        prepare_traffic_history_service "$iface"; then
                         tdz_message ERROR "Traffic history could not be prepared."
-                        return
-                    fi
-                    systemctl enable vnstat >/dev/null 2>&1
-                    systemctl restart vnstat >/dev/null 2>&1
-                    local default_iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
-                    vnstat --add -i "$default_iface" >/dev/null 2>&1
-                    if systemctl is-active --quiet vnstat; then
-                        tdz_progress_done
-                    else
-                        tdz_progress_failed
-                        tdz_message ERROR "Traffic history could not be started."
+                        press_enter
                         return
                     fi
                else
                     return
                fi
            fi
-           echo
-           vnstat -i "$iface"
-           echo -e "\n${C_DIM}Run 'vnstat -d' or 'vnstat -m' manually for specific views.${C_RESET}"
+           show_vnstat_history "$iface"
            press_enter
            ;;
         *) return ;;

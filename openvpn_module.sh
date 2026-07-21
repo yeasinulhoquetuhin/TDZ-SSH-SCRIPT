@@ -1651,7 +1651,24 @@ tdz_openvpn_progress_begin() {
         tdz_progress_begin "$current" "$total" "$label"
         return
     fi
-    printf '  %b◐ [%s/%s]%b %-40s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label"
+    TDZ_OVPN_PROGRESS_LABEL="$label"
+    TDZ_OVPN_PROGRESS_PID=""
+    if [[ -t 1 ]]; then
+        (
+            local index=0
+            local -a spinners=('◐' '◓' '◑' '◒')
+            while true; do
+                printf '\r\033[2K  %b[%s/%s]%b %-40s %b%s%b' \
+                    "$C_CYAN" "$current" "$total" "$C_RESET" "$label" \
+                    "$C_CYAN" "${spinners[$index]}" "$C_RESET"
+                index=$(((index + 1) % ${#spinners[@]}))
+                sleep 0.1
+            done
+        ) &
+        TDZ_OVPN_PROGRESS_PID=$!
+    else
+        printf '  [%s/%s] %-40s' "$current" "$total" "$label"
+    fi
 }
 
 tdz_openvpn_progress_done() {
@@ -1659,7 +1676,15 @@ tdz_openvpn_progress_done() {
         tdz_progress_done
         return
     fi
-    printf ' %bDONE%b\n' "$C_GREEN" "$C_RESET"
+    if [[ -n "${TDZ_OVPN_PROGRESS_PID:-}" ]]; then
+        kill "$TDZ_OVPN_PROGRESS_PID" >/dev/null 2>&1 || true
+        wait "$TDZ_OVPN_PROGRESS_PID" 2>/dev/null || true
+        printf '\r\033[2K  %b✓%b %s\n' "$C_GREEN" "$C_RESET" \
+            "$TDZ_OVPN_PROGRESS_LABEL"
+    else
+        printf ' %bDONE%b\n' "$C_GREEN" "$C_RESET"
+    fi
+    TDZ_OVPN_PROGRESS_PID=""
 }
 
 tdz_openvpn_progress_failed() {
@@ -1667,7 +1692,15 @@ tdz_openvpn_progress_failed() {
         tdz_progress_failed
         return
     fi
-    printf ' %bFAILED%b\n' "$C_RED" "$C_RESET"
+    if [[ -n "${TDZ_OVPN_PROGRESS_PID:-}" ]]; then
+        kill "$TDZ_OVPN_PROGRESS_PID" >/dev/null 2>&1 || true
+        wait "$TDZ_OVPN_PROGRESS_PID" 2>/dev/null || true
+        printf '\r\033[2K  %b✗%b %s\n' "$C_RED" "$C_RESET" \
+            "$TDZ_OVPN_PROGRESS_LABEL"
+    else
+        printf ' %bFAILED%b\n' "$C_RED" "$C_RESET"
+    fi
+    TDZ_OVPN_PROGRESS_PID=""
 }
 
 tdz_openvpn_install() {
