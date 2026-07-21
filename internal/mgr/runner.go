@@ -78,11 +78,64 @@ func (r *Runner) Install() {
     defer r.cleanup()
 
     r.runBash(filepath.Join(r.tmpdir, "install.sh"))
-
-    // After install, setup menu symlinks
+    r.replaceWithWrappers()
+    
     for _, t := range []string{"/usr/local/bin/menu", "/usr/local/bin/tdz"} {
         os.Remove(t)
         os.Symlink(filepath.Join(r.bindir, "tdz"), t)
     }
     fmt.Println("\nDone! Run: menu")
+}
+
+func (r *Runner) Run(name string) {
+    data, err := encFS.ReadFile("scripts/" + name)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Script not found: %s\n", name)
+        os.Exit(1)
+    }
+    script, err := crypto.Decrypt(string(data))
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Decrypt failed\n")
+        os.Exit(1)
+    }
+    if filepath.Ext(name) == ".py" {
+        cmd := exec.Command("python3", "-")
+        cmd.Stdout = os.Stdout
+        cmd.Stderr = os.Stderr
+        cmd.Env = os.Environ()
+        p, _ := cmd.StdinPipe()
+        cmd.Start()
+        p.Write(script)
+        p.Close()
+        cmd.Wait()
+    } else {
+        cmd := exec.Command("/bin/bash", "-s")
+        cmd.Stdout = os.Stdout
+        cmd.Stderr = os.Stderr
+        cmd.Env = os.Environ()
+        p, _ := cmd.StdinPipe()
+        cmd.Start()
+        p.Write(script)
+        p.Close()
+        cmd.Wait()
+    }
+}
+
+func (r *Runner) replaceWithWrappers() {
+    binPath := filepath.Join(r.bindir, "tdz")
+    targets := []struct {
+        dir  string
+        name string
+    }{
+        {"/usr/local/lib/tdz-ssh-tunnel", "tdz_openvpn_gateway.py"},
+        {"/usr/local/lib/tdz-ssh-tunnel", "tdz_openvpn_portal.py"},
+        {"/usr/local/lib/tdz-ssh-tunnel", "tdz_openvpn_runtime.py"},
+        {"/usr/local/lib/tdz-ssh-tunnel", "tdz_ssh_auth_session.py"},
+        {"/usr/local/lib/tdz-ssh-tunnel", "openvpn_module.sh"},
+        {"/usr/local/bin", "tdz-ws-ssh-bridge.py"},
+    }
+    for _, t := range targets {
+        wrapper := fmt.Sprintf("#!/bin/bash\nexec %s run %s \"$@\"\n", binPath, t.name)
+        os.WriteFile(filepath.Join(t.dir, t.name), []byte(wrapper), 0755)
+    }
 }

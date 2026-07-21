@@ -1,6 +1,7 @@
 package main
 
 import (
+    "fmt"
     "os"
     "path/filepath"
     "tdz/internal/mgr"
@@ -21,6 +22,12 @@ func main() {
     switch cmd {
     case "install", "i":
         r.Install()
+    case "run":
+        if len(os.Args) < 3 {
+            fmt.Fprintf(os.Stderr, "Usage: tdz run <script>\n")
+            os.Exit(1)
+        }
+        r.Run(os.Args[2])
     default:
         r.Menu()
     }
