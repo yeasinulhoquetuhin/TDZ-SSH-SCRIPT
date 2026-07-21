@@ -1,8 +1,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/TDZ-SSH--SCRIPT-00d4ff?style=for-the-badge&logo=linux&logoColor=black" alt="TDZ SSH SCRIPT">
-  <img src="https://img.shields.io/badge/Release-v0.0.1_BETA-green?style=for-the-badge" alt="Release">
+  <img src="https://img.shields.io/badge/Version-0.0.1-green?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/Platform-Linux-blue?style=for-the-badge&logo=linux" alt="Platform">
-  <img src="https://img.shields.io/badge/Runtime-Go_Binary-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go binary runtime">
+  <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white" alt="Bash">
 </p>
 
 <h1 align="center">TDZ SSH TUNNEL</h1>
@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/stargazers"><img src="https://img.shields.io/github/stars/yeasinulhoquetuhin/TDZ-SSH-SCRIPT?style=social" alt="Stars"></a>
-  <a href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/releases"><img src="https://img.shields.io/badge/Release-v0.0.1_BETA-brightgreen" alt="Release"></a>
+  <a href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/releases"><img src="https://img.shields.io/badge/Release-Stable-brightgreen" alt="Release"></a>
   <a href="https://t.me/TuhinBroh"><img src="https://img.shields.io/badge/Telegram-@TuhinBroh-2CA5E0?style=flat-square&logo=telegram" alt="Telegram"></a>
   <a href="https://t.me/TUSTDZ"><img src="https://img.shields.io/badge/Support-@TUSTDZ-2CA5E0?style=flat-square&logo=telegram" alt="Support"></a>
 </p>
@@ -23,22 +23,9 @@
 
 ## Overview
 
-TDZ SSH TUNNEL is a binary-distributed SSH tunnel management system designed for Linux VPS servers. It provides a full-featured CLI dashboard for managing SSH tunnel users, monitoring bandwidth, controlling access, and deploying multiple tunnel protocols — all from a single interactive menu.
+TDZ SSH TUNNEL is a comprehensive, bash-based SSH tunnel management system designed for Linux VPS servers. It provides a full-featured CLI dashboard for managing SSH tunnel users, monitoring bandwidth, controlling access, and deploying multiple tunnel protocols — all from a single interactive menu.
 
 Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a complete, ground-up implementation of a modern SSH tunnel management solution, independently developed with advanced features including dynamic HTML banners, per-user traffic accounting, multi-protocol support, and automated user lifecycle management.
-
-## v0.0.1 BETA Release
-
-The official installer selects the correct architecture-specific package,
-verifies its checksum, and safely installs or updates TDZ SSH TUNNEL.
-
-- **Eight Linux builds:** `amd64`, `arm64`, `armv7`, `armv6`, `386`, `ppc64le`, `s390x`, and `riscv64`
-- **Checksummed downloads:** the installer verifies each archive against the release `checksums.txt`
-- **Safe updates:** accounts, quotas, usage, banners, certificates, OpenVPN state, and operator settings are preserved
-- **Version pinning:** every published tag remains directly installable
-- **Compatibility migration:** services and scheduled jobs created by earlier source releases are redirected to the packed runtime
-- **Login safety:** administrator access remains independent from managed account policy checks
-- **Responsive menus:** shared menu rendering and live service/session checks are bounded so every management screen opens promptly
 
 ---
 
@@ -85,8 +72,8 @@ Account status, expiration, remaining validity, active connections, and compact 
   </tr>
   <tr>
     <td align="center" valign="top" width="50%">
-      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/protocol-panel-management.png" alt="Protocol management" height="170"><br>
-      <b>Protocols</b>
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/protocol-panel-management.png" alt="Protocol and panel management" height="170"><br>
+      <b>Protocols &amp; Panels</b>
     </td>
     <td align="center" valign="top" width="50%">
       <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/ssh-banner-management.png" alt="SSH banner management" height="170"><br>
@@ -221,16 +208,6 @@ setup verification.
 bash <(curl -Ls https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/install.sh)
 ```
 
-The command above installs the default `v0.0.1` release. To install or return to
-any published version, add its exact tag:
-
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/install.sh) v0.0.1
-```
-
-For example, after `v0.0.5` is released, `... install.sh) v0.0.3` will still
-download the `v0.0.3` binary and checksum from that immutable GitHub release.
-
 **Manual install:**
 
 ```bash
@@ -239,10 +216,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer detects the CPU architecture, validates the archive checksum,
-checks the embedded release metadata, and rolls application files back if setup
-verification fails. After installation, type **`menu`** to launch the management
-interface.
+After installation, type **`menu`** to launch the management interface.
 
 ---
 
@@ -358,12 +332,7 @@ TDZ SSH TUNNEL is designed for Debian-family VPS systems that use **APT** and **
 |---|---|---|
 | **64-bit Intel/AMD** | `amd64`, `x86_64` | Full core support and the widest optional protocol support |
 | **64-bit ARM** | `arm64`, `aarch64` | Full core support; most optional protocol components are available |
-| **32-bit ARM v7** | `armv7`, `armv7l`, `armhf` | Official binary release; some optional third-party protocol components may be unavailable |
-| **32-bit ARM v6** | `armv6`, `armv6l` | Official binary release; some optional third-party protocol components may be unavailable |
-| **32-bit Intel/AMD** | `386`, `i386`–`i686` | Official binary release |
-| **POWER little-endian** | `ppc64le` | Official binary release |
-| **IBM Z** | `s390x` | Official binary release |
-| **64-bit RISC-V** | `riscv64` | Official binary release |
+| **32-bit ARM** | `armv7l`, `armhf`, `arm` | Core management features can run; some prebuilt optional protocol components may be unavailable |
 
 The installer automatically detects an existing installation, operating environment and CPU architecture. If a particular optional protocol has no binary for the detected CPU, that component remains unavailable; the main menu, SSH user management, limits, banners, backup and restore features remain available.
 
@@ -388,7 +357,6 @@ you explicitly approve the separate account-removal prompt.
 
 - **Developer:** [Yeasinul Hoque Tuhin](https://tuhinbro.com)
 - **Project:** TDZ SSH TUNNEL — independently developed from scratch
-- **Project code and official binaries:** Copyright © Yeasinul Hoque Tuhin. All rights reserved unless separate written permission is provided
 - **Third-party components:** OpenVPN Community Edition, BadVPN, DNSTT, ZiVPN, HAProxy, Nginx and Certbot (each retains its own license)
 
 ---
