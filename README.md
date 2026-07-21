@@ -82,6 +82,36 @@ Account status, expiration, remaining validity, active connections, and compact 
   </tr>
 </table>
 
+### OpenVPN Web Portal
+
+The optional OpenVPN suite includes a responsive portal for connection guidance,
+profile downloads, SNI/payload details, and account support. The four mobile
+screens below follow the normal user journey: overview, support, downloads, and
+setup verification.
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/Screenshot_20260720-233748_Via.png" alt="OpenVPN portal overview" width="360"><br>
+      <b>Portal Overview</b>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/Screenshot_20260720-233821_Via.png" alt="OpenVPN account support and project links" width="360"><br>
+      <b>Account Support</b>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/Screenshot_20260720-233912_Via.png" alt="OpenVPN profile download cards" width="360"><br>
+      <b>Profile Downloads</b>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/Screenshot_20260720-233955_Via.png" alt="OpenVPN setup guide and WebSocket payload" width="360"><br>
+      <b>Setup &amp; Verification</b>
+    </td>
+  </tr>
+</table>
+
 ---
 
 ## Features
@@ -121,11 +151,9 @@ Account status, expiration, remaining validity, active connections, and compact 
 ### Tunnel Protocols
 - **SSH (Direct)** — standard SSH tunnel on port 22
 - **OpenVPN protocol suite** — optional direct UDP/TCP, native HTTP CONNECT, HTTP Payload/WebSocket, WSS/SNI, and SSL/SNI transports with downloadable profiles
-- **stunnel4 TLS** — TLS-wrapped SSH on port 2288 for firewall bypass
-- **WebSocket NTLS** — non-TLS WebSocket payload on port 2289
 - **BadVPN / UDPGW** — UDP game tunneling on port 7300
-- **DNSTT** — DNS-based tunneling on port 5300
-- **ZiVPN** — additional tunnel protocol support
+- **DNSTT** — DNS-based tunneling on UDP port 53 with SSH or V2Ray forwarding
+- **ZiVPN** — UDP transport on port 5667 with the optional 6000–19999 forwarding range
 
 ### Network & Proxy
 - **HAProxy** — reverse-proxy edge server on configurable public ports (defaults: 2080 HTTP, 442 HTTPS)
@@ -150,6 +178,32 @@ Account status, expiration, remaining validity, active connections, and compact 
 - **Filtered account views** — List Users provides All, Expired, Quota Ended, and Online views from the same live policy state used by enforcement
 - **Service management** — start/stop/restart all TDZ services from the menu
 - **X-UI panel integration** — optional X-UI panel installation for advanced proxy management
+
+### Current Support
+
+| Area | Current status |
+|---|---|
+| SSH user lifecycle, expiry, locks, trials, limits, quotas and backups | **Supported** |
+| Direct SSH, HAProxy/Nginx edge, WebSocket-to-SSH bridge | **Supported** |
+| Direct OpenVPN UDP/TCP and HTTP CONNECT | **Supported** |
+| OpenVPN WS, WSS and SSL adapter profiles | **Supported with a compatible external injector/adapter** |
+| BadVPN, DNSTT and ZiVPN | **Optional and supported on an available CPU build** |
+| X-UI patched panel | **Optional; installed separately from TDZ accounts** |
+
+### Operational Limits
+
+- Root access, APT, Bash, OpenSSH and systemd are required.
+- OpenVPN needs Python 3.7 or newer and a compatible PAM plugin.
+- WS/WSS/SSL OpenVPN profiles are adapter transports; they are not standalone
+  profiles for every official OpenVPN client.
+- DNSTT needs exclusive access to UDP port 53 and may replace the VPS resolver
+  service configuration.
+- Optional prebuilt protocols depend on the architecture assets published by
+  their upstream projects.
+- TDZ keeps recoverable account credentials in `/etc/tdztunnel/users.db` for
+  account display and backup/restore. The installer restricts this directory to
+  root (`0700`) and the database to root-only access (`0600`); protect all root
+  backups accordingly.
 
 ---
 
@@ -185,7 +239,7 @@ The optional suite requires Python 3.7 or newer. On an older distribution the co
 |---|---|---|
 | **Direct UDP** | Official OpenVPN clients | Ready-to-import `.ovpn` profile |
 | **Direct TCP** | Official OpenVPN clients | Ready-to-import `.ovpn` profile |
-| **HTTP CONNECT** | Official OpenVPN clients | Native OpenVPN HTTP proxy profile |
+| **HTTP CONNECT** | OpenVPN/HTTP Custom-compatible clients | Native proxy profile with the TDZ custom CONNECT headers |
 | **HTTP Payload / WebSocket** | Compatible injector or WebSocket adapter | Injector profile plus payload template |
 | **WSS / SNI** | Compatible TLS WebSocket adapter | Injector profile; use the configured host as SNI |
 | **SSL / SNI** | Compatible external SSL/TLS adapter | Injector profile; use the configured host as SNI |
@@ -214,7 +268,7 @@ The portal uses the same validated outer certificate as WSS and SSL. A matching 
 - Expired or quota-exhausted accounts are disconnected and denied automatically, while renewing or topping up restores access without changing an independent manual lock
 - VPN clients are isolated from one another and cannot use the transport gateway as an open proxy
 
-Direct UDP, direct TCP, and HTTP CONNECT work in current official OpenVPN clients. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores; modern TCP adapter clients prefer AES-128-GCM for lower mobile CPU cost while AES-256-GCM remains available as the compatibility fallback. Direct UDP retains AES-256-GCM priority.
+Direct UDP and direct TCP work in current official OpenVPN clients. The HTTP CONNECT profile follows the TDZ HTTP Custom-compatible template with custom CONNECT headers, AES-256-GCM, DNS routing, `setenv CLIENT_CERT 0`, and embedded CA/tls-crypt material. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores. Direct UDP retains AES-256-GCM priority.
 
 Compatibility follows the official OpenVPN transport model: the core protocol runs over TCP or UDP, while HTTP proxy mode uses TCP. Session status and forced disconnects use the local OpenVPN management interface. See the [OpenVPN protocol reference](https://openvpn.net/community-docs/openvpn-protocol.html), [HTTP proxy guide](https://openvpn.net/community-docs/connecting-to-an-openvpn-server-via-an-http-proxy.html), and [management interface reference](https://openvpn.net/community-docs/management-interface.html).
 
@@ -250,10 +304,10 @@ Before applying a certificate, TDZ verifies that the fullchain is valid and that
 | Port | Protocol | Purpose |
 |---|---|---|
 | 22 | SSH | Primary SSH access |
-| 2288 | TLS | stunnel4-wrapped SSH |
-| 2289 | WS | WebSocket NTLS payload |
 | 7300 | UDP | BadVPN / UDPGW |
-| 5300 | DNS | DNSTT tunnel |
+| 53 | UDP / DNS | DNSTT tunnel |
+| 5667 | UDP | ZiVPN direct listener |
+| 6000–19999 | UDP | Optional ZiVPN forwarded range |
 | 2080 | HTTP | HAProxy edge (HTTP, configurable default) |
 | 442 | HTTPS | HAProxy edge (TLS, configurable default) |
 | 8770 | HTTP | Nginx internal proxy |
@@ -287,7 +341,7 @@ TDZ SSH TUNNEL is designed for Debian-family VPS systems that use **APT** and **
 | **64-bit ARM** | `arm64`, `aarch64` | Full core support; most optional protocol components are available |
 | **32-bit ARM** | `armv7l`, `armhf`, `arm` | Core management features can run; some prebuilt optional protocol components may be unavailable |
 
-The installer automatically detects an existing installation, operating environment and CPU architecture. If a particular optional protocol has no binary for the detected CPU, only that component is skipped—the main TDZ menu, SSH user management, limits, banners, backup and restore features remain available.
+The installer automatically detects an existing installation, operating environment and CPU architecture. If a particular optional protocol has no binary for the detected CPU, that component remains unavailable; the main TDZ menu, SSH user management, limits, banners, backup and restore features remain available.
 
 > **Note:** Root access is required for installation and operation.
 
@@ -301,7 +355,7 @@ menu → 99) Uninstall
 
 - **Developer:** [Yeasinul Hoque Tuhin](https://tuhinbro.com)
 - **Project:** TDZ SSH TUNNEL — independently developed from scratch
-- **Third-party components:** OpenVPN Community Edition, BadVPN, DNSTT, stunnel4, HAProxy, Nginx, certbot (each retains its own license)
+- **Third-party components:** OpenVPN Community Edition, BadVPN, DNSTT, ZiVPN, HAProxy, Nginx, Certbot and X-UI (each retains its own license)
 
 ---
 

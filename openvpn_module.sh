@@ -901,14 +901,45 @@ tdz_openvpn_generate_profiles_into() {
 
     tdz_openvpn_write_profile "tdz-openvpn-udp.ovpn" "udp" "$TDZ_OVPN_UDP_PORT" "Official OpenVPN clients: direct UDP"
     tdz_openvpn_write_profile "tdz-openvpn-tcp.ovpn" "tcp-client" "$TDZ_OVPN_TCP_PORT" "Official OpenVPN clients: direct TCP"
-    {
-        echo "proto tcp-client"
-        echo "remote $TDZ_OVPN_HOST $TDZ_OVPN_TCP_PORT"
-        echo "http-proxy $TDZ_OVPN_HOST $TDZ_OVPN_HTTP_PORT"
-        echo "http-proxy-option VERSION 1.1"
-        echo "tun-mtu $TDZ_OVPN_TCP_TUN_MTU"
-        tdz_openvpn_profile_common modern "AES-128-GCM:AES-256-GCM"
-    } > "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn"
+    # Keep this profile compatible with HTTP Custom-style clients. Its order
+    # and directives intentionally mirror the proven client template.
+    cat > "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn" <<EOF
+client
+dev tun
+proto tcp
+remote $TDZ_OVPN_HOST $TDZ_OVPN_TCP_PORT
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-GCM
+auth SHA256
+verb 3
+mute-replay-warnings
+redirect-gateway def1
+route 0.0.0.0 0.0.0.0
+dhcp-option DNS 8.8.8.8
+dhcp-option DNS 8.8.4.4
+tun-mtu $TDZ_OVPN_TCP_TUN_MTU
+auth-user-pass
+setenv CLIENT_CERT 0
+keepalive 10 60
+
+http-proxy $TDZ_OVPN_HOST $TDZ_OVPN_HTTP_PORT
+http-proxy-option CUSTOM-HEADER CONNECT HTTP/1.1
+http-proxy-option CUSTOM-HEADER Host $TDZ_OVPN_HOST
+http-proxy-option CUSTOM-HEADER X-Online-Host $TDZ_OVPN_HOST
+http-proxy-option CUSTOM-HEADER X-Forward-Host $TDZ_OVPN_HOST
+http-proxy-option CUSTOM-HEADER Connection Keep-Alive
+
+<ca>
+$(cat "$TDZ_OVPN_PKI/ca.crt")
+</ca>
+<tls-crypt>
+$(cat "$TDZ_OVPN_PKI/tls-crypt.key")
+</tls-crypt>
+EOF
     chmod 644 "$TDZ_OVPN_PROFILES/tdz-openvpn-http-connect.ovpn"
 
     tdz_openvpn_write_profile "tdz-openvpn-ws-injector.ovpn" "tcp-client" "$TDZ_OVPN_HTTP_PORT" "Injector adapter required: HTTP Payload or WebSocket" "adapter" "true"
@@ -1093,7 +1124,7 @@ tdz_openvpn_portal_write_assets() {
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;background:var(--bg)}
 body{
-  margin:0;min-height:100vh;color:var(--text);
+  margin:0;min-height:100vh;overflow-x:hidden;color:var(--text);
   background:radial-gradient(circle at 82% -8%,var(--accent-glow),transparent 30rem),radial-gradient(circle at -8% 35%,var(--accent-soft),transparent 32rem),linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px),var(--bg);
   background-size:auto,auto,48px 48px,48px 48px,auto;
   font:16px/1.68 Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
@@ -1161,7 +1192,7 @@ main{padding:36px 0 88px}
 .footer{border-top:1px solid var(--line);background:var(--bg-elevated);padding:52px 0 24px}.footer-grid{display:grid;grid-template-columns:1.3fr .6fr .9fr 1fr;gap:38px}.footer-brand{font-weight:780}.footer-brand strong{letter-spacing:.14em}.footer-profile p,.footer-column p{margin:.75rem 0 0;color:var(--muted);font-size:.88rem}.footer-column h2{margin:0 0 12px;color:var(--text);font-size:.72rem;font-weight:850;letter-spacing:.12em;text-transform:uppercase}.footer-column>a{display:block;width:max-content;max-width:100%;margin:6px 0;color:var(--text-soft);font-size:.88rem;text-decoration:none}.footer-column>a:hover{color:var(--accent)}.footer-note{max-width:220px}.developer-line{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 5px;margin:4px 0!important}.developer-line span{color:var(--text);font-weight:720}.developer-line .developer-link{display:inline;margin:0;color:var(--accent);font-weight:680;text-decoration:underline;text-decoration-color:transparent;text-underline-offset:3px}.developer-line .developer-link:hover{text-decoration-color:currentColor}.footer-bottom{display:flex;align-items:center;border-top:1px solid var(--line);margin-top:38px;padding-top:20px;color:var(--muted);font-size:.79rem}.footer-repo{display:inline-flex;gap:6px;color:var(--text-soft);font-weight:700;text-decoration:none}.footer-repo span{color:var(--accent)}.footer-repo:hover{color:var(--accent)}
 .theme-option:focus-visible,.nav-link:focus-visible,.button:focus-visible,.copy-button:focus-visible,.toc a:focus-visible,a:focus-visible{outline:3px solid var(--accent-soft);outline-offset:3px}
 @media(max-width:1020px){.nav-shell{grid-template-columns:auto 1fr}.nav-links{grid-column:1/-1;grid-row:2;justify-content:flex-start}.nav-tools{justify-self:end}.quick-grid,.policy-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.quick-step:nth-child(2),.policy-item:nth-child(2){border-right:0}.quick-step:nth-child(-n+2),.policy-item:nth-child(-n+2){border-bottom:1px solid var(--line)}.quick-step:nth-child(2):after{display:none}.docs-layout{grid-template-columns:1fr}.toc{position:static;display:flex;gap:4px;overflow:auto;order:-1}.toc-title{display:none}.toc a{flex:0 0 auto}.footer-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:760px){.shell{width:min(100% - 24px,1180px)}.site-header{padding-top:7px}.nav-shell{gap:10px;padding:9px 10px 8px 12px;border-radius:18px}.site-logo-header{width:40px;height:40px}.brand-copy small{display:none}.theme-option b{display:none}.theme-option{width:31px;justify-content:center;padding:4px}.nav-links{justify-content:space-between;gap:2px}.nav-link{flex:1;padding:7px 5px;text-align:center;font-size:.78rem}main{padding:22px 0 62px}.hero{min-height:0}.hero-copy{padding:36px 23px}.hero h1{font-size:clamp(2.85rem,14vw,4.3rem)}.section{margin-top:52px}.section-head{display:block}.section-head p{margin-top:10px}.grid,.grid.two,.bundle{grid-template-columns:1fr}.support-banner{grid-template-columns:1fr;margin-top:52px;padding:25px 22px}.support-orb{width:50px;height:50px}.support-orb svg{width:25px;height:25px}.support-banner .button{width:100%}.project-spotlight{grid-template-columns:1fr;padding:24px 22px}.page-intro{padding:34px 23px}.card,.panel{padding:20px}.footer-grid{grid-template-columns:1fr;gap:28px}.footer-bottom{display:block}.payload-head{align-items:flex-start}}
+@media(max-width:760px){.shell{width:min(100% - 24px,1180px)}.site-header{position:relative;top:auto;padding-top:7px}.nav-shell{gap:10px;padding:9px 10px 8px 12px;border-radius:18px}.site-logo-header{width:40px;height:40px}.brand-copy small{display:none}.theme-option b{display:none}.theme-option{width:31px;justify-content:center;padding:4px}.nav-links{justify-content:space-between;gap:2px}.nav-link{flex:1;min-width:0;padding:7px 5px;text-align:center;font-size:.78rem}main{padding:22px 0 62px}.hero{min-height:0}.hero-copy{padding:36px 23px}.hero h1{font-size:clamp(2.5rem,12vw,3.65rem);line-height:.98}.section{margin-top:52px}.section-head{display:block}.section-head p{margin-top:10px}.grid,.grid.two,.bundle{grid-template-columns:1fr}.support-banner{grid-template-columns:1fr;margin-top:52px;padding:25px 22px}.support-orb{width:50px;height:50px}.support-orb svg{width:25px;height:25px}.support-banner .button{width:100%}.project-spotlight{grid-template-columns:1fr;padding:24px 22px}.page-intro{padding:34px 23px}.card,.panel{padding:20px}.footer-grid{grid-template-columns:1fr;gap:28px}.footer-bottom{display:block}.payload-head{align-items:flex-start}}
 @media(max-width:480px){.brand-copy strong{font-size:.9rem}.hero-badges{display:grid;grid-template-columns:1fr 1fr}.quick-grid,.policy-strip{grid-template-columns:1fr}.quick-step,.policy-item{border-right:0;border-bottom:1px solid var(--line)}.quick-step:nth-child(2){border-bottom:1px solid var(--line)}.quick-step:not(:last-child):after{content:"⌄";right:50%;top:auto;bottom:-12px;transform:translateX(50%)}.policy-item:nth-child(2){border-bottom:1px solid var(--line)}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
 EOF
@@ -1617,7 +1648,7 @@ tdz_openvpn_install() {
         echo -e "${C_BLUE}Preparing the OpenVPN protocol suite${C_RESET}"
     fi
 
-    tdz_openvpn_progress_begin 1 6 "Checking packages and PAM authentication"
+    tdz_openvpn_progress_begin 1 6 "Preparing required components"
     if ! tdz_openvpn_install_packages || ! tdz_openvpn_resolve_binary; then
         tdz_openvpn_progress_failed
         echo -e "${C_RED}[ERROR] Required packages could not be installed.${C_RESET}"
@@ -1638,7 +1669,7 @@ tdz_openvpn_install() {
     backup=$(mktemp -d /tmp/tdz-openvpn-rollback.XXXXXX) || return 1
     local failed=false
 
-    tdz_openvpn_progress_begin 2 6 "Preserving the current TDZ configuration"
+    tdz_openvpn_progress_begin 2 6 "Preserving current settings"
     if $repair; then
         tdz_openvpn_snapshot_runtime "$backup" || {
             tdz_openvpn_progress_failed
@@ -1658,7 +1689,7 @@ tdz_openvpn_install() {
     fi
 
     if ! $failed; then
-        tdz_openvpn_progress_begin 3 6 "Creating secure keys and account bridge"
+        tdz_openvpn_progress_begin 3 6 "Configuring secure services"
         if tdz_openvpn_ensure_pki &&
            tdz_openvpn_prepare_gateway_certificate &&
            tdz_openvpn_write_hooks &&
@@ -1673,7 +1704,7 @@ tdz_openvpn_install() {
     fi
 
     if ! $failed; then
-        tdz_openvpn_progress_begin 4 6 "Generating downloadable connection profiles"
+        tdz_openvpn_progress_begin 4 6 "Preparing client profiles"
         if tdz_openvpn_generate_profiles && tdz_openvpn_apply_private_permissions; then
             tdz_openvpn_progress_done
         else
@@ -1683,7 +1714,7 @@ tdz_openvpn_install() {
     fi
 
     if ! $failed; then
-        tdz_openvpn_progress_begin 5 6 "Applying isolated network and service rules"
+        tdz_openvpn_progress_begin 5 6 "Applying network configuration"
         if tdz_openvpn_write_network_service && tdz_openvpn_write_systemd_units; then
             tdz_openvpn_progress_done
         else
@@ -1693,7 +1724,7 @@ tdz_openvpn_install() {
     fi
 
     if ! $failed; then
-        tdz_openvpn_progress_begin 6 6 "Starting and verifying every listener"
+        tdz_openvpn_progress_begin 6 6 "Starting and verifying services"
         if tdz_openvpn_validate_runtime_files && tdz_openvpn_start_services; then
             tdz_openvpn_progress_done
         else
@@ -2094,6 +2125,26 @@ tdz_openvpn_uninstall() {
     [[ "$mode" == "silent" ]] || echo -e "${C_GREEN}[OK] OpenVPN suite removed. Existing SSH user accounts were preserved.${C_RESET}"
 }
 
+tdz_openvpn_regenerate_profiles_action() {
+    if tdz_openvpn_load_state && tdz_openvpn_generate_profiles &&
+       tdz_openvpn_apply_private_permissions && systemctl restart tdz-openvpn-portal; then
+        echo -e "${C_GREEN}[OK] Download profiles regenerated.${C_RESET}"
+        tdz_openvpn_show_details
+    else
+        echo -e "${C_RED}[ERROR] OpenVPN must be installed first.${C_RESET}"
+        return 1
+    fi
+}
+
+tdz_openvpn_restart_action() {
+    if tdz_openvpn_restart; then
+        echo -e "${C_GREEN}[OK] All OpenVPN services are active.${C_RESET}"
+    else
+        echo -e "${C_RED}[ERROR] Service verification failed. Check the system journal.${C_RESET}"
+        return 1
+    fi
+}
+
 tdz_openvpn_menu() {
     while true; do
         local status="Not Installed" status_color="$C_RED" state_loaded=false
@@ -2132,25 +2183,14 @@ tdz_openvpn_menu() {
         echo
         read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" choice || return
         case "$choice" in
-            1) tdz_openvpn_install; press_enter ;;
-            2) tdz_openvpn_show_details; press_enter ;;
-            3) tdz_openvpn_configure_ports; press_enter ;;
-            4) tdz_openvpn_restore_default_ports; press_enter ;;
-            5)
-                if tdz_openvpn_load_state && tdz_openvpn_generate_profiles &&
-                   tdz_openvpn_apply_private_permissions && systemctl restart tdz-openvpn-portal; then
-                    echo -e "${C_GREEN}[OK] Download profiles regenerated.${C_RESET}"
-                    tdz_openvpn_show_details
-                else
-                    echo -e "${C_RED}[ERROR] OpenVPN must be installed first.${C_RESET}"
-                fi
-                press_enter ;;
-            6)
-                if tdz_openvpn_restart; then echo -e "${C_GREEN}[OK] All OpenVPN services are active.${C_RESET}"
-                else echo -e "${C_RED}[ERROR] Service verification failed. Check the system journal.${C_RESET}"; fi
-                press_enter ;;
-            7) tdz_openvpn_uninstall; press_enter ;;
-            8) tdz_openvpn_configure_support_contact; press_enter ;;
+            1) tdz_run_action tdz_openvpn_install ;;
+            2) tdz_run_action tdz_openvpn_show_details ;;
+            3) tdz_run_action tdz_openvpn_configure_ports ;;
+            4) tdz_run_action tdz_openvpn_restore_default_ports ;;
+            5) tdz_run_action tdz_openvpn_regenerate_profiles_action ;;
+            6) tdz_run_action tdz_openvpn_restart_action ;;
+            7) tdz_run_action tdz_openvpn_uninstall ;;
+            8) tdz_run_action tdz_openvpn_configure_support_contact ;;
             0) return ;;
             *) invalid_option ;;
         esac

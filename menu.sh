@@ -63,13 +63,6 @@ DNSTT_SERVICE_FILE="/etc/systemd/system/dnstt.service"
 DNSTT_BINARY="/usr/local/bin/dnstt-server"
 DNSTT_KEYS_DIR="/etc/tdztunnel/dnstt"
 DNSTT_CONFIG_FILE="$DB_DIR/dnstt_info.conf"
-UDP_CUSTOM_DIR="/root/udp"
-UDP_CUSTOM_SERVICE_FILE="/etc/systemd/system/udp-custom.service"
-UDPGW_BINARY="/usr/local/bin/udpgw"
-UDPGW_SERVICE_FILE="/etc/systemd/system/udpgw.service"
-TDZPROXY_SERVICE_FILE="/etc/systemd/system/tdzproxy.service"
-TDZPROXY_BINARY="/usr/local/bin/tdzproxy"
-TDZPROXY_CONFIG_FILE="$DB_DIR/tdzproxy_config.conf"
 LIMITER_SCRIPT="/usr/local/bin/tdztunnel-limiter.sh"
 LIMITER_SERVICE="/etc/systemd/system/tdztunnel-limiter.service"
 BANDWIDTH_DIR="$DB_DIR/bandwidth"
@@ -479,6 +472,33 @@ tdz_message() {
     printf "\n  %s[%s]%s %s\n" "$color" "$label" "$C_RESET" "$message"
 }
 
+# Consistent action progress. User-facing labels describe the phase without
+# exposing implementation dependencies; detailed command output stays quiet.
+tdz_progress_begin() {
+    local current="$1" total="$2" label="$3"
+    printf '  %b[%s/%s]%b %-42s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label"
+}
+
+tdz_progress_done() {
+    printf ' %bDONE%b\n' "$C_GREEN" "$C_RESET"
+}
+
+tdz_progress_failed() {
+    printf ' %bFAILED%b\n' "$C_RED" "$C_RESET"
+}
+
+tdz_progress_run() {
+    local current="$1" total="$2" label="$3"
+    shift 3
+    tdz_progress_begin "$current" "$total" "$label"
+    if "$@" >/dev/null 2>&1; then
+        tdz_progress_done
+        return 0
+    fi
+    tdz_progress_failed
+    return 1
+}
+
 # Store account dates in ISO format for Linux tools, but keep every
 # user-facing TDZ screen consistent and easy to scan.
 tdz_format_date_display() {
@@ -573,6 +593,7 @@ tdz_format_bandwidth_usage() {
 
 SSH_SESSION_CACHE_DB_MTIME=0
 SSH_SESSION_TOTAL=0
+SSH_CONNECTION_TOTAL=0
 APT_CACHE_READY=0
 TDZ_USERS_GROUP="tdzusers"
 declare -A SSH_SESSION_COUNTS=()
@@ -813,9 +834,9 @@ check_environment() {
     command -v flock &>/dev/null || missing_packages+=("util-linux")
 
     if (( ${#missing_packages[@]} > 0 )); then
-        echo -e "${C_YELLOW}[WARNING] Installing missing dependencies: ${missing_packages[*]}${C_RESET}"
+        echo -e "${C_BLUE}[INFO] Preparing required components...${C_RESET}"
         tdz_apt_install "${missing_packages[@]}" >/dev/null 2>&1 || {
-            echo -e "${C_RED}[ERROR] Failed to install required dependencies: ${missing_packages[*]}.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Required components could not be prepared.${C_RESET}"
             exit 1
         }
     fi
@@ -824,6 +845,8 @@ check_environment() {
 ensure_tdztunnel_dirs() {
     mkdir -p "$DB_DIR" "$SSL_CERT_DIR" "$BANDWIDTH_DIR" /etc/ssh/sshd_config.d
     touch "$DB_FILE"
+    chmod 700 "$DB_DIR" "$BANDWIDTH_DIR" 2>/dev/null || true
+    chmod 600 "$DB_FILE" 2>/dev/null || true
     tdz_manual_lock_store_init
 }
 
@@ -1264,7 +1287,7 @@ require_interactive_terminal() {
 }
 
 initial_setup() {
-    echo -e "${C_BLUE}Initializing TDZ SSH TUNNEL setup...${C_RESET}"
+    echo -e "${C_BLUE}Preparing TDZ SSH TUNNEL...${C_RESET}"
     check_environment
     
     ensure_tdztunnel_dirs
@@ -1273,30 +1296,30 @@ initial_setup() {
         echo -e "${C_YELLOW}[WARNING] Could not migrate legacy account lock reasons.${C_RESET}"
     }
     
-    echo -e "${C_BLUE}Hardening sshd for TDZ SSH TUNNEL stability...${C_RESET}"
+    echo -e "${C_BLUE}Configuring secure access...${C_RESET}"
     harden_sshd_for_tunnel_stability
 
-    echo -e "${C_BLUE}Configuring user limiter service...${C_RESET}"
+    echo -e "${C_BLUE}Configuring account services...${C_RESET}"
     setup_limiter_service
     setup_ssh_auth_session_hook || {
         echo -e "${C_YELLOW}[WARNING] Could not install the authenticated SSH session hook.${C_RESET}"
     }
     
-    echo -e "${C_BLUE}Configuring bandwidth monitoring service...${C_RESET}"
+    echo -e "${C_BLUE}Preparing usage services...${C_RESET}"
     setup_bandwidth_service
     
-    echo -e "${C_BLUE}Installing trial account cleanup script...${C_RESET}"
+    echo -e "${C_BLUE}Finalizing account services...${C_RESET}"
     setup_trial_cleanup_script
 
     if declare -F tdz_openvpn_refresh_runtime >/dev/null 2>&1 && tdz_openvpn_is_installed; then
-        echo -e "${C_BLUE}Refreshing optional OpenVPN services...${C_RESET}"
+        echo -e "${C_BLUE}Refreshing optional services...${C_RESET}"
         tdz_openvpn_refresh_runtime || {
             echo -e "${C_RED}[ERROR] OpenVPN refresh failed; its previous working state was restored.${C_RESET}"
             return 1
         }
     fi
     
-    echo -e "${C_BLUE}Cleaning legacy dynamic SSH banner hooks...${C_RESET}"
+    echo -e "${C_BLUE}Applying final configuration...${C_RESET}"
     disable_dynamic_ssh_banner_system
     systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
     
@@ -3494,7 +3517,7 @@ unlock_user() {
 list_users_view() {
     local view_filter="$1" view_title="$2"
     local -A system_user_lookup=()
-    local user_count=0 active_count=0 pending_count=0 attention_count=0
+    local user_count=0 session_count=0 active_count=0 pending_count=0 attention_count=0
     local first_account=true
 
     clear; show_banner
@@ -3526,6 +3549,7 @@ list_users_view() {
         esac
 
         user_count=$((user_count + 1))
+        session_count=$((session_count + online_count))
         local connection_string="$online_count/${limit:-1}"
         local plain_status="ACTIVE" status_color="$C_GREEN"
         local pending_activation=false used_bytes=0 data_display
@@ -3621,9 +3645,14 @@ list_users_view() {
     fi
 
     tdz_box_divider
-    tdz_row2 "${C_GRAY}SHOWN${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
-        "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_CYAN}PENDING ${pending_count}${C_RESET}"
-    (( attention_count > 0 )) && tdz_row2 "" "${C_YELLOW}ATTENTION ${attention_count}${C_RESET}"
+    if [[ "$view_filter" == "online" ]]; then
+        tdz_row2 "${C_GRAY}SESSIONS:${C_RESET} ${C_BOLD}${C_WHITE}${session_count}${C_RESET}" \
+            "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_GREEN}${user_count}${C_RESET}"
+    else
+        tdz_row2 "${C_GRAY}SHOWN${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
+            "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_CYAN}PENDING ${pending_count}${C_RESET}"
+        (( attention_count > 0 )) && tdz_row2 "" "${C_YELLOW}ATTENTION ${attention_count}${C_RESET}"
+    fi
     tdz_box_bot
 }
 
@@ -3908,17 +3937,23 @@ auto_backup_ensure_pm2() {
     if command -v pm2 &>/dev/null; then
         return 0
     fi
-    echo -e "\n${C_BLUE}Installing Node.js and PM2...${C_RESET}"
     tdz_apt_install nodejs npm >/dev/null 2>&1 || {
-        echo -e "${C_RED}Failed to install nodejs/npm.${C_RESET}"
         return 1
     }
     npm install -g pm2 >/dev/null 2>&1 || {
-        echo -e "${C_RED}Failed to install PM2.${C_RESET}"
         return 1
     }
     pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
     return 0
+}
+
+auto_backup_start_runtime() {
+    pm2 delete "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1 || true
+    pm2 start "$AUTO_BACKUP_SCRIPT" --name "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1 || return 1
+    pm2 save >/dev/null 2>&1 || return 1
+    local service_pid
+    service_pid=$(pm2 pid "$AUTO_BACKUP_PM2_NAME" 2>/dev/null | head -n 1 | tr -dc '0-9')
+    [[ "$service_pid" =~ ^[1-9][0-9]*$ ]]
 }
 
 auto_backup_write_worker() {
@@ -4628,12 +4663,24 @@ auto_backup_start() {
         echo -e "${C_RED}Bot not configured. Use 'Connect Bot' first.${C_RESET}"
         press_enter; return
     fi
-    auto_backup_ensure_pm2 || { press_enter; return; }
-    auto_backup_write_worker
-    pm2 delete "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1 || true
-    pm2 start "$AUTO_BACKUP_SCRIPT" --name "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1
-    pm2 save >/dev/null 2>&1
-    echo -e "${C_GREEN}Auto-backup bot started. Interval: ${INTERVAL_LABEL:-unknown}${C_RESET}"
+    echo
+    tdz_section "SERVICE PROGRESS"
+    if ! tdz_progress_run 1 3 "Preparing service runtime" auto_backup_ensure_pm2; then
+        tdz_message ERROR "The service runtime could not be prepared."
+        press_enter
+        return
+    fi
+    if ! tdz_progress_run 2 3 "Configuring backup service" auto_backup_write_worker; then
+        tdz_message ERROR "The backup service could not be configured."
+        press_enter
+        return
+    fi
+    if ! tdz_progress_run 3 3 "Starting and verifying service" auto_backup_start_runtime; then
+        tdz_message ERROR "The backup service could not be started."
+        press_enter
+        return
+    fi
+    tdz_message OK "Auto-backup is active. Interval: ${INTERVAL_LABEL:-unknown}."
     press_enter
 }
 
@@ -4831,15 +4878,15 @@ backup_data_menu() {
         echo
         read -r -p "$(echo -e "${C_PROMPT}  Select an option: ${C_RESET}")" b_choice
         case $b_choice in
-            1) backup_user_data ;;
-            2) auto_backup_connect_bot ;;
-            3) auto_backup_start ;;
-            4) auto_backup_stop ;;
-            5) auto_backup_restart ;;
-            6) auto_backup_send_now ;;
-            7) auto_backup_status ;;
-            8) auto_backup_edit_interval ;;
-            9) auto_backup_reset ;;
+            1) tdz_run_action backup_user_data ;;
+            2) tdz_run_action auto_backup_connect_bot ;;
+            3) tdz_run_action auto_backup_start ;;
+            4) tdz_run_action auto_backup_stop ;;
+            5) tdz_run_action auto_backup_restart ;;
+            6) tdz_run_action auto_backup_send_now ;;
+            7) tdz_run_action auto_backup_status ;;
+            8) tdz_run_action auto_backup_edit_interval ;;
+            9) tdz_run_action auto_backup_reset ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -5036,144 +5083,6 @@ preview_dynamic_ssh_banner() {
     press_enter
 }
 
-install_udp_custom() {
-    clear; show_banner
-    tdz_screen_title "INSTALL UDP-CUSTOM" "Install the UDP transport service and udpgw helper."
-    if [ -f "$UDP_CUSTOM_SERVICE_FILE" ] || [ -f "$UDPGW_SERVICE_FILE" ]; then
-        echo -e "\n${C_YELLOW}[INFO] udp-custom is already installed.${C_RESET}"
-        return
-    fi
-
-    check_and_free_ports 36712 7800 || return
-    check_and_open_firewall_port 36712 udp || return
-
-    echo -e "\n${C_GREEN}Creating directory for udp-custom...${C_RESET}"
-    rm -rf "$UDP_CUSTOM_DIR"
-    mkdir -p "$UDP_CUSTOM_DIR"
-
-    echo -e "\n${C_GREEN}Detecting system architecture...${C_RESET}"
-    local arch
-    arch=$(uname -m)
-    local binary_url=""
-    if [[ "$arch" == "x86_64" ]]; then
-        binary_url="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/raw/main/udp/udp-custom-linux-amd64"
-        echo -e "${C_BLUE}[INFO] Detected x86_64 (amd64) architecture.${C_RESET}"
-    elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
-        binary_url="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/raw/main/udp/udp-custom-linux-arm"
-        echo -e "${C_BLUE}[INFO] Detected ARM64 architecture.${C_RESET}"
-    else
-        echo -e "\n${C_RED}[ERROR] Unsupported architecture: $arch. Cannot install udp-custom.${C_RESET}"
-        rm -rf "$UDP_CUSTOM_DIR"
-        return
-    fi
-
-    echo -e "\n${C_GREEN}Downloading udp-custom binary...${C_RESET}"
-    wget -q --show-progress -O "$UDP_CUSTOM_DIR/udp-custom" "$binary_url"
-    if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}[ERROR] Failed to download the udp-custom binary.${C_RESET}"
-        rm -rf "$UDP_CUSTOM_DIR"
-        return
-    fi
-    chmod +x "$UDP_CUSTOM_DIR/udp-custom"
-
-    echo -e "\n${C_GREEN}Downloading udpgw helper...${C_RESET}"
-    wget -q --show-progress -O "$UDPGW_BINARY" "https://raw.githubusercontent.com/http-custom/udp-custom/main/module/udpgw"
-    if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}[ERROR] Failed to download the udpgw helper binary.${C_RESET}"
-        rm -rf "$UDP_CUSTOM_DIR"
-        rm -f "$UDPGW_BINARY"
-        return
-    fi
-    chmod +x "$UDPGW_BINARY"
-
-    echo -e "\n${C_GREEN}Creating default config.json...${C_RESET}"
-    cat > "$UDP_CUSTOM_DIR/config.json" <<EOF
-{
-  "listen": ":36712",
-  "stream_buffer": 33554432,
-  "receive_buffer": 83886080,
-  "auth": {
-    "mode": "passwords"
-  }
-}
-EOF
-    chmod 644 "$UDP_CUSTOM_DIR/config.json"
-
-    echo -e "\n${C_GREEN}Creating udpgw systemd service file...${C_RESET}"
-    cat > "$UDPGW_SERVICE_FILE" <<EOF
-[Unit]
-Description=TDZ SSH TUNNEL UDPGW Backend
-After=network.target
-
-[Service]
-User=root
-Type=simple
-ExecStart=$UDPGW_BINARY --listen-addr 127.0.0.1:7800 --max-clients 1000 --max-connections-for-client 100
-Restart=always
-RestartSec=2s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    echo -e "\n${C_GREEN}Creating systemd service file...${C_RESET}"
-    cat > "$UDP_CUSTOM_SERVICE_FILE" <<EOF
-[Unit]
-Description=UDP Custom by TDZ SSH TUNNEL
-After=network.target
-
-[Service]
-User=root
-Type=simple
-ExecStart=$UDP_CUSTOM_DIR/udp-custom server
-WorkingDirectory=$UDP_CUSTOM_DIR/
-Restart=always
-RestartSec=2s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    echo -e "\n${C_BLUE}[INFO] Enabling and starting udp-custom service...${C_RESET}"
-    systemctl daemon-reload
-    systemctl enable udpgw.service
-    systemctl start udpgw.service
-    systemctl enable udp-custom.service
-    systemctl start udp-custom.service
-    sleep 2
-    if systemctl is-active --quiet udpgw && systemctl is-active --quiet udp-custom; then
-        echo -e "\n${C_GREEN}[OK] udp-custom is installed and active.${C_RESET}"
-    else
-        echo -e "\n${C_RED}[ERROR] udp-custom service failed to start.${C_RESET}"
-        echo -e "${C_YELLOW}[INFO] Displaying last 15 lines of the udp-custom and udpgw logs for diagnostics:${C_RESET}"
-        journalctl -u udp-custom.service -n 15 --no-pager
-        journalctl -u udpgw.service -n 15 --no-pager
-    fi
-}
-
-uninstall_udp_custom() {
-    tdz_screen_title "UNINSTALL UDP-CUSTOM"
-    if [ ! -f "$UDP_CUSTOM_SERVICE_FILE" ] && [ ! -f "$UDPGW_SERVICE_FILE" ]; then
-        echo -e "${C_YELLOW}[INFO] udp-custom is not installed, skipping.${C_RESET}"
-        return
-    fi
-    echo -e "${C_GREEN}Stopping and disabling udpgw service...${C_RESET}"
-    systemctl stop udpgw.service >/dev/null 2>&1
-    systemctl disable udpgw.service >/dev/null 2>&1
-    echo -e "${C_GREEN}Stopping and disabling udp-custom service...${C_RESET}"
-    systemctl stop udp-custom.service >/dev/null 2>&1
-    systemctl disable udp-custom.service >/dev/null 2>&1
-    echo -e "${C_GREEN}Removing systemd service file...${C_RESET}"
-    rm -f "$UDP_CUSTOM_SERVICE_FILE"
-    rm -f "$UDPGW_SERVICE_FILE"
-    systemctl daemon-reload
-    echo -e "${C_GREEN}Removing udp-custom directory and files...${C_RESET}"
-    rm -rf "$UDP_CUSTOM_DIR"
-    rm -f "$UDPGW_BINARY"
-    echo -e "${C_GREEN}[OK] udp-custom has been uninstalled successfully.${C_RESET}"
-}
-
-
 ensure_badvpn_service_is_quiet() {
     if [[ ! -f "$BADVPN_SERVICE_FILE" ]] || grep -q "^StandardOutput=null$" "$BADVPN_SERVICE_FILE" 2>/dev/null; then
         return
@@ -5203,30 +5112,37 @@ install_badvpn() {
         return
     fi
     check_and_open_firewall_port 7300 udp || return
-    echo -e "\n${C_GREEN}Updating package lists...${C_RESET}"
-    tdz_apt_update || return
-    echo -e "\n${C_GREEN}Installing all required packages...${C_RESET}"
-    tdz_apt_install cmake g++ make screen git build-essential libssl-dev libnspr4-dev libnss3-dev pkg-config || {
-        echo -e "${C_RED}[ERROR] Failed to install badvpn build dependencies.${C_RESET}"
+    echo
+    tdz_section "INSTALLATION PROGRESS"
+    tdz_progress_begin 1 4 "Preparing required components"
+    if ! tdz_apt_install cmake g++ make screen git build-essential libssl-dev libnspr4-dev libnss3-dev pkg-config >/dev/null 2>&1; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Required components could not be prepared.${C_RESET}"
         return
-    }
-    echo -e "\n${C_GREEN}Cloning badvpn from github...${C_RESET}"
-    git clone https://github.com/ambrop72/badvpn.git "$BADVPN_BUILD_DIR"
-    cd "$BADVPN_BUILD_DIR" || { echo -e "${C_RED}[ERROR] Failed to change directory to build folder.${C_RESET}"; return; }
-    echo -e "\n${C_GREEN}Running CMake...${C_RESET}"
-    cmake . || { echo -e "${C_RED}[ERROR] CMake configuration failed.${C_RESET}"; rm -rf "$BADVPN_BUILD_DIR"; return; }
-    echo -e "\n${C_GREEN}Compiling source...${C_RESET}"
-    make || { echo -e "${C_RED}[ERROR] Compilation (make) failed.${C_RESET}"; rm -rf "$BADVPN_BUILD_DIR"; return; }
+    fi
+    tdz_progress_done
+
+    tdz_progress_begin 2 4 "Preparing service package"
+    rm -rf "$BADVPN_BUILD_DIR"
+    if ! git clone -q https://github.com/ambrop72/badvpn.git "$BADVPN_BUILD_DIR" >/dev/null 2>&1 ||
+       ! (cd "$BADVPN_BUILD_DIR" && cmake . >/dev/null 2>&1 && make >/dev/null 2>&1); then
+        tdz_progress_failed
+        rm -rf "$BADVPN_BUILD_DIR"
+        echo -e "${C_RED}[ERROR] The service package could not be prepared.${C_RESET}"
+        return
+    fi
     local badvpn_binary
     badvpn_binary=$(find "$BADVPN_BUILD_DIR" -name "badvpn-udpgw" -type f | head -n 1)
     if [[ -z "$badvpn_binary" || ! -f "$badvpn_binary" ]]; then
-        echo -e "${C_RED}[ERROR] Could not find the compiled 'badvpn-udpgw' binary after compilation.${C_RESET}"
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] The service package did not pass validation.${C_RESET}"
         rm -rf "$BADVPN_BUILD_DIR"
         return
     fi
-    echo -e "${C_GREEN}[INFO] Found binary at: $badvpn_binary${C_RESET}"
     chmod +x "$badvpn_binary"
-    echo -e "\n${C_GREEN}Creating systemd service file...${C_RESET}"
+    tdz_progress_done
+
+    tdz_progress_begin 3 4 "Configuring service"
     cat > "$BADVPN_SERVICE_FILE" <<-EOF
 [Unit]
 Description=BadVPN UDP Gateway
@@ -5241,17 +5157,19 @@ StandardError=null
 [Install]
 WantedBy=multi-user.target
 EOF
-    echo -e "\n${C_BLUE}[INFO] Enabling and starting badvpn service...${C_RESET}"
-    systemctl daemon-reload
-    systemctl enable badvpn.service
-    systemctl start badvpn.service
+    tdz_progress_done
+
+    tdz_progress_begin 4 4 "Starting and verifying service"
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable badvpn.service >/dev/null 2>&1
+    systemctl start badvpn.service >/dev/null 2>&1
     sleep 2
     if systemctl is-active --quiet badvpn; then
+        tdz_progress_done
         echo -e "\n${C_GREEN}[OK] badvpn (udpgw) is installed and active on port 7300.${C_RESET}"
     else
+        tdz_progress_failed
         echo -e "\n${C_RED}[ERROR] badvpn service failed to start.${C_RESET}"
-        echo -e "${C_YELLOW}[INFO] Displaying last 15 lines of the service log for diagnostics:${C_RESET}"
-        journalctl -u badvpn.service -n 15 --no-pager
     fi
 }
 
@@ -5326,9 +5244,9 @@ ensure_edge_stack_packages() {
     command -v python3 &> /dev/null || missing_packages+=("python3")
 
     if (( ${#missing_packages[@]} > 0 )); then
-        echo -e "\n${C_BLUE}Installing required packages: ${missing_packages[*]}${C_RESET}"
+        echo -e "\n${C_BLUE}[INFO] Preparing required components...${C_RESET}"
         tdz_apt_install "${missing_packages[@]}" || {
-            echo -e "${C_RED}[ERROR] Failed to install the required packages.${C_RESET}"
+            echo -e "${C_RED}[ERROR] Required components could not be prepared.${C_RESET}"
             return 1
         }
     fi
@@ -6300,66 +6218,72 @@ configure_edge_stack() {
     local server_name="$1"
     [[ -z "$server_name" ]] && server_name="_"
 
+    echo
+    tdz_section "SERVICE PROGRESS"
+    tdz_progress_begin 1 4 "Preparing service configuration"
     backup_edge_configs
+    if ! write_internal_nginx_config "$server_name" || ! write_haproxy_edge_config; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Service configuration could not be prepared.${C_RESET}"
+        return 1
+    fi
+    tdz_progress_done
 
-    echo -e "\n${C_BLUE}Writing internal Nginx config (127.0.0.1:${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT})...${C_RESET}"
-    write_internal_nginx_config "$server_name"
+    tdz_progress_begin 2 4 "Preparing connection service"
+    if ! install_ws_ssh_bridge >/dev/null 2>&1; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Connection service could not be prepared.${C_RESET}"
+        return 1
+    fi
+    tdz_progress_done
 
-    echo -e "${C_BLUE}Writing HAProxy edge config (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})...${C_RESET}"
-    write_haproxy_edge_config
-
-    echo -e "${C_BLUE}Installing WS-to-SSH bridge (DarkTunnel payload support)...${C_RESET}"
-    install_ws_ssh_bridge || return 1
-
-    echo -e "\n${C_BLUE}Validating Nginx configuration...${C_RESET}"
+    tdz_progress_begin 3 4 "Validating service configuration"
     if ! nginx -t >/dev/null 2>&1; then
-        echo -e "${C_RED}[ERROR] Nginx configuration validation failed.${C_RESET}"
-        nginx -t
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Service configuration validation failed.${C_RESET}"
         return 1
     fi
-
-    echo -e "${C_BLUE}Validating HAProxy configuration...${C_RESET}"
     if ! haproxy -c -f "$HAPROXY_CONFIG" >/dev/null 2>&1; then
-        echo -e "${C_RED}[ERROR] HAProxy configuration validation failed.${C_RESET}"
-        haproxy -c -f "$HAPROXY_CONFIG"
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Service configuration validation failed.${C_RESET}"
         return 1
     fi
+    tdz_progress_done
 
-    systemctl daemon-reload
+    tdz_progress_begin 4 4 "Starting and verifying services"
+    systemctl daemon-reload >/dev/null 2>&1
     systemctl enable nginx >/dev/null 2>&1
     systemctl enable haproxy >/dev/null 2>&1
-
-    echo -e "\n${C_BLUE}[INFO] Restarting internal Nginx...${C_RESET}"
-    systemctl restart nginx || {
-        echo -e "${C_RED}[ERROR] Nginx failed to restart.${C_RESET}"
-        systemctl status nginx --no-pager
+    systemctl restart nginx >/dev/null 2>&1 || {
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Services could not be started.${C_RESET}"
         return 1
     }
-
-    echo -e "${C_BLUE}[INFO] Restarting HAProxy edge...${C_RESET}"
-    systemctl restart haproxy || {
-        echo -e "${C_RED}[ERROR] HAProxy failed to restart.${C_RESET}"
-        systemctl status haproxy --no-pager
+    systemctl restart haproxy >/dev/null 2>&1 || {
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Services could not be started.${C_RESET}"
         return 1
     }
 
     sleep 2
     if ! systemctl is-active --quiet nginx; then
-        echo -e "${C_RED}[ERROR] Nginx is not active after restart.${C_RESET}"
-        systemctl status nginx --no-pager
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Service verification failed.${C_RESET}"
         return 1
     fi
     if ! systemctl is-active --quiet haproxy; then
-        echo -e "${C_RED}[ERROR] HAProxy is not active after restart.${C_RESET}"
-        systemctl status haproxy --no-pager
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Service verification failed.${C_RESET}"
         return 1
     fi
 
     save_edge_ports_info
     save_edge_port_settings || {
+        tdz_progress_failed
         echo -e "${C_RED}[ERROR] Could not save the public edge port settings.${C_RESET}"
         return 1
     }
+    tdz_progress_done
     return 0
 }
 
@@ -6714,14 +6638,6 @@ install_dnstt() {
         return
     fi
     
-    # --- FIX: Force release of Port 53 / Disable systemd-resolved ---
-    echo -e "${C_GREEN}Forcing release of Port 53 (stopping systemd-resolved)...${C_RESET}"
-    systemctl stop systemd-resolved >/dev/null 2>&1
-    systemctl disable systemd-resolved >/dev/null 2>&1
-    rm -f /etc/resolv.conf
-    echo "nameserver 8.8.8.8" | tee /etc/resolv.conf > /dev/null
-    # ----------------------------------------------------------------
-    
     echo -e "\n${C_BLUE}Checking if port 53 (UDP) is available...${C_RESET}"
     if ss -lunp | grep -q ':53\s'; then
         if [[ $(ps -p $(ss -lunp | grep ':53\s' | grep -oP 'pid=\K[0-9]+') -o comm=) == "systemd-resolve" ]]; then
@@ -6805,37 +6721,43 @@ install_dnstt() {
         echo -e "${C_YELLOW}[INFO] Using default MTU.${C_RESET}"
     fi
 
-    echo -e "\n${C_BLUE}Downloading pre-compiled DNSTT server binary...${C_RESET}"
     local arch
     arch=$(uname -m)
     local binary_url=""
     if [[ "$arch" == "x86_64" ]]; then
         binary_url="https://dnstt.network/dnstt-server-linux-amd64"
-        echo -e "${C_BLUE}[INFO] Detected x86_64 (amd64) architecture.${C_RESET}"
     elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
         binary_url="https://dnstt.network/dnstt-server-linux-arm64"
-        echo -e "${C_BLUE}[INFO] Detected ARM64 architecture.${C_RESET}"
     else
         echo -e "\n${C_RED}[ERROR] Unsupported architecture: $arch. Cannot install DNSTT.${C_RESET}"
         return
     fi
-    
-    curl -sL "$binary_url" -o "$DNSTT_BINARY"
-    if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}[ERROR] Failed to download the DNSTT binary.${C_RESET}"
+
+    echo
+    tdz_section "INSTALLATION PROGRESS"
+    tdz_progress_begin 1 4 "Preparing service package"
+    if ! curl -fLsS "$binary_url" -o "$DNSTT_BINARY"; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] The service package could not be prepared.${C_RESET}"
         return
     fi
     chmod +x "$DNSTT_BINARY"
+    tdz_progress_done
 
-    echo -e "${C_BLUE}Generating cryptographic keys...${C_RESET}"
+    tdz_progress_begin 2 4 "Configuring secure service"
     mkdir -p "$DNSTT_KEYS_DIR"
-    "$DNSTT_BINARY" -gen-key -privkey-file "$DNSTT_KEYS_DIR/server.key" -pubkey-file "$DNSTT_KEYS_DIR/server.pub"
-    if [[ ! -f "$DNSTT_KEYS_DIR/server.key" ]]; then echo -e "${C_RED}[ERROR] Failed to generate DNSTT keys.${C_RESET}"; return; fi
+    "$DNSTT_BINARY" -gen-key -privkey-file "$DNSTT_KEYS_DIR/server.key" -pubkey-file "$DNSTT_KEYS_DIR/server.pub" >/dev/null 2>&1
+    if [[ ! -s "$DNSTT_KEYS_DIR/server.key" || ! -s "$DNSTT_KEYS_DIR/server.pub" ]]; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Secure service configuration failed.${C_RESET}"
+        return
+    fi
+    tdz_progress_done
     
     local PUBLIC_KEY
     PUBLIC_KEY=$(cat "$DNSTT_KEYS_DIR/server.pub")
     
-    echo -e "\n${C_BLUE}Creating systemd service...${C_RESET}"
+    tdz_progress_begin 3 4 "Applying service configuration"
     cat > "$DNSTT_SERVICE_FILE" <<-EOF
 [Unit]
 Description=DNSTT (DNS Tunnel) Server for $forward_desc
@@ -6849,7 +6771,6 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-    echo -e "\n${C_BLUE}Saving configuration and starting service...${C_RESET}"
     cat > "$DNSTT_CONFIG_FILE" <<-EOF
 NS_SUBDOMAIN="$NS_SUBDOMAIN"
 TUNNEL_SUBDOMAIN="$TUNNEL_SUBDOMAIN"
@@ -6861,14 +6782,24 @@ DNSTT_RECORDS_MANAGED="$DNSTT_RECORDS_MANAGED"
 HAS_IPV6="$HAS_IPV6"
 MTU_VALUE="$mtu_value"
 EOF
-    systemctl daemon-reload
-    systemctl enable dnstt.service
-    systemctl start dnstt.service
+    if [[ ! -s "$DNSTT_SERVICE_FILE" || ! -s "$DNSTT_CONFIG_FILE" ]]; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Service configuration could not be applied.${C_RESET}"
+        return
+    fi
+    tdz_progress_done
+
+    tdz_progress_begin 4 4 "Starting and verifying service"
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable dnstt.service >/dev/null 2>&1
+    systemctl start dnstt.service >/dev/null 2>&1
     sleep 2
     if systemctl is-active --quiet dnstt.service; then
+        tdz_progress_done
         echo -e "\n${C_GREEN}[OK] DNSTT has been installed and started!${C_RESET}"
         show_dnstt_details
     else
+        tdz_progress_failed
         echo -e "\n${C_RED}[ERROR] DNSTT service failed to start.${C_RESET}"
         journalctl -u dnstt.service -n 15 --no-pager
     fi
@@ -6909,161 +6840,6 @@ uninstall_dnstt() {
     echo -e "\n${C_GREEN}[OK] DNSTT has been successfully uninstalled.${C_RESET}"
 }
 
-install_tdz_proxy() {
-    clear; show_banner
-    tdz_screen_title "INSTALL TDZ PROXY" "Install the WebSocket and SOCKS proxy service."
-    
-    if [ -f "$TDZPROXY_SERVICE_FILE" ]; then
-        echo -e "\n${C_YELLOW}[INFO] TDZ Proxy is already installed.${C_RESET}"
-        if [ -f "$TDZPROXY_CONFIG_FILE" ]; then
-            source "$TDZPROXY_CONFIG_FILE"
-            echo -e "   It is configured to run on port(s): ${C_YELLOW}$PORTS${C_RESET}"
-            echo -e "   Installed Version: ${C_YELLOW}${INSTALLED_VERSION:-Unknown}${C_RESET}"
-        fi
-        read -p "  Do you want to reinstall/update? (y/n): " confirm_reinstall
-        if [[ "$confirm_reinstall" != "y" ]]; then return; fi
-    fi
-
-    echo -e "\n${C_BLUE}Fetching available versions from GitHub...${C_RESET}"
-    local releases_json=$(curl -s "https://api.github.com/repos/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/releases")
-    if [[ -z "$releases_json" || "$releases_json" == "[]" ]]; then
-        echo -e "${C_RED}[ERROR] Could not fetch releases. Check internet or API limits.${C_RESET}"
-        return
-    fi
-
-    # Extract tag names
-    mapfile -t versions < <(echo "$releases_json" | jq -r '.[].tag_name')
-    
-    if [ ${#versions[@]} -eq 0 ]; then
-        echo -e "${C_RED}[ERROR] No releases found in the repository.${C_RESET}"
-        return
-    fi
-
-    local choice version_number
-    echo
-    tdz_box_top
-    tdz_box_header "TDZ PROXY VERSION"
-    tdz_box_divider
-    for i in "${!versions[@]}"; do
-        printf -v version_number "[%2d]" "$((i+1))"
-        tdz_menu1 "$version_number" "${versions[$i]}"
-    done
-    tdz_box_divider
-    tdz_menu1 "[ 0]" "Cancel"
-    tdz_box_bot
-    echo
-
-    while true; do
-        if ! read -r -p "$(echo -e "${C_PROMPT}  Select a version [1]: ${C_RESET}")" choice; then
-            echo
-            return
-        fi
-        choice=${choice:-1}
-        if [[ "$choice" == "0" ]]; then return; fi
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -le "${#versions[@]}" ]; then
-            SELECTED_VERSION="${versions[$((choice-1))]}"
-            break
-        else
-            echo -e "${C_RED}[ERROR] Invalid selection.${C_RESET}"
-        fi
-    done
-
-    local ports
-    read -p "  Enter port(s) for TDZ Proxy (e.g., 8080 or 8080 8888) [8080]: " ports
-    ports=${ports:-8080}
-
-    local port_array=($ports)
-    for port in "${port_array[@]}"; do
-        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-            echo -e "\n${C_RED}[ERROR] Invalid port number: $port. Aborting.${C_RESET}"
-            return
-        fi
-        check_and_free_ports "$port" || return
-        check_and_open_firewall_port "$port" tcp || return
-    done
-
-    echo -e "\n${C_GREEN}Detecting system architecture...${C_RESET}"
-    local arch=$(uname -m)
-    local binary_name=""
-    if [[ "$arch" == "x86_64" ]]; then
-        binary_name="tdzproxy"
-        echo -e "${C_BLUE}[INFO] Detected x86_64 (amd64) architecture.${C_RESET}"
-    elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
-        binary_name="tdzproxyarm"
-        echo -e "${C_BLUE}[INFO] Detected ARM64 architecture.${C_RESET}"
-    else
-        echo -e "\n${C_RED}[ERROR] Unsupported architecture: $arch. Cannot install TDZ Proxy.${C_RESET}"
-        return
-    fi
-    
-    # Construct download URL based on selected version
-    local download_url="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/releases/download/$SELECTED_VERSION/$binary_name"
-
-    echo -e "\n${C_GREEN}Downloading TDZ Proxy $SELECTED_VERSION ($binary_name)...${C_RESET}"
-    wget -q --show-progress -O "$TDZPROXY_BINARY" "$download_url"
-    if [ $? -ne 0 ]; then
-        echo -e "\n${C_RED}[ERROR] Failed to download the binary. Please ensure version $SELECTED_VERSION has asset '$binary_name'.${C_RESET}"
-        return
-    fi
-    chmod +x "$TDZPROXY_BINARY"
-
-    echo -e "\n${C_GREEN}Creating systemd service file...${C_RESET}"
-    cat > "$TDZPROXY_SERVICE_FILE" <<EOF
-[Unit]
-Description=TDZ Proxy ($SELECTED_VERSION)
-After=network.target
-
-[Service]
-User=root
-Type=simple
-ExecStart=$TDZPROXY_BINARY -p $ports
-Restart=always
-RestartSec=2s
-
-[Install]
-WantedBy=default.target
-EOF
-
-    echo -e "\n${C_GREEN}Saving configuration...${C_RESET}"
-    cat > "$TDZPROXY_CONFIG_FILE" <<EOF
-PORTS="$ports"
-INSTALLED_VERSION="$SELECTED_VERSION"
-EOF
-
-    echo -e "\n${C_BLUE}[INFO] Enabling and starting TDZ Proxy service...${C_RESET}"
-    systemctl daemon-reload
-    systemctl enable tdzproxy.service
-    systemctl restart tdzproxy.service
-    sleep 2
-    
-    if systemctl is-active --quiet tdzproxy; then
-        echo -e "\n${C_GREEN}[OK] TDZ Proxy $SELECTED_VERSION is installed and active.${C_RESET}"
-        echo -e "   Listening on port(s): ${C_YELLOW}$ports${C_RESET}"
-    else
-        echo -e "\n${C_RED}[ERROR] TDZ Proxy service failed to start.${C_RESET}"
-        echo -e "${C_YELLOW}[INFO] Displaying last 15 lines of the service log for diagnostics:${C_RESET}"
-        journalctl -u tdzproxy.service -n 15 --no-pager
-    fi
-}
-
-uninstall_tdz_proxy() {
-    tdz_screen_title "UNINSTALL TDZ PROXY"
-    if [ ! -f "$TDZPROXY_SERVICE_FILE" ]; then
-        echo -e "${C_YELLOW}[INFO] TDZ Proxy is not installed, skipping.${C_RESET}"
-        return
-    fi
-    echo -e "${C_GREEN}Stopping and disabling TDZ Proxy service...${C_RESET}"
-    systemctl stop tdzproxy.service >/dev/null 2>&1
-    systemctl disable tdzproxy.service >/dev/null 2>&1
-    echo -e "${C_GREEN}Removing service file...${C_RESET}"
-    rm -f "$TDZPROXY_SERVICE_FILE"
-    systemctl daemon-reload
-    echo -e "${C_GREEN}Removing binary and config files...${C_RESET}"
-    rm -f "$TDZPROXY_BINARY"
-    rm -f "$TDZPROXY_CONFIG_FILE"
-    echo -e "${C_GREEN}[OK] TDZ Proxy has been uninstalled successfully.${C_RESET}"
-}
-
 # --- ZiVPN Installation Logic ---
 install_zivpn() {
     clear; show_banner
@@ -7078,39 +6854,57 @@ install_zivpn() {
     check_and_open_firewall_port 5667 udp || return
     check_and_open_firewall_port_range "6000:19999" udp || return
 
-    echo -e "\n${C_GREEN}Checking system architecture...${C_RESET}"
-    local arch=$(uname -m)
+    local arch
+    arch=$(uname -m)
     local zivpn_url=""
     
     if [[ "$arch" == "x86_64" ]]; then
         zivpn_url="https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-amd64"
-        echo -e "${C_BLUE}[INFO] Detected AMD64/x86_64 architecture.${C_RESET}"
     elif [[ "$arch" == "aarch64" ]]; then
         zivpn_url="https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-arm64"
-        echo -e "${C_BLUE}[INFO] Detected ARM64 architecture.${C_RESET}"
     elif [[ "$arch" == "armv7l" || "$arch" == "arm" ]]; then
          zivpn_url="https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-arm"
-         echo -e "${C_BLUE}[INFO] Detected ARM architecture.${C_RESET}"
     else
         echo -e "${C_RED}[ERROR] Unsupported architecture: $arch${C_RESET}"
         return
     fi
 
-    echo -e "\n${C_GREEN}Downloading ZiVPN binary...${C_RESET}"
-    if ! wget -q --show-progress -O "$ZIVPN_BIN" "$zivpn_url"; then
-        echo -e "${C_RED}[ERROR] Download failed. Check internet connection.${C_RESET}"
+    echo -e "\n${C_YELLOW}ZiVPN Password Setup${C_RESET}"
+    read -r -p "  Enter passwords separated by commas (e.g., user1,user2) [Default: 'zi']: " input_config
+    local json_passwords
+    if [[ -n "$input_config" ]]; then
+        local -a config_array
+        IFS=',' read -r -a config_array <<< "$input_config"
+        local configured_password
+        for configured_password in "${config_array[@]}"; do
+            if [[ -z "$configured_password" || ! "$configured_password" =~ ^[A-Za-z0-9._@+-]+$ ]]; then
+                echo -e "${C_RED}[ERROR] Passwords may contain only letters, numbers, dot, underscore, @, + and -.${C_RESET}"
+                return
+            fi
+        done
+        json_passwords=$(printf '"%s",' "${config_array[@]}")
+        json_passwords="[${json_passwords%,}]"
+    else
+        json_passwords='["zi"]'
+    fi
+
+    echo
+    tdz_section "INSTALLATION PROGRESS"
+    tdz_progress_begin 1 4 "Preparing service package"
+    if ! wget -q -O "$ZIVPN_BIN" "$zivpn_url"; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] The service package could not be prepared.${C_RESET}"
         return
     fi
     chmod +x "$ZIVPN_BIN"
+    tdz_progress_done
 
-    echo -e "\n${C_GREEN}Configuring ZIVPN...${C_RESET}"
+    tdz_progress_begin 2 4 "Configuring secure service"
     mkdir -p "$ZIVPN_DIR"
-    
-    # Generate Certificates
-    echo -e "${C_BLUE}Generating self-signed certificates...${C_RESET}"
     if ! command -v openssl &>/dev/null; then
         tdz_apt_install openssl >/dev/null 2>&1 || {
-            echo -e "${C_RED}[ERROR] Failed to install openssl for ZiVPN certificate generation.${C_RESET}"
+            tdz_progress_failed
+            echo -e "${C_RED}[ERROR] A required secure component could not be prepared.${C_RESET}"
             return
         }
     fi
@@ -7119,18 +6913,19 @@ install_zivpn() {
         -subj "/C=US/ST=California/L=Los Angeles/O=Example Corp/OU=IT Department/CN=zivpn" \
         -keyout "$ZIVPN_KEY_FILE" -out "$ZIVPN_CERT_FILE" 2>/dev/null
 
-    if [ ! -f "$ZIVPN_CERT_FILE" ]; then
-        echo -e "${C_RED}[ERROR] Failed to generate certificates.${C_RESET}"
+    if [[ ! -s "$ZIVPN_CERT_FILE" || ! -s "$ZIVPN_KEY_FILE" ]]; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Secure service configuration failed.${C_RESET}"
         return
     fi
+    chmod 600 "$ZIVPN_KEY_FILE"
+    chmod 644 "$ZIVPN_CERT_FILE"
+    tdz_progress_done
 
-    # System Tuning
-    echo -e "${C_BLUE}Tuning system network parameters...${C_RESET}"
-    sysctl -w net.core.rmem_max=16777216 >/dev/null
-    sysctl -w net.core.wmem_max=16777216 >/dev/null
+    tdz_progress_begin 3 4 "Applying service configuration"
+    sysctl -w net.core.rmem_max=16777216 >/dev/null 2>&1
+    sysctl -w net.core.wmem_max=16777216 >/dev/null 2>&1
 
-    # Create Service
-    echo -e "${C_BLUE}Creating systemd service file...${C_RESET}"
     cat <<EOF > "$ZIVPN_SERVICE_FILE"
 [Unit]
 Description=zivpn VPN Server
@@ -7152,20 +6947,6 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 EOF
 
-    # Configure Passwords
-    echo -e "\n${C_YELLOW}ZiVPN Password Setup${C_RESET}"
-    read -p "  Enter passwords separated by commas (e.g., user1,user2) [Default: 'zi']: " input_config
-    
-    if [ -n "$input_config" ]; then
-        IFS=',' read -r -a config_array <<< "$input_config"
-        # Ensure array format for JSON
-        json_passwords=$(printf '"%s",' "${config_array[@]}")
-        json_passwords="[${json_passwords%,}]"
-    else
-        json_passwords='["zi"]'
-    fi
-
-    # Create Config File
     cat <<EOF > "$ZIVPN_CONFIG_FILE"
 {
   "listen": ":5667",
@@ -7178,36 +6959,43 @@ EOF
   }
 }
 EOF
+    if [[ ! -s "$ZIVPN_SERVICE_FILE" || ! -s "$ZIVPN_CONFIG_FILE" ]]; then
+        tdz_progress_failed
+        echo -e "${C_RED}[ERROR] Service configuration could not be applied.${C_RESET}"
+        return
+    fi
+    tdz_progress_done
 
-    echo -e "\n${C_GREEN}Starting ZiVPN Service...${C_RESET}"
-    systemctl daemon-reload
-    systemctl enable zivpn.service
-    systemctl start zivpn.service
+    tdz_progress_begin 4 4 "Starting and verifying service"
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable zivpn.service >/dev/null 2>&1
+    systemctl start zivpn.service >/dev/null 2>&1
 
-    # Port Forwarding / Firewall
-    echo -e "${C_BLUE}Configuring Firewall Rules (Redirecting 6000-19999 -> 5667)...${C_RESET}"
-    
-    # Determine primary interface
-    local iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+    local iface
+    local forwarding_ready=true
+    iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
     
     if [ -n "$iface" ]; then
         iptables -t nat -C PREROUTING -i "$iface" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || \
-            iptables -t nat -A PREROUTING -i "$iface" -p udp --dport 6000:19999 -j DNAT --to-destination :5667
-        # Note: IPTables rules are not persistent by default without iptables-persistent package
+            iptables -t nat -A PREROUTING -i "$iface" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 >/dev/null 2>&1 || forwarding_ready=false
     else
-        echo -e "${C_YELLOW}[WARNING] Could not detect default interface for IPTables redirection.${C_RESET}"
+        forwarding_ready=false
     fi
 
-    # Cleanup
     rm -f zi.sh zi2.sh 2>/dev/null
 
     if systemctl is-active --quiet zivpn.service; then
+        tdz_progress_done
         tdz_message OK "ZiVPN installed and started successfully."
         echo
         tdz_section "ZIVPN CONNECTION DETAILS"
         tdz_detail "Direct UDP Port" "5667"
         tdz_detail "Forwarded Ports" "6000-19999"
+        if [[ "$forwarding_ready" != true ]]; then
+            echo -e "${C_YELLOW}[WARNING] The forwarded port range could not be applied; direct port 5667 remains available.${C_RESET}"
+        fi
     else
+        tdz_progress_failed
         echo -e "\n${C_RED}[ERROR] ZiVPN Service failed to start. Check logs: journalctl -u zivpn.service${C_RESET}"
     fi
 }
@@ -7466,13 +7254,13 @@ nginx_proxy_menu() {
             press_enter
             ;;
         3) 
-             install_nginx_proxy; press_enter
+             tdz_run_action install_nginx_proxy
              ;;
         4)
-             request_certbot_ssl; press_enter
+             tdz_run_action request_certbot_ssl
              ;;
         5)
-             purge_nginx; press_enter
+             tdz_run_action purge_nginx
              ;;
         0) return ;;
         *) invalid_option ;;
@@ -7500,15 +7288,21 @@ install_xui_panel() {
                 return 1
             }
             installer_url="https://raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/${XUI_INSTALLER_COMMIT}/install.sh"
-            echo -e "\n${C_BLUE}Downloading ${XUI_PATCHED_LABEL} installer...${C_RESET}"
+            echo
+            tdz_section "INSTALLATION PROGRESS"
+            tdz_progress_begin 1 3 "Preparing installation files"
             if ! curl -fLsS --retry 3 --connect-timeout 10 -o "$installer_file" "$installer_url"; then
+                tdz_progress_failed
                 rm -f "$installer_file"
-                echo -e "${C_RED}[ERROR] Failed to download the patched installer.${C_RESET}"
+                echo -e "${C_RED}[ERROR] Installation files could not be prepared.${C_RESET}"
                 return 1
             fi
+            tdz_progress_done
 
+            tdz_progress_begin 2 3 "Verifying installation package"
             installer_hash=$(sha256sum "$installer_file" 2>/dev/null | awk '{print $1}')
             if [[ "$installer_hash" != "$XUI_INSTALLER_SHA256" ]]; then
+                tdz_progress_failed
                 rm -f "$installer_file"
                 echo -e "${C_RED}[ERROR] Installer integrity check failed. Installation stopped.${C_RESET}"
                 return 1
@@ -7517,11 +7311,14 @@ install_xui_panel() {
             # The tagged upstream installer still points fallback files at a
             # non-existent "main" branch. Pin every fallback to the same commit.
             sed -i "s|raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/main/|raw.githubusercontent.com/yeasinulhoquetuhin/x-ui/${XUI_INSTALLER_COMMIT}/|g" "$installer_file"
+            tdz_progress_done
 
-            echo -e "${C_BLUE}Installing ${XUI_PATCHED_LABEL}...${C_RESET}"
-            if bash "$installer_file" "$XUI_PATCHED_TAG"; then
+            tdz_progress_begin 3 3 "Installing and verifying service"
+            if bash "$installer_file" "$XUI_PATCHED_TAG" >/var/log/tdz-panel-install.log 2>&1; then
+                tdz_progress_done
                 echo -e "\n${C_GREEN}[OK] ${XUI_PATCHED_LABEL} installed successfully.${C_RESET}"
             else
+                tdz_progress_failed
                 echo -e "\n${C_RED}[ERROR] X-UI installation failed.${C_RESET}"
             fi
             rm -f "$installer_file"
@@ -7575,6 +7372,7 @@ refresh_ssh_session_cache() {
     SSH_SESSION_COUNTS=()
     SSH_SESSION_PIDS=()
     SSH_SESSION_TOTAL=0
+    SSH_CONNECTION_TOTAL=0
     SSH_SESSION_CACHE_DB_MTIME=$db_mtime
 
     if [[ ! -s "$DB_FILE" ]]; then
@@ -7716,6 +7514,7 @@ refresh_ssh_session_cache() {
                 SSH_SESSION_PIDS["$user"]+="$pid "
             done
             SSH_SESSION_TOTAL=$((SSH_SESSION_TOTAL + 1))
+            SSH_CONNECTION_TOTAL=$((SSH_CONNECTION_TOTAL + _conns))
         fi
     done
 
@@ -7725,6 +7524,11 @@ refresh_ssh_session_cache() {
 count_managed_online_sessions() {
     refresh_ssh_session_cache
     echo "$SSH_SESSION_TOTAL"
+}
+
+count_managed_connections() {
+    refresh_ssh_session_cache
+    echo "$SSH_CONNECTION_TOTAL"
 }
 
 invalidate_banner_cache() {
@@ -7928,13 +7732,13 @@ protocol_menu() {
             return
         fi
         case $choice in
-            1) install_badvpn; press_enter ;; 2) uninstall_badvpn; press_enter ;;
-            3) install_ssl_tunnel; press_enter ;; 4) uninstall_ssl_tunnel; press_enter ;;
-            5) install_dnstt; press_enter ;; 6) uninstall_dnstt; press_enter ;;
+            1) tdz_run_action install_badvpn ;; 2) tdz_run_action uninstall_badvpn ;;
+            3) tdz_run_action install_ssl_tunnel ;; 4) tdz_run_action uninstall_ssl_tunnel ;;
+            5) tdz_run_action install_dnstt ;; 6) tdz_run_action uninstall_dnstt ;;
             7) nginx_proxy_menu ;;
-            8) install_zivpn; press_enter ;; 9) uninstall_zivpn; press_enter ;;
+            8) tdz_run_action install_zivpn ;; 9) tdz_run_action uninstall_zivpn ;;
             10) if declare -F tdz_openvpn_menu >/dev/null 2>&1; then tdz_openvpn_menu; else invalid_option; fi ;;
-            11) install_xui_panel; press_enter ;; 12) uninstall_xui_panel; press_enter ;;
+            11) tdz_run_action install_xui_panel ;; 12) tdz_run_action uninstall_xui_panel ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -8002,9 +7806,7 @@ uninstall_script() {
     purge_nginx "silent"
     uninstall_dnstt
     uninstall_badvpn
-    uninstall_udp_custom
     uninstall_ssl_tunnel
-    uninstall_tdz_proxy
     uninstall_zivpn
 
     echo -e "\n${C_BLUE}Reloading systemd daemon...${C_RESET}"
@@ -8012,7 +7814,6 @@ uninstall_script() {
     
     echo -e "\n${C_BLUE}Removing script and configuration files...${C_RESET}"
     rm -rf "$BADVPN_BUILD_DIR"
-    rm -rf "$UDP_CUSTOM_DIR"
     rm -rf "$DB_DIR"
     rm -rf "$TDZ_LIB_DIR"
     rm -f "$(command -v menu)"
@@ -8477,16 +8278,7 @@ generate_client_config() {
         tdz_detail "Public Edge" "HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}"
     fi
 
-    # 3. UDP Custom
-    if systemctl is-active --quiet udp-custom; then
-        echo
-        tdz_section "UDP CUSTOM"
-        tdz_detail "Numeric IP" "$host_ip"
-        tdz_detail "Port Range" "1-65535 (except 53 and 5300)"
-        tdz_detail "Obfuscation" "None / Plain"
-    fi
-
-    # 4. DNSTT
+    # 3. DNSTT
     if systemctl is-active --quiet dnstt; then
         if [ -f "$DNSTT_CONFIG_FILE" ]; then
             source "$DNSTT_CONFIG_FILE"
@@ -8498,7 +8290,7 @@ generate_client_config() {
         fi
     fi
 
-    # 5. ZiVPN
+    # 4. ZiVPN
     if systemctl is-active --quiet zivpn; then
         echo
         tdz_section "ZIVPN"
@@ -8506,12 +8298,10 @@ generate_client_config() {
         tdz_detail "Forwarded Ports" "6000-19999"
     fi
 
-    # 6. Optional OpenVPN suite — profiles use the same TDZ credentials.
+    # 5. Optional OpenVPN suite — profiles use the same TDZ credentials.
     if declare -F tdz_openvpn_append_client_details >/dev/null 2>&1; then
         tdz_openvpn_append_client_details
     fi
-
-    press_enter
 }
 
 client_config_menu() {
@@ -8522,6 +8312,7 @@ client_config_menu() {
     # We need to find the password. It's in the DB.
     local pass=$(grep "^$u:" "$DB_FILE" | cut -d: -f2)
     generate_client_config "$u" "$pass"
+    press_enter
 }
 
 format_rate_from_kbps() {
@@ -8849,8 +8640,26 @@ auto_reboot_menu() {
 
 
 press_enter() {
+    if [[ "${TDZ_ACTION_PAUSE_GUARD:-}" == "active" ]]; then
+        [[ "${TDZ_ACTION_PAUSED:-false}" == "true" ]] && return
+        TDZ_ACTION_PAUSED=true
+    fi
     echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return to the menu..." && read -r || true
 }
+
+# Menu controllers use one action boundary for every leaf command. A leaf may
+# pause itself for an early error or a result screen; the controller then sees
+# that pause and never asks a second time. Leaves without a pause receive one
+# automatically, keeping every nested menu consistent.
+tdz_run_action() {
+    local TDZ_ACTION_PAUSE_GUARD="active"
+    local TDZ_ACTION_PAUSED="false"
+    "$@"
+    local action_status=$?
+    press_enter
+    return "$action_status"
+}
+
 invalid_option() {
     echo -e "\n${C_RED}[ERROR] Invalid option.${C_RESET}" && sleep 1
 }
@@ -8866,12 +8675,11 @@ main_menu() {
         # ── Service status pills (● = running, ○ = stopped) ───────────
         local pill_haprx="${C_STATUS_I}○${C_RESET}"  pill_nginx="${C_STATUS_I}○${C_RESET}"
         local pill_ws="${C_STATUS_I}○${C_RESET}"     pill_badvpn="${C_STATUS_I}○${C_RESET}"
-        local pill_udpgw="${C_STATUS_I}○${C_RESET}"  pill_dnstt="${C_STATUS_I}○${C_RESET}"
+        local pill_dnstt="${C_STATUS_I}○${C_RESET}"
         systemctl is-active --quiet haproxy            && pill_haprx="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet nginx              && pill_nginx="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet tdz-ws-ssh-bridge  && pill_ws="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet badvpn              && pill_badvpn="${C_STATUS_A}●${C_RESET}"
-        systemctl is-active --quiet udpgw               && pill_udpgw="${C_STATUS_A}●${C_RESET}"
         systemctl is-active --quiet dnstt               && pill_dnstt="${C_STATUS_A}●${C_RESET}"
 
         # ── SECTION 1: SERVER PROFILE ──
@@ -8956,30 +8764,30 @@ main_menu() {
             exit 0
         fi
         case $choice in
-            1) create_user; press_enter ;;
-            2) delete_user; press_enter ;;
-            3) renew_user; press_enter ;;
-            4) lock_user; press_enter ;;
-            5) unlock_user; press_enter ;;
-            6) edit_user; press_enter ;;
-            7) list_users; press_enter ;;
-            8) client_config_menu; press_enter ;;
-            9) create_trial_account; press_enter ;;
-            10) list_trial_accounts; press_enter ;;
-            11) view_user_bandwidth; press_enter ;;
-            12) bulk_create_users; press_enter ;;
+            1) tdz_run_action create_user ;;
+            2) tdz_run_action delete_user ;;
+            3) tdz_run_action renew_user ;;
+            4) tdz_run_action lock_user ;;
+            5) tdz_run_action unlock_user ;;
+            6) tdz_run_action edit_user ;;
+            7) tdz_run_action list_users ;;
+            8) tdz_run_action client_config_menu ;;
+            9) tdz_run_action create_trial_account ;;
+            10) tdz_run_action list_trial_accounts ;;
+            11) tdz_run_action view_user_bandwidth ;;
+            12) tdz_run_action bulk_create_users ;;
 
             13) protocol_menu ;;
             14) edge_public_port_menu ;;
             15) torrent_block_menu ;;
             16) traffic_monitor_menu ;;
 
-            17) domain_cert_menu; press_enter ;;
+            17) tdz_run_action domain_cert_menu ;;
             18) ssh_banner_menu ;;
             19) auto_reboot_menu ;;
             20) backup_data_menu ;;
-            21) restore_user_data; press_enter ;;
-            22) cleanup_expired; press_enter ;;
+            21) tdz_run_action restore_user_data ;;
+            22) tdz_run_action cleanup_expired ;;
 
             99) uninstall_script ;;
             0) exit 0 ;;

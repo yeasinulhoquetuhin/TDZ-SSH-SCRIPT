@@ -359,12 +359,12 @@ refresh_and_finish() {
 }
 
 show_header
-run_step "Checking latest release" 20 prepare_payload
-run_step "Saving current setup" 40 backup_current_state
-run_step "Updating core files" 60 install_core
+run_step "Preparing installation files" 20 prepare_payload
+run_step "Preserving current settings" 40 backup_current_state
+run_step "Installing core services" 60 install_core
 SSH_CHANGED=true
-run_step "Validating SSH setup" 80 configure_ssh
-run_step "Refreshing services" 100 refresh_and_finish
+run_step "Configuring secure access" 80 configure_ssh
+run_step "Starting and verifying services" 100 refresh_and_finish
 
 FINISHED=true
 echo

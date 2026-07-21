@@ -52,6 +52,61 @@ class ModuleTests(unittest.TestCase):
             check=False,
         )
 
+    def test_dead_optional_downloaders_are_removed(self):
+        menu = MENU.read_text()
+        self.assertNotIn("install_udp_custom()", menu)
+        self.assertNotIn("uninstall_udp_custom()", menu)
+        self.assertNotIn("udp-custom-linux-", menu)
+        self.assertNotIn("install_tdz_proxy()", menu)
+        self.assertNotIn("uninstall_tdz_proxy()", menu)
+        self.assertNotIn("TDZPROXY_", menu)
+        self.assertNotIn("Installing Node.js and PM2", menu)
+        self.assertNotIn("Downloading pre-compiled DNSTT", menu)
+        self.assertNotIn("Downloading ZiVPN binary", menu)
+        self.assertIn('tdz_progress_run 1 3 "Preparing service runtime"', menu)
+
+    def test_online_list_footer_counts_visible_users_and_sessions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = root / "users.db"
+            bandwidth = root / "bandwidth"
+            bandwidth.mkdir()
+            database.write_text("root:secret:Never:5:0\n")
+            result = self.run_menu_bash(
+                f"""
+                DB_FILE={database}
+                BANDWIDTH_DIR={bandwidth}
+                clear() {{ :; }}
+                show_banner() {{ :; }}
+                refresh_ssh_session_cache() {{ SSH_SESSION_COUNTS[root]=3; }}
+                tdz_user_policy_reason() {{ printf 'active\\n'; }}
+                tdz_user_is_manually_locked() {{ return 1; }}
+                list_users_view online "ONLINE USERS"
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plain = result.stdout.replace("\x1b", "")
+            self.assertIn("SESSIONS:", plain)
+            self.assertIn("TOTAL:", plain)
+            self.assertNotIn("PENDING", plain)
+            self.assertIn("3", plain)
+
+    def test_menu_actions_pause_exactly_once(self):
+        menu = MENU.read_text()
+        main = menu[menu.index("main_menu() {") :]
+        self.assertIn("8) tdz_run_action client_config_menu ;;", main)
+        self.assertIn("1) tdz_run_action create_user ;;", main)
+        result = self.run_menu_bash(
+            """
+            leaf_with_pause() { press_enter; }
+            leaf_without_pause() { :; }
+            tdz_run_action leaf_with_pause <<< ""
+            tdz_run_action leaf_without_pause <<< ""
+            """
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("Press"), 2, result.stdout)
+
     def test_lock_and_unlock_selectors_only_show_actionable_accounts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -741,22 +796,58 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("AES-256-GCM:AES-128-GCM", udp_server)
 
             profile = (root / "portal/ovpn-configs/tdz-openvpn-http-connect.ovpn").read_text()
-            self.assertIn("remote vpn.example.com 447", profile)
-            self.assertIn("http-proxy vpn.example.com 449", profile)
-            self.assertIn("tun-mtu 1400", profile)
-            self.assertIn("setenv CLIENT_CERT 0", profile)
-            self.assertIn("<tls-crypt>", profile)
+            self.assertEqual(
+                profile,
+                """client
+dev tun
+proto tcp
+remote vpn.example.com 447
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-GCM
+auth SHA256
+verb 3
+mute-replay-warnings
+redirect-gateway def1
+route 0.0.0.0 0.0.0.0
+dhcp-option DNS 8.8.8.8
+dhcp-option DNS 8.8.4.4
+tun-mtu 1400
+auth-user-pass
+setenv CLIENT_CERT 0
+keepalive 10 60
+
+http-proxy vpn.example.com 449
+http-proxy-option CUSTOM-HEADER CONNECT HTTP/1.1
+http-proxy-option CUSTOM-HEADER Host vpn.example.com
+http-proxy-option CUSTOM-HEADER X-Online-Host vpn.example.com
+http-proxy-option CUSTOM-HEADER X-Forward-Host vpn.example.com
+http-proxy-option CUSTOM-HEADER Connection Keep-Alive
+
+<ca>
+TEST CA
+</ca>
+<tls-crypt>
+TEST TLS KEY
+</tls-crypt>
+""",
+            )
             self.assertNotIn("password", profile.lower())
             self.assertNotIn("auth-nocache", profile)
 
             direct_profile = (root / "portal/ovpn-configs/tdz-openvpn-tcp.ovpn").read_text()
             self.assertIn("data-ciphers AES-128-GCM:AES-256-GCM", direct_profile)
+            self.assertIn("setenv CLIENT_CERT 0", direct_profile)
             self.assertIn("tun-mtu 1400", direct_profile)
             self.assertNotIn("mssfix 1360", direct_profile)
             self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", direct_profile)
             self.assertNotIn("route vpn.example.com 255.255.255.255 net_gateway", profile)
             udp_profile = (root / "portal/ovpn-configs/tdz-openvpn-udp.ovpn").read_text()
             self.assertIn("data-ciphers AES-256-GCM:AES-128-GCM", udp_profile)
+            self.assertIn("setenv CLIENT_CERT 0", udp_profile)
             self.assertNotIn("tun-mtu 1400", udp_profile)
             for adapter_name in (
                 "tdz-openvpn-ws-injector.ovpn",
@@ -765,6 +856,7 @@ class ModuleTests(unittest.TestCase):
             ):
                 adapter_profile = (root / "portal/ovpn-configs" / adapter_name).read_text()
                 self.assertIn("cipher AES-256-GCM", adapter_profile)
+                self.assertIn("setenv CLIENT_CERT 0", adapter_profile)
                 self.assertNotIn("data-ciphers", adapter_profile)
                 self.assertIn(
                     "route vpn.example.com 255.255.255.255 net_gateway",
@@ -1508,14 +1600,14 @@ class ModuleTests(unittest.TestCase):
         self.assertLess(openvpn, install_xui)
         self.assertLess(install_xui, uninstall_xui)
         self.assertIn("10) if declare -F tdz_openvpn_menu", protocol)
-        self.assertIn("11) install_xui_panel", protocol)
-        self.assertIn("12) uninstall_xui_panel", protocol)
+        self.assertIn("11) tdz_run_action install_xui_panel", protocol)
+        self.assertIn("12) tdz_run_action uninstall_xui_panel", protocol)
 
         openvpn_module = MODULE.read_text()
         suite_start = openvpn_module.index("tdz_openvpn_menu() {")
         suite = openvpn_module[suite_start:]
         self.assertIn('tdz_menu1 "[ 8]" "Change Contact Username"', suite)
-        self.assertIn("8) tdz_openvpn_configure_support_contact", suite)
+        self.assertIn("8) tdz_run_action tdz_openvpn_configure_support_contact", suite)
 
 
 if __name__ == "__main__":
