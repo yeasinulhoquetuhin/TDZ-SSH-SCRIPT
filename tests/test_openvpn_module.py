@@ -4,6 +4,7 @@ import subprocess
 import shutil
 import tempfile
 import unittest
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -65,6 +66,436 @@ class ModuleTests(unittest.TestCase):
         self.assertNotIn("Downloading ZiVPN binary", menu)
         self.assertIn('tdz_progress_run 1 3 "Preparing service runtime"', menu)
 
+    def test_haproxy_template_generation_never_executes_comment_text(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "haproxy" / "haproxy.cfg"
+            result = self.run_menu_bash(
+                f"""
+                HAPROXY_CONFIG={config}
+                EDGE_PUBLIC_HTTP_PORT=2080
+                EDGE_PUBLIC_TLS_PORT=442
+                NGINX_INTERNAL_HTTP_PORT=8770
+                NGINX_INTERNAL_TLS_PORT=8442
+                HAPROXY_INTERNAL_DECRYPT_PORT=10443
+                WS_SSH_BRIDGE_PORT=8890
+                TDZ_SSL_CERT_FILE=/etc/tdztunnel/ssl/tdztunnel.pem
+                write_haproxy_edge_config
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("command not found", result.stderr)
+            rendered = config.read_text()
+            self.assertIn("option  tcplog", rendered)
+            self.assertIn("server ws_bridge 127.0.0.1:8890", rendered)
+
+    def test_openvpn_service_can_traverse_parent_without_reading_database(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            database = root / "users.db"
+            portal = Path(temp) / "portal"
+            (root / "openvpn" / "pki").mkdir(parents=True)
+            portal.mkdir()
+            database.write_text("root:secret:Never:1:0\n")
+            database.chmod(0o600)
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                TDZ_OVPN_RUN=$TDZ_OVPN_ROOT/run
+                TDZ_OVPN_HOOKS=$TDZ_OVPN_ROOT/hooks
+                TDZ_OVPN_PORTAL_BASE={portal}
+                TDZ_OVPN_SERVICE_USER=root
+                mkdir -p "$TDZ_OVPN_RUN" "$TDZ_OVPN_HOOKS"
+                tdz_openvpn_apply_private_permissions
+                [[ "$(stat -c %a {root})" == 710 ]] || exit 21
+                [[ "$(stat -c %a {root}/openvpn)" == 750 ]] || exit 22
+                [[ "$(stat -c %a {database})" == 600 ]] || exit 23
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_openvpn_runtime_validation_accepts_a_complete_generated_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pki = root / "openvpn" / "pki"
+            pki.mkdir(parents=True)
+            generated = subprocess.run(
+                [
+                    "openssl",
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-days",
+                    "2",
+                    "-subj",
+                    "/CN=validator.test",
+                    "-keyout",
+                    str(pki / "server.key"),
+                    "-out",
+                    str(pki / "server.crt"),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            self.assertEqual(generated.returncode, 0)
+            shutil.copy2(pki / "server.crt", pki / "ca.crt")
+            shutil.copy2(pki / "server.crt", pki / "gateway.crt")
+            shutil.copy2(pki / "server.key", pki / "gateway.key")
+            systemd = root / "systemd"
+            profiles = root / "profiles"
+            systemd.mkdir()
+            profiles.mkdir()
+            (root / "openvpn" / "server-tcp.conf").write_text("proto tcp\nport 447\n")
+            (root / "openvpn" / "server-udp.conf").write_text("proto udp\nport 448\n")
+            for name, port in (("http", 449), ("wss", 450), ("ssl", 446), ("portal", 1180)):
+                (systemd / f"tdz-openvpn-{name}.service").write_text(
+                    f"ExecStart=/bin/true --port {port} --test\n"
+                )
+            (profiles / "tdz-openvpn-tcp.ovpn").write_text("<tls-crypt>\nkey\n</tls-crypt>\n")
+            diagnostic = root / "validation.log"
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={root}/openvpn
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                TDZ_OVPN_SYSTEMD_DIR={systemd}
+                TDZ_OVPN_PROFILES={profiles}
+                TDZ_OVPN_RUNTIME={REPO}/tdz_openvpn_runtime.py
+                TDZ_OVPN_GATEWAY={REPO}/tdz_openvpn_gateway.py
+                TDZ_OVPN_PORTAL={REPO}/tdz_openvpn_portal.py
+                TDZ_OVPN_DIAG_LOG={diagnostic}
+                TDZ_OVPN_TCP_PORT=447
+                TDZ_OVPN_UDP_PORT=448
+                TDZ_OVPN_HTTP_PORT=449
+                TDZ_OVPN_WSS_PORT=450
+                TDZ_OVPN_SSL_PORT=446
+                TDZ_OVPN_PORTAL_PORT=1180
+                tdz_openvpn_validate_runtime_files || exit 21
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + diagnostic.read_text())
+
+    def test_package_commands_are_logged_without_terminal_noise(self):
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "packages.log"
+            result = self.run_menu_bash(
+                f"""
+                TDZ_PACKAGE_LOG={log}
+                APT_CACHE_READY=0
+                apt-get() {{ echo 'verbose package output'; return 0; }}
+                tdz_apt_install example-package
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("verbose package output", result.stdout)
+            self.assertIn("verbose package output", log.read_text())
+
+    def test_firewall_rules_are_recorded_and_removed_transactionally(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            calls = root / "firewall.calls"
+            result = self.run_menu_bash(
+                f"""
+                DB_DIR={root}/data
+                FIREWALL_STATE_FILE=$DB_DIR/firewall-rules.db
+                opened=false
+                ufw() {{
+                    case "$1" in
+                        status)
+                            echo 'Status: active'
+                            $opened && echo '449/tcp ALLOW'
+                            ;;
+                        allow)
+                            opened=true
+                            printf 'allow %s\n' "$2" >> {calls}
+                            ;;
+                        --force)
+                            opened=false
+                            printf 'delete %s\n' "$4" >> {calls}
+                            ;;
+                    esac
+                }}
+                systemctl() {{ return 1; }}
+                check_and_open_firewall_port 449 tcp <<< 'y' || exit 21
+                grep -Fxq 'ufw|449|tcp' "$FIREWALL_STATE_FILE" || exit 22
+                tdz_remove_recorded_firewall_rules || exit 23
+                [[ ! -e "$FIREWALL_STATE_FILE" ]] || exit 24
+                grep -Fxq 'delete 449/tcp' {calls} || exit 25
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_uninstall_preserves_unrelated_reboot_cron_entries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cron = Path(temp) / "cron"
+            cron.write_text(
+                "0 0 * * * systemctl reboot\n"
+                "0 0 * * * systemctl reboot # tdztunnel-managed-auto-reboot\n"
+                "15 3 * * 1 systemctl reboot\n"
+                "*/5 * * * * /usr/local/bin/health-check\n"
+            )
+            result = self.run_menu_bash(
+                f"""
+                CRON_STATE={cron}
+                crontab() {{
+                    case "$1" in
+                        -l) cat "$CRON_STATE" ;;
+                        -r) : > "$CRON_STATE" ;;
+                        *) cp "$1" "$CRON_STATE" ;;
+                    esac
+                }}
+                tdz_remove_auto_reboot_job || exit 21
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            remaining = cron.read_text()
+            self.assertNotIn("tdztunnel-managed-auto-reboot", remaining)
+            self.assertNotIn("0 0 * * * systemctl reboot\n", remaining)
+            self.assertIn("15 3 * * 1 systemctl reboot", remaining)
+            self.assertIn("/usr/local/bin/health-check", remaining)
+
+    def test_dnstt_defers_resolver_changes_and_has_failure_rollback(self):
+        menu = MENU.read_text()
+        start = menu.index("install_dnstt() {")
+        end = menu.index("uninstall_dnstt() {", start)
+        install = menu[start:end]
+        activation = install.index('tdz_progress_begin 4 4 "Starting and verifying service"')
+        resolver_capture = install.index("capture_dnstt_resolver_state")
+        self.assertGreater(resolver_capture, activation)
+        self.assertIn('rollback_dnstt_failed_install "$resolver_changed"', install)
+
+    def test_mobile_terminal_layout_stays_inside_requested_width(self):
+        result = self.run_menu_bash(
+            """
+            TDZ_BOX_WIDTH=40
+            refresh_banner_cache() { :; }
+            refresh_dashboard_cache() { :; }
+            show_banner
+            tdz_screen_title "SERVICE SETUP" "A deliberately long description that must fit."
+            tdz_message WARNING "A deliberately long warning that should wrap cleanly instead of splitting against the screen edge."
+            """
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.stdout)
+        border = next(line for line in plain.splitlines() if "╔" in line)
+        self.assertEqual(border.count("═"), 40)
+        for line in plain.splitlines():
+            self.assertLessEqual(len(line), 44, line)
+
+    def test_full_uninstall_cleans_legacy_dead_component_leftovers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            paths = {
+                "LEGACY_UDP_DIR": root / "udp",
+                "LEGACY_UDP_SERVICE": root / "udp-custom.service",
+                "LEGACY_UDPGW_BINARY": root / "udpgw",
+                "LEGACY_UDPGW_SERVICE": root / "udpgw.service",
+                "LEGACY_PROXY_BINARY": root / "proxy",
+                "LEGACY_PROXY_SERVICE": root / "proxy.service",
+                "LEGACY_PROXY_CONFIG": root / "proxy.conf",
+            }
+            paths["LEGACY_UDP_DIR"].mkdir()
+            for key, path in paths.items():
+                if key != "LEGACY_UDP_DIR":
+                    path.write_text("legacy\n")
+            assignments = "\n".join(f"{key}={value}" for key, value in paths.items())
+            result = self.run_menu_bash(
+                f"""
+                {assignments}
+                tdz_remove_legacy_dead_components || exit 21
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(all(not path.exists() for path in paths.values()))
+
+    def test_dnstt_resolver_state_round_trip(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            resolver = root / "resolv.conf"
+            resolver.write_text("nameserver 1.1.1.1\n")
+            keys = root / "dnstt"
+            result = self.run_menu_bash(
+                f"""
+                TDZ_RESOLV_CONF={resolver}
+                TDZ_RESOLVED_STUB={root}/stub-resolv.conf
+                DNSTT_KEYS_DIR={keys}
+                DNSTT_RESOLVER_STATE_FILE=$DNSTT_KEYS_DIR/resolver.state
+                DNSTT_RESOLV_BACKUP=$DNSTT_KEYS_DIR/resolv.conf.before
+                chattr() {{ :; }}
+                systemctl() {{
+                    case "$1" in
+                        is-active|is-enabled) return 0 ;;
+                        *) return 0 ;;
+                    esac
+                }}
+                capture_dnstt_resolver_state || exit 21
+                printf 'nameserver 8.8.8.8\n' > "$TDZ_RESOLV_CONF"
+                restore_dnstt_resolver_state || exit 22
+                grep -Fxq 'nameserver 1.1.1.1' "$TDZ_RESOLV_CONF" || exit 23
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_full_uninstall_removes_and_verifies_managed_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self.run_menu_bash(
+                f"""
+                DB_DIR={root}/data
+                DB_FILE=$DB_DIR/users.db
+                TDZ_LIB_DIR={root}/lib
+                TDZ_MENU_BINARY={root}/bin/menu
+                LIMITER_SERVICE={root}/systemd/limiter.service
+                LIMITER_SCRIPT={root}/bin/limiter
+                BANDWIDTH_SERVICE={root}/systemd/bandwidth.service
+                BANDWIDTH_SCRIPT={root}/bin/bandwidth
+                LEGACY_BANDWIDTH_DIR={root}/legacy-bandwidth
+                TRIAL_CLEANUP_SCRIPT={root}/bin/trial-cleanup
+                SSHD_TDZ_CONFIG={root}/sshd/tdztunnel.conf
+                SSH_AUTH_SESSION_DIR={root}/run/ssh-sessions
+                SSH_BANNER_FILE={root}/data/banner
+                LOGIN_INFO_SCRIPT={root}/bin/login-info
+                AUTO_BACKUP_CONF={root}/auto-backup.conf
+                AUTO_BACKUP_SCRIPT={root}/bin/auto-backup
+                AUTO_BACKUP_LOG={root}/auto-backup.log
+                AUTO_BACKUP_DIR={root}/backups
+                BADVPN_SERVICE_FILE={root}/systemd/badvpn.service
+                BADVPN_BUILD_DIR={root}/badvpn-build
+                DNSTT_SERVICE_FILE={root}/systemd/dnstt.service
+                DNSTT_BINARY={root}/bin/dnstt
+                DNSTT_KEYS_DIR={root}/dnstt
+                ZIVPN_SERVICE_FILE={root}/systemd/zivpn.service
+                ZIVPN_BIN={root}/bin/zivpn
+                ZIVPN_DIR={root}/zivpn
+                WS_SSH_BRIDGE_SERVICE={root}/systemd/ws.service
+                WS_SSH_BRIDGE_SCRIPT={root}/bin/ws-bridge
+                TDZ_PACKAGE_LOG={root}/package.log
+                TDZ_CERTIFICATE_LOG={root}/certificate.log
+                TDZ_SERVICE_LOG={root}/service.log
+                TDZ_OVPN_DIAG_LOG={root}/openvpn.log
+                TDZ_UNINSTALL_LOG={root}/uninstall.log
+                TDZ_RESOLV_CONF={root}/resolv.conf
+                mkdir -p "$DB_DIR" "$TDZ_LIB_DIR" "$(dirname "$TDZ_MENU_BINARY")" \
+                    "$(dirname "$LIMITER_SERVICE")" "$LEGACY_BANDWIDTH_DIR" \
+                    "$SSH_AUTH_SESSION_DIR" "$AUTO_BACKUP_DIR" "$BADVPN_BUILD_DIR" \
+                    "$DNSTT_KEYS_DIR" "$ZIVPN_DIR"
+                touch "$DB_FILE" "$TDZ_MENU_BINARY" "$LIMITER_SERVICE" "$LIMITER_SCRIPT" \
+                    "$BANDWIDTH_SERVICE" "$BANDWIDTH_SCRIPT" "$TRIAL_CLEANUP_SCRIPT" \
+                    "$SSHD_TDZ_CONFIG" "$LOGIN_INFO_SCRIPT" "$AUTO_BACKUP_CONF" \
+                    "$AUTO_BACKUP_SCRIPT" "$BADVPN_SERVICE_FILE" "$DNSTT_SERVICE_FILE" \
+                    "$DNSTT_BINARY" "$ZIVPN_SERVICE_FILE" "$ZIVPN_BIN" \
+                    "$WS_SSH_BRIDGE_SERVICE" "$WS_SSH_BRIDGE_SCRIPT"
+                clear() {{ :; }}
+                show_banner() {{ :; }}
+                systemctl() {{
+                    [[ "$1" == "is-active" ]] && return 1
+                    return 0
+                }}
+                chattr() {{ :; }}
+                get_tdztunnel_known_users() {{ :; }}
+                remove_ssh_auth_session_hook() {{ :; }}
+                tdz_remove_managed_trial_jobs() {{ :; }}
+                tdz_remove_auto_reboot_job() {{ :; }}
+                tdz_remove_recorded_firewall_rules() {{ :; }}
+                tdz_uninstall_optional_components() {{
+                    rm -rf "$BADVPN_BUILD_DIR" "$DNSTT_KEYS_DIR" "$ZIVPN_DIR"
+                    rm -f "$BADVPN_SERVICE_FILE" "$DNSTT_SERVICE_FILE" "$DNSTT_BINARY" \
+                        "$ZIVPN_SERVICE_FILE" "$ZIVPN_BIN" "$WS_SSH_BRIDGE_SERVICE" "$WS_SSH_BRIDGE_SCRIPT"
+                }}
+                uninstall_script <<< "yes"
+                """,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("[6/6]", result.stdout)
+            self.assertIn("verified as removed", result.stdout)
+            self.assertNotIn("UNINSTALL DNSTT", result.stdout)
+            self.assertFalse((root / "data").exists())
+            self.assertFalse((root / "bin/menu").exists())
+
+    def test_openvpn_uninstall_removes_all_managed_runtime_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            data = base / "data"
+            openvpn = data / "openvpn"
+            portal = base / "portal"
+            systemd = base / "systemd"
+            pam = base / "pam" / "openvpn"
+            sysctl = base / "sysctl.conf"
+            firewall = base / "firewall"
+            (openvpn / "pki").mkdir(parents=True)
+            portal.mkdir()
+            systemd.mkdir()
+            pam.parent.mkdir()
+            (openvpn / "state.conf").write_text(
+                "\n".join(
+                    [
+                        "VERSION=test",
+                        "HOST=vpn.example.com",
+                        "PORTAL_PORT=1180",
+                        "SSL_PORT=446",
+                        "TCP_PORT=447",
+                        "UDP_PORT=448",
+                        "HTTP_PORT=449",
+                        "WSS_PORT=450",
+                        "SUPPORT_USERNAME=TUSTDZ",
+                        "TCP_SUBNET=10.87.0.0",
+                        "UDP_SUBNET=10.88.0.0",
+                        "SERVICE_USER_CREATED=0",
+                        "SERVICE_GROUP_CREATED=0",
+                        "IP_FORWARD_PREVIOUS=0",
+                    ]
+                )
+                + "\n"
+            )
+            (openvpn / "pki" / "ca.crt").write_text("ca")
+            (openvpn / "pki" / "server.key").write_text("key")
+            for unit in (
+                "network",
+                "tcp",
+                "udp",
+                "http",
+                "wss",
+                "ssl",
+                "portal",
+                "accounting",
+            ):
+                (systemd / f"tdz-openvpn-{unit}.service").write_text("unit")
+            pam.write_text("pam")
+            sysctl.write_text("sysctl")
+            firewall.write_text("#!/bin/sh\nexit 0\n")
+            firewall.chmod(0o700)
+            result = self.run_bash(
+                f"""
+                TDZ_OVPN_ROOT={openvpn}
+                TDZ_OVPN_STATE=$TDZ_OVPN_ROOT/state.conf
+                TDZ_OVPN_PKI=$TDZ_OVPN_ROOT/pki
+                TDZ_OVPN_PORTAL_BASE={portal}
+                TDZ_OVPN_SYSTEMD_DIR={systemd}
+                TDZ_OVPN_PAM_SERVICE={pam}
+                TDZ_OVPN_SYSCTL={sysctl}
+                TDZ_OVPN_FIREWALL={firewall}
+                TDZ_OVPN_SERVICE_USER=root
+                sysctl() {{ printf '%s\n' "$*" >> {base}/sysctl.calls; }}
+                systemctl() {{
+                    [[ "$1" == "is-active" ]] && return 1
+                    return 0
+                }}
+                tdz_openvpn_uninstall silent || exit 21
+                [[ ! -e "$TDZ_OVPN_ROOT" ]] || exit 22
+                [[ ! -e "$TDZ_OVPN_PORTAL_BASE" ]] || exit 23
+                [[ ! -e "$TDZ_OVPN_PAM_SERVICE" ]] || exit 24
+                [[ ! -e "$TDZ_OVPN_SYSCTL" ]] || exit 25
+                [[ ! -e "$TDZ_OVPN_FIREWALL" ]] || exit 26
+                [[ "$(stat -c %a {data})" == 700 ]] || exit 27
+                if find "$TDZ_OVPN_SYSTEMD_DIR" -name 'tdz-openvpn-*.service' -print -quit | grep -q .; then exit 28; fi
+                grep -Fxq -- '-w net.ipv4.ip_forward=0' {base}/sysctl.calls || exit 29
+                exit 0
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_online_list_footer_counts_visible_users_and_sessions(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -90,6 +521,25 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("TOTAL:", plain)
             self.assertNotIn("PENDING", plain)
             self.assertIn("3", plain)
+
+    def test_empty_online_list_still_shows_zero_totals(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "users.db"
+            database.write_text("")
+            result = self.run_menu_bash(
+                f"""
+                DB_FILE={database}
+                clear() {{ :; }}
+                show_banner() {{ :; }}
+                refresh_ssh_session_cache() {{ :; }}
+                list_users_view online "ONLINE USERS"
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plain = result.stdout.replace("\x1b", "")
+            self.assertIn("SESSIONS:", plain)
+            self.assertIn("TOTAL:", plain)
+            self.assertNotIn("PENDING", plain)
 
     def test_menu_actions_pause_exactly_once(self):
         menu = MENU.read_text()
@@ -969,13 +1419,13 @@ TEST TLS KEY
                 "https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT",
             }
             self.assertIn('class="section project-spotlight"', portal)
-            self.assertIn("Part of TDZ SSH TUNNEL.", portal)
+            self.assertIn("One project, one workflow.", portal)
             self.assertIn("View GitHub repository", portal)
             self.assertNotIn("TDZ SSH TUNNEL powers both SSH and OpenVPN.", portal)
             self.assertNotIn('class="section project-spotlight"', docs + downloads)
             for page_name in ("index.html", "docs.html", "download.html"):
                 page_text = (public / page_name).read_text()
-                self.assertIn("<title>TDZ • OVPN PORTAL</title>", page_text)
+                self.assertIn("<title>OPENVPN PORTAL</title>", page_text)
                 self.assertIn("Developed By:", page_text)
                 self.assertIn("Yeasinul Hoque Tuhin", page_text)
                 self.assertIn('class="developer-link" href="https://tuhinbro.com/"', page_text)
@@ -1172,6 +1622,7 @@ TEST TLS KEY
             TDZ_OVPN_WSS_PORT=25105
             TDZ_OVPN_TCP_SUBNET=10.100.10.0
             TDZ_OVPN_UDP_SUBNET=10.101.11.0
+            TDZ_OVPN_IP_FORWARD_PREVIOUS=0
             tdz_openvpn_has_modern_cipher_option() {{ return 0; }}
             mkdir -p "$TDZ_OVPN_PKI" "$TDZ_OVPN_RUN" "$TDZ_OVPN_HOOKS"
             printf '%s\n' 'TEST CA' > "$TDZ_OVPN_PKI/ca.crt"
@@ -1209,6 +1660,7 @@ TEST TLS KEY
                 'UDP_PORT="25103"',
                 'HTTP_PORT="25104"',
                 'WSS_PORT="25105"',
+                'IP_FORWARD_PREVIOUS="0"',
             ):
                 self.assertIn(entry, firewall)
 
@@ -1305,12 +1757,15 @@ TEST TLS KEY
                 TDZ_OVPN_UDP_SUBNET=10.101.11.0
                 TDZ_OVPN_SERVICE_USER_CREATED=1
                 TDZ_OVPN_SERVICE_GROUP_CREATED=1
+                TDZ_OVPN_IP_FORWARD_PREVIOUS=0
                 tdz_openvpn_save_state || exit 20
                 TDZ_OVPN_SERVICE_USER_CREATED=0
                 TDZ_OVPN_SERVICE_GROUP_CREATED=0
+                TDZ_OVPN_IP_FORWARD_PREVIOUS=""
                 tdz_openvpn_load_state || exit 21
                 [[ "$TDZ_OVPN_SERVICE_USER_CREATED" == 1 ]] || exit 22
                 [[ "$TDZ_OVPN_SERVICE_GROUP_CREATED" == 1 ]] || exit 23
+                [[ "$TDZ_OVPN_IP_FORWARD_PREVIOUS" == 0 ]] || exit 24
                 """
             )
             self.assertEqual(result.returncode, 0, result.stderr)

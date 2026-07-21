@@ -173,10 +173,10 @@ setup verification.
 - **Edge config backup** — backup HAProxy, Nginx, and SSL configurations
 
 ### System & Monitoring
-- **Auto-reboot scheduler** — configure automatic VPS reboots at set intervals
-- **Connection limit enforcement** — automatically kill excess SSH sessions beyond per-user limits
+- **Auto-reboot scheduler** — enable or disable the managed daily midnight reboot
+- **Connection limit enforcement** — atomically rejects a new SSH/OpenVPN connection when the shared per-user limit is full, without evicting an established session
 - **Filtered account views** — List Users provides All, Expired, Quota Ended, and Online views from the same live policy state used by enforcement
-- **Service management** — start/stop/restart all TDZ services from the menu
+- **Service management** — start/stop/restart managed services from the menu
 - **X-UI panel integration** — optional X-UI panel installation for advanced proxy management
 
 ### Current Support
@@ -188,22 +188,17 @@ setup verification.
 | Direct OpenVPN UDP/TCP and HTTP CONNECT | **Supported** |
 | OpenVPN WS, WSS and SSL adapter profiles | **Supported with a compatible external injector/adapter** |
 | BadVPN, DNSTT and ZiVPN | **Optional and supported on an available CPU build** |
-| X-UI patched panel | **Optional; installed separately from TDZ accounts** |
+| X-UI patched panel | **Optional; installed separately from managed SSH accounts** |
 
-### Operational Limits
+### Requirements
 
 - Root access, APT, Bash, OpenSSH and systemd are required.
 - OpenVPN needs Python 3.7 or newer and a compatible PAM plugin.
-- WS/WSS/SSL OpenVPN profiles are adapter transports; they are not standalone
-  profiles for every official OpenVPN client.
 - DNSTT needs exclusive access to UDP port 53 and may replace the VPS resolver
   service configuration.
-- Optional prebuilt protocols depend on the architecture assets published by
-  their upstream projects.
-- TDZ keeps recoverable account credentials in `/etc/tdztunnel/users.db` for
-  account display and backup/restore. The installer restricts this directory to
-  root (`0700`) and the database to root-only access (`0600`); protect all root
-  backups accordingly.
+- The installer keeps recoverable account credentials in
+  `/etc/tdztunnel/users.db` for account display and backup/restore. The database
+  remains root-only (`0600`); protect all root backups accordingly.
 
 ---
 
@@ -229,17 +224,17 @@ After installation, type **`menu`** to launch the management interface.
 
 ## OpenVPN Protocol Suite
 
-Open **`menu → 13) Protocol Manager → 10) OpenVPN Protocol Suite`** to install or manage OpenVPN. The component is optional: installing or removing it does not remove TDZ users or change the existing SSH, HAProxy, Nginx, DNSTT, BadVPN, ZiVPN, banner, certificate, or backup configuration.
+Open **`menu → 13) Protocol Manager → 10) OpenVPN Protocol Suite`** to install or manage OpenVPN. The component is optional: installing or removing it does not remove managed users or change the existing SSH, HAProxy, Nginx, DNSTT, BadVPN, ZiVPN, banner, certificate, or backup configuration.
 
-During first installation, TDZ asks for the public VPS IP or domain. It starts with portal port `1180` and transport ports `446–450`, creates fresh server cryptographic material, applies isolated VPN subnets, starts the required services, and verifies that every listener is active. These are defaults rather than permanent restrictions. From the OpenVPN Suite menu, **Change Portal and Method Ports** can update the portal, SSL, TCP, UDP, HTTP/WS, and WSS ports together. The saved layout survives installer updates and repairs. Every change transactionally rebuilds the server configs, systemd listeners, firewall rules, downloadable profiles, ZIP, portal pages, and displayed connection details; if validation fails, the last working layout is restored automatically.
+During first installation, the suite asks for the public VPS IP or domain. It starts with portal port `1180` and transport ports `446–450`, creates fresh server cryptographic material, applies isolated VPN subnets, starts the required services, and verifies that every listener is active. These are defaults rather than permanent restrictions. From the OpenVPN Suite menu, **Change Portal and Method Ports** can update the portal, SSL, TCP, UDP, HTTP/WS, and WSS ports together. The saved layout survives installer updates and repairs. Every change transactionally rebuilds the server configs, systemd listeners, firewall rules, downloadable profiles, ZIP, portal pages, and displayed connection details; if validation fails, the last working layout is restored automatically.
 
-The optional suite requires Python 3.7 or newer. On an older distribution the core TDZ SSH features remain available, while OpenVPN installation stops safely without changing the existing setup.
+The optional suite requires Python 3.7 or newer. On an older distribution the core SSH features remain available, while OpenVPN installation stops safely without changing the existing setup.
 
 | Mode | Client support | Profile / setup |
 |---|---|---|
 | **Direct UDP** | Official OpenVPN clients | Ready-to-import `.ovpn` profile |
 | **Direct TCP** | Official OpenVPN clients | Ready-to-import `.ovpn` profile |
-| **HTTP CONNECT** | OpenVPN/HTTP Custom-compatible clients | Native proxy profile with the TDZ custom CONNECT headers |
+| **HTTP CONNECT** | OpenVPN/HTTP Custom-compatible clients | Native proxy profile with custom CONNECT headers |
 | **HTTP Payload / WebSocket** | Compatible injector or WebSocket adapter | Injector profile plus payload template |
 | **WSS / SNI** | Compatible TLS WebSocket adapter | Injector profile; use the configured host as SNI |
 | **SSL / SNI** | Compatible external SSL/TLS adapter | Injector profile; use the configured host as SNI |
@@ -259,7 +254,7 @@ The portal uses the same validated outer certificate as WSS and SSL. A matching 
 
 ### Shared account enforcement
 
-- SSH and OpenVPN use the same TDZ user database and Linux password
+- SSH and OpenVPN use the same managed user database and Linux password
 - Manual lock and account deletion terminate both SSH and OpenVPN sessions
 - Manual locks are stored separately from expiry and quota state, so the Unlock menu contains only accounts an administrator deliberately locked
 - Expiry and **Start After First Use** apply to the first successful SSH or OpenVPN login
@@ -268,7 +263,7 @@ The portal uses the same validated outer certificate as WSS and SSL. A matching 
 - Expired or quota-exhausted accounts are disconnected and denied automatically, while renewing or topping up restores access without changing an independent manual lock
 - VPN clients are isolated from one another and cannot use the transport gateway as an open proxy
 
-Direct UDP and direct TCP work in current official OpenVPN clients. The HTTP CONNECT profile follows the TDZ HTTP Custom-compatible template with custom CONNECT headers, AES-256-GCM, DNS routing, `setenv CLIENT_CERT 0`, and embedded CA/tls-crypt material. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores. Direct UDP retains AES-256-GCM priority.
+Direct UDP and direct TCP work in current official OpenVPN clients. The HTTP CONNECT profile follows the supplied HTTP Custom-compatible template with custom CONNECT headers, AES-256-GCM, DNS routing, `setenv CLIENT_CERT 0`, and embedded CA/tls-crypt material. Payload, WS, WSS, and SSL are adapter transports and therefore require an app that implements the corresponding outer payload or TLS/WebSocket layer. Adapter profiles omit newer cipher directives rejected by several embedded Android OpenVPN cores. Direct UDP retains AES-256-GCM priority.
 
 Compatibility follows the official OpenVPN transport model: the core protocol runs over TCP or UDP, while HTTP proxy mode uses TCP. Session status and forced disconnects use the local OpenVPN management interface. See the [OpenVPN protocol reference](https://openvpn.net/community-docs/openvpn-protocol.html), [HTTP proxy guide](https://openvpn.net/community-docs/connecting-to-an-openvpn-server-via-an-http-proxy.html), and [management interface reference](https://openvpn.net/community-docs/management-interface.html).
 
@@ -276,7 +271,7 @@ Compatibility follows the official OpenVPN transport model: the core protocol ru
 
 ## SSL Certificate — Menu 17
 
-Open **`menu → 17) Domain & SSL Cert`** to manage the shared certificate used by the TDZ edge stack.
+Open **`menu → 17) Domain & SSL Cert`** to manage the certificate shared by the edge stack.
 
 | Option | Action |
 |---|---|
@@ -293,7 +288,7 @@ Fullchain file path: /path/to/fullchain.pem
 Private key file path: /path/to/privkey.pem
 ```
 
-Before applying a certificate, TDZ verifies that the fullchain is valid and that its public key matches the private key. It then validates the active Nginx and HAProxy configuration. If validation or service restart fails, the previous working certificate is restored automatically.
+Before applying a certificate, the installer verifies that the fullchain is valid and that its public key matches the private key. It then validates the active Nginx and HAProxy configuration. If validation or service restart fails, the previous working certificate is restored automatically.
 
 ---
 
@@ -341,15 +336,24 @@ TDZ SSH TUNNEL is designed for Debian-family VPS systems that use **APT** and **
 | **64-bit ARM** | `arm64`, `aarch64` | Full core support; most optional protocol components are available |
 | **32-bit ARM** | `armv7l`, `armhf`, `arm` | Core management features can run; some prebuilt optional protocol components may be unavailable |
 
-The installer automatically detects an existing installation, operating environment and CPU architecture. If a particular optional protocol has no binary for the detected CPU, that component remains unavailable; the main TDZ menu, SSH user management, limits, banners, backup and restore features remain available.
+The installer automatically detects an existing installation, operating environment and CPU architecture. If a particular optional protocol has no binary for the detected CPU, that component remains unavailable; the main menu, SSH user management, limits, banners, backup and restore features remain available.
 
 > **Note:** Root access is required for installation and operation.
 
 ## Uninstall
 
-```
+```text
 menu → 99) Uninstall
 ```
+
+The full uninstaller uses a compact six-stage progress view. It stops and
+disables managed background services, removes optional protocol and panel
+components, restores resolver and SSH integration, removes only firewall rules
+recorded by the installer, clears application files and logs, reloads systemd,
+and performs a final leftover-path verification before reporting success.
+Legacy files from the retired UDP Custom and proxy downloaders are cleaned as
+part of this verification. Managed Linux SSH accounts are deleted only when
+you explicitly approve the separate account-removal prompt.
 
 ## Credits & License
 

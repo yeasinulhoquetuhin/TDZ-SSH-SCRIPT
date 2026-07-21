@@ -68,6 +68,18 @@ fi
 [[ -d "$TARGET_LIB_DIR" ]] && HAD_OLD_LIB=true
 [[ -f "$SSHD_DROPIN" ]] && HAD_OLD_DROPIN=true
 
+BOX_MAX_WIDTH=64
+BOX_WIDTH=$BOX_MAX_WIDTH
+if [[ -t 1 ]]; then
+    terminal_columns=${COLUMNS:-}
+    [[ "$terminal_columns" =~ ^[0-9]+$ ]] || terminal_columns=$(tput cols 2>/dev/null || true)
+    if [[ "$terminal_columns" =~ ^[0-9]+$ ]]; then
+        BOX_WIDTH=$((terminal_columns - 4))
+        (( BOX_WIDTH > BOX_MAX_WIDTH )) && BOX_WIDTH=$BOX_MAX_WIDTH
+        (( BOX_WIDTH < 24 )) && BOX_WIDTH=24
+    fi
+fi
+
 cleanup() {
     rm -rf "$WORK_DIR"
 }
@@ -130,9 +142,13 @@ trap on_exit EXIT
 
 print_centered_line() {
     local clean_text=$1 styled_text=$2 left right
-    left=$(( (64 - ${#clean_text}) / 2 ))
+    if (( ${#clean_text} > BOX_WIDTH )); then
+        clean_text="${clean_text:0:BOX_WIDTH}"
+        styled_text="$clean_text"
+    fi
+    left=$(( (BOX_WIDTH - ${#clean_text}) / 2 ))
     (( left < 0 )) && left=0
-    right=$((64 - ${#clean_text} - left))
+    right=$((BOX_WIDTH - ${#clean_text} - left))
     (( right < 0 )) && right=0
     printf "  ${C_CYAN}║${C_RESET}%*s%s%*s${C_CYAN}║${C_RESET}\n" \
         "$left" "" "$styled_text" "$right" ""
@@ -141,10 +157,14 @@ print_centered_line() {
 show_header() {
     [[ -t 1 ]] && clear || true
     echo
-    echo -e "  ${C_CYAN}╔════════════════════════════════════════════════════════════════╗${C_RESET}"
+    printf "  %s╔" "$C_CYAN"
+    printf '═%.0s' $(seq 1 "$BOX_WIDTH")
+    printf "╗%s\n" "$C_RESET"
     print_centered_line "TDZ SSH TUNNEL   •   SETUP" "${C_CYAN}TDZ SSH TUNNEL   •   SETUP${C_RESET}"
     print_centered_line "Powered By: t.me/TuhinBroh" "${C_GRAY}Powered By: t.me/TuhinBroh${C_RESET}"
-    echo -e "  ${C_CYAN}╚════════════════════════════════════════════════════════════════╝${C_RESET}"
+    printf "  %s╚" "$C_CYAN"
+    printf '═%.0s' $(seq 1 "$BOX_WIDTH")
+    printf "╝%s\n" "$C_RESET"
     echo
     if [[ "$MODE" == "update" ]]; then
         echo -e "  ${C_YELLOW}${C_BOLD}● UPDATE MODE${C_RESET}"

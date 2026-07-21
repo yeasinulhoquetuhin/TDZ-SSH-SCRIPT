@@ -30,6 +30,7 @@ C_ACCENT=$C_CYAN     # Cyan accent (was Orange)
 
 DB_DIR="/etc/tdztunnel"
 DB_FILE="$DB_DIR/users.db"
+TDZ_MENU_BINARY="${TDZ_MENU_BINARY:-/usr/local/bin/menu}"
 MANUAL_LOCK_FILE="$DB_DIR/manual-locks.db"
 MANUAL_LOCK_MUTEX="$DB_DIR/.manual-locks.lock"
 INSTALL_FLAG_FILE="$DB_DIR/.install"
@@ -63,6 +64,19 @@ DNSTT_SERVICE_FILE="/etc/systemd/system/dnstt.service"
 DNSTT_BINARY="/usr/local/bin/dnstt-server"
 DNSTT_KEYS_DIR="/etc/tdztunnel/dnstt"
 DNSTT_CONFIG_FILE="$DB_DIR/dnstt_info.conf"
+DNSTT_RESOLVER_STATE_FILE="$DNSTT_KEYS_DIR/resolver.state"
+DNSTT_RESOLV_BACKUP="$DNSTT_KEYS_DIR/resolv.conf.before"
+TDZ_RESOLV_CONF="${TDZ_RESOLV_CONF:-/etc/resolv.conf}"
+TDZ_RESOLVED_STUB="${TDZ_RESOLVED_STUB:-/run/systemd/resolve/stub-resolv.conf}"
+# Cleanup-only paths from releases that previously offered two dead optional
+# downloads. They are deliberately not exposed by any installer or menu item.
+LEGACY_UDP_DIR="${LEGACY_UDP_DIR:-/root/udp}"
+LEGACY_UDP_SERVICE="${LEGACY_UDP_SERVICE:-/etc/systemd/system/udp-custom.service}"
+LEGACY_UDPGW_BINARY="${LEGACY_UDPGW_BINARY:-/usr/local/bin/udpgw}"
+LEGACY_UDPGW_SERVICE="${LEGACY_UDPGW_SERVICE:-/etc/systemd/system/udpgw.service}"
+LEGACY_PROXY_BINARY="${LEGACY_PROXY_BINARY:-/usr/local/bin/tdzproxy}"
+LEGACY_PROXY_SERVICE="${LEGACY_PROXY_SERVICE:-/etc/systemd/system/tdzproxy.service}"
+LEGACY_PROXY_CONFIG="${LEGACY_PROXY_CONFIG:-$DB_DIR/tdzproxy_config.conf}"
 LIMITER_SCRIPT="/usr/local/bin/tdztunnel-limiter.sh"
 LIMITER_SERVICE="/etc/systemd/system/tdztunnel-limiter.service"
 BANDWIDTH_DIR="$DB_DIR/bandwidth"
@@ -78,6 +92,12 @@ AUTO_BACKUP_DIR="/root/tdztunnel-auto-backups"
 AUTO_BACKUP_LOG="/var/log/tdztunnel-auto-backup.log"
 AUTO_BACKUP_LAST_FILE="$AUTO_BACKUP_DIR/last-backup.tar.gz"
 AUTO_BACKUP_PM2_NAME="tdz-auto-backup-bot"
+AUTO_REBOOT_CRON_TAG="# tdztunnel-managed-auto-reboot"
+TDZ_PACKAGE_LOG="${TDZ_PACKAGE_LOG:-/var/log/tdz-package-setup.log}"
+TDZ_CERTIFICATE_LOG="${TDZ_CERTIFICATE_LOG:-/var/log/tdz-certificate-setup.log}"
+TDZ_SERVICE_LOG="${TDZ_SERVICE_LOG:-/var/log/tdz-service-setup.log}"
+TDZ_UNINSTALL_LOG="${TDZ_UNINSTALL_LOG:-/var/log/tdz-uninstall.log}"
+FIREWALL_STATE_FILE="$DB_DIR/firewall-rules.db"
 XUI_PATCHED_TAG="v2.9.3-patched"
 XUI_PATCHED_LABEL="v2.9.3 • Patched"
 XUI_INSTALLER_COMMIT="89fb75da778db776e6ec0a7f735c2a55626229aa"
@@ -234,8 +254,27 @@ compute_cpu_pct() {
     echo "$pct"
 }
 
-# ── TDZ Dashboard Box-Layout Helpers (64-column interior) ──────────────────
-TDZ_BOX_WIDTH=64
+# ── Dashboard box-layout helpers ────────────────────────────────────────────
+# Keep the 64-column desktop layout, but shrink it on narrow mobile terminals
+# so borders and progress rows never wrap into a second line.
+TDZ_BOX_MAX_WIDTH=64
+TDZ_BOX_WIDTH="${TDZ_BOX_WIDTH:-$TDZ_BOX_MAX_WIDTH}"
+
+tdz_refresh_box_width() {
+    local columns candidate
+    [[ -t 1 ]] || return 0
+    columns=${COLUMNS:-}
+    if [[ ! "$columns" =~ ^[0-9]+$ ]]; then
+        columns=$(tput cols 2>/dev/null || true)
+    fi
+    [[ "$columns" =~ ^[0-9]+$ ]] || return 0
+    candidate=$((columns - 4))
+    (( candidate > TDZ_BOX_MAX_WIDTH )) && candidate=$TDZ_BOX_MAX_WIDTH
+    (( candidate < 24 )) && candidate=24
+    TDZ_BOX_WIDTH=$candidate
+}
+
+tdz_refresh_box_width
 
 _tdz_strip_ansi() {
     printf '%s' "$1" | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g'
@@ -461,7 +500,9 @@ tdz_detail() {
 }
 
 tdz_message() {
-    local kind="${1^^}" message="$2" color label
+    local kind="${1^^}" message="$2" color label line first=true
+    local wrap_width=$((TDZ_BOX_WIDTH - 12))
+    (( wrap_width < 16 )) && wrap_width=16
     case "$kind" in
         OK|SUCCESS) color="$C_GREEN"; label="OK" ;;
         WARNING|WARN) color="$C_YELLOW"; label="WARNING" ;;
@@ -469,14 +510,26 @@ tdz_message() {
         CANCELLED|CANCELED) color="$C_YELLOW"; label="CANCELLED" ;;
         *) color="$C_RED"; label="ERROR" ;;
     esac
-    printf "\n  %s[%s]%s %s\n" "$color" "$label" "$C_RESET" "$message"
+    echo
+    while IFS= read -r line; do
+        if $first; then
+            printf "  %s[%s]%s %s\n" "$color" "$label" "$C_RESET" "$line"
+            first=false
+        else
+            printf "  %-*s %s\n" "$(( ${#label} + 2 ))" "" "$line"
+        fi
+    done < <(printf '%s\n' "$message" | fold -s -w "$wrap_width")
 }
 
 # Consistent action progress. User-facing labels describe the phase without
 # exposing implementation dependencies; detailed command output stays quiet.
 tdz_progress_begin() {
     local current="$1" total="$2" label="$3"
-    printf '  %b[%s/%s]%b %-42s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label"
+    local label_width=$((TDZ_BOX_WIDTH - 22))
+    (( label_width < 18 )) && label_width=18
+    (( label_width > 42 )) && label_width=42
+    label=$(_tdz_fit "$label" "$label_width")
+    printf '  %b[%s/%s]%b %-*s' "$C_CYAN" "$current" "$total" "$C_RESET" "$label_width" "$label"
 }
 
 tdz_progress_done() {
@@ -491,12 +544,32 @@ tdz_progress_run() {
     local current="$1" total="$2" label="$3"
     shift 3
     tdz_progress_begin "$current" "$total" "$label"
-    if "$@" >/dev/null 2>&1; then
+    local action_status
+    if [[ -n "${TDZ_ACTION_LOG:-}" ]]; then
+        "$@" >>"$TDZ_ACTION_LOG" 2>&1
+        action_status=$?
+    else
+        "$@" >/dev/null 2>&1
+        action_status=$?
+    fi
+    if (( action_status == 0 )); then
         tdz_progress_done
         return 0
     fi
     tdz_progress_failed
     return 1
+}
+
+tdz_capture_service_diagnostic() {
+    local unit="$1"
+    mkdir -p "$(dirname "$TDZ_SERVICE_LOG")" 2>/dev/null || true
+    touch "$TDZ_SERVICE_LOG" 2>/dev/null || true
+    chmod 600 "$TDZ_SERVICE_LOG" 2>/dev/null || true
+    {
+        printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$unit"
+        systemctl --no-pager --full status "$unit" 2>&1 | tail -n 40
+    } >> "$TDZ_SERVICE_LOG" 2>&1
+    echo -e "${C_DIM}Diagnostic details: ${TDZ_SERVICE_LOG}${C_RESET}"
 }
 
 # Store account dates in ISO format for Linux tools, but keep every
@@ -771,7 +844,11 @@ tdz_apt_update() {
         return 0
     fi
 
-    if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
+    mkdir -p "$(dirname "$TDZ_PACKAGE_LOG")" 2>/dev/null || true
+    touch "$TDZ_PACKAGE_LOG" 2>/dev/null || true
+    chmod 600 "$TDZ_PACKAGE_LOG" 2>/dev/null || true
+
+    if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update >>"$TDZ_PACKAGE_LOG" 2>&1; then
         APT_CACHE_READY=1
         return 0
     fi
@@ -779,7 +856,7 @@ tdz_apt_update() {
     if repair_debian_apt_mirrors; then
         echo -e "${C_YELLOW}[WARNING] Debian mirror unreachable. Switching to deb.debian.org and retrying...${C_RESET}"
         apt-get clean >/dev/null 2>&1 || true
-        if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
+        if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update >>"$TDZ_PACKAGE_LOG" 2>&1; then
             APT_CACHE_READY=1
             return 0
         fi
@@ -788,7 +865,7 @@ tdz_apt_update() {
     if repair_ubuntu_apt_mirrors; then
         echo -e "${C_YELLOW}[WARNING] APT mirror timed out. Switching Ubuntu sources to archive.ubuntu.com and retrying...${C_RESET}"
         apt-get clean >/dev/null 2>&1 || true
-        if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
+        if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update >>"$TDZ_PACKAGE_LOG" 2>&1; then
             APT_CACHE_READY=1
             return 0
         fi
@@ -797,13 +874,14 @@ tdz_apt_update() {
     if switch_ubuntu_to_old_releases; then
         echo -e "${C_YELLOW}[WARNING] Detected an end-of-life Ubuntu release. Switching APT sources to old-releases.ubuntu.com and retrying...${C_RESET}"
         apt-get clean >/dev/null 2>&1 || true
-        if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update; then
+        if DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" update >>"$TDZ_PACKAGE_LOG" 2>&1; then
             APT_CACHE_READY=1
             return 0
         fi
     fi
 
-    echo -e "${C_RED}[ERROR] Failed to refresh package lists. Please check VPS network, DNS, or blocked Ubuntu mirrors.${C_RESET}"
+    echo -e "${C_RED}[ERROR] Required components could not be prepared.${C_RESET}"
+    echo -e "${C_DIM}Diagnostic details: ${TDZ_PACKAGE_LOG}${C_RESET}"
     return 1
 }
 
@@ -812,13 +890,16 @@ tdz_apt_install() {
     (( ${#packages[@]} > 0 )) || return 0
 
     tdz_apt_update || return 1
-    DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Use-Pty=0 install "${packages[@]}"
+    DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Use-Pty=0 install "${packages[@]}" >>"$TDZ_PACKAGE_LOG" 2>&1
 }
 
 tdz_apt_purge() {
     local -a packages=("$@")
     (( ${#packages[@]} > 0 )) || return 0
-    DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Use-Pty=0 purge "${packages[@]}"
+    mkdir -p "$(dirname "$TDZ_PACKAGE_LOG")" 2>/dev/null || true
+    touch "$TDZ_PACKAGE_LOG" 2>/dev/null || true
+    chmod 600 "$TDZ_PACKAGE_LOG" 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Use-Pty=0 purge "${packages[@]}" >>"$TDZ_PACKAGE_LOG" 2>&1
 }
 
 # Mandatory Dependency Check (Added jq and curl)
@@ -845,7 +926,14 @@ check_environment() {
 ensure_tdztunnel_dirs() {
     mkdir -p "$DB_DIR" "$SSL_CERT_DIR" "$BANDWIDTH_DIR" /etc/ssh/sshd_config.d
     touch "$DB_FILE"
-    chmod 700 "$DB_DIR" "$BANDWIDTH_DIR" 2>/dev/null || true
+    if getent group "${TDZ_OVPN_SERVICE_USER:-tdzopenvpn}" >/dev/null 2>&1; then
+        chown root:"${TDZ_OVPN_SERVICE_USER:-tdzopenvpn}" "$DB_DIR" 2>/dev/null || true
+        chmod 710 "$DB_DIR" 2>/dev/null || true
+    else
+        chown root:root "$DB_DIR" 2>/dev/null || true
+        chmod 700 "$DB_DIR" 2>/dev/null || true
+    fi
+    chmod 700 "$BANDWIDTH_DIR" 2>/dev/null || true
     chmod 600 "$DB_FILE" 2>/dev/null || true
     tdz_manual_lock_store_init
 }
@@ -1386,48 +1474,99 @@ _is_valid_ipv4() {
     fi
 }
 
+tdz_record_firewall_rule() {
+    local backend="$1" rule="$2" protocol="$3"
+    mkdir -p "$DB_DIR" || return 1
+    touch "$FIREWALL_STATE_FILE" || return 1
+    chmod 600 "$FIREWALL_STATE_FILE" 2>/dev/null || true
+    grep -Fxq "${backend}|${rule}|${protocol}" "$FIREWALL_STATE_FILE" 2>/dev/null ||
+        printf '%s|%s|%s\n' "$backend" "$rule" "$protocol" >> "$FIREWALL_STATE_FILE"
+}
+
+tdz_remove_recorded_firewall_rules() {
+    local backend rule protocol
+    local cleanup_failed=false firewalld_changed=false
+    [[ -r "$FIREWALL_STATE_FILE" ]] || return 0
+    while IFS='|' read -r backend rule protocol; do
+        [[ -n "$backend" && -n "$rule" && -n "$protocol" ]] || continue
+        case "$backend" in
+            ufw)
+                if command -v ufw >/dev/null 2>&1 &&
+                   ufw status 2>/dev/null | grep -Fqw "$rule/$protocol"; then
+                    ufw --force delete allow "$rule/$protocol" >/dev/null 2>&1 || cleanup_failed=true
+                fi
+                ;;
+            firewalld)
+                if command -v firewall-cmd >/dev/null 2>&1 &&
+                   firewall-cmd --quiet --query-port="$rule/$protocol" --permanent; then
+                    if firewall-cmd --remove-port="$rule/$protocol" --permanent >/dev/null 2>&1; then
+                        firewalld_changed=true
+                    else
+                        cleanup_failed=true
+                    fi
+                fi
+                ;;
+        esac
+    done < "$FIREWALL_STATE_FILE"
+    if $firewalld_changed && systemctl is-active --quiet firewalld; then
+        firewall-cmd --reload >/dev/null 2>&1 || cleanup_failed=true
+    fi
+    if [[ "$cleanup_failed" == true ]]; then
+        return 1
+    fi
+    rm -f "$FIREWALL_STATE_FILE"
+}
+
 check_and_open_firewall_port() {
     local port="$1"
     local protocol="${2:-tcp}"
-    local firewall_detected=false
 
     if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        firewall_detected=true
         if ! ufw status | grep -qw "$port/$protocol"; then
             echo -e "${C_YELLOW}UFW firewall is active and port ${port}/${protocol} is closed.${C_RESET}"
             read -p "  Do you want to open this port now? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                ufw allow "$port/$protocol"
+                if ! ufw allow "$port/$protocol" >/dev/null 2>&1; then
+                    tdz_message ERROR "The firewall rule could not be applied."
+                    return 1
+                fi
+                if ! tdz_record_firewall_rule ufw "$port" "$protocol"; then
+                    ufw --force delete allow "$port/$protocol" >/dev/null 2>&1 || true
+                    tdz_message ERROR "The firewall rule could not be recorded safely."
+                    return 1
+                fi
                 echo -e "${C_GREEN}[OK] Port ${port}/${protocol} has been opened in UFW.${C_RESET}"
             else
                 echo -e "${C_RED}[WARNING] Port ${port}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
                 return 1
             fi
-        else
-             echo -e "${C_GREEN}[OK] Port ${port}/${protocol} is already open in UFW.${C_RESET}"
         fi
     fi
 
     if command -v firewall-cmd &> /dev/null && systemctl is-active --quiet firewalld; then
-        firewall_detected=true
         if ! firewall-cmd --list-ports --permanent | grep -qw "$port/$protocol"; then
             echo -e "${C_YELLOW}firewalld is active and port ${port}/${protocol} is not open.${C_RESET}"
             read -p "  Do you want to open this port now? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                firewall-cmd --add-port="$port/$protocol" --permanent
-                firewall-cmd --reload
+                if ! firewall-cmd --add-port="$port/$protocol" --permanent >/dev/null 2>&1 ||
+                   ! firewall-cmd --reload >/dev/null 2>&1; then
+                    firewall-cmd --remove-port="$port/$protocol" --permanent >/dev/null 2>&1 || true
+                    firewall-cmd --reload >/dev/null 2>&1 || true
+                    tdz_message ERROR "The firewall rule could not be applied."
+                    return 1
+                fi
+                if ! tdz_record_firewall_rule firewalld "$port" "$protocol"; then
+                    firewall-cmd --remove-port="$port/$protocol" --permanent >/dev/null 2>&1 || true
+                    firewall-cmd --reload >/dev/null 2>&1 || true
+                    tdz_message ERROR "The firewall rule could not be recorded safely."
+                    return 1
+                fi
                 echo -e "${C_GREEN}[OK] Port ${port}/${protocol} has been opened in firewalld.${C_RESET}"
             else
                 echo -e "${C_RED}[WARNING] Port ${port}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
                 return 1
             fi
-        else
-            echo -e "${C_GREEN}[OK] Port ${port}/${protocol} is already open in firewalld.${C_RESET}"
         fi
-    fi
-
-    if ! $firewall_detected; then
-        echo -e "${C_BLUE}[INFO] No active firewall (UFW or firewalld) detected. Assuming ports are open.${C_RESET}"
     fi
     return 0
 }
@@ -1435,45 +1574,53 @@ check_and_open_firewall_port() {
 check_and_open_firewall_port_range() {
     local port_range="$1"
     local protocol="${2:-tcp}"
-    local firewall_detected=false
 
     if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        firewall_detected=true
         if ! ufw status | grep -Fq "$port_range/$protocol"; then
             echo -e "${C_YELLOW}UFW firewall is active and range ${port_range}/${protocol} is closed.${C_RESET}"
             read -p "  Do you want to open this port range now? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                ufw allow "$port_range/$protocol"
+                if ! ufw allow "$port_range/$protocol" >/dev/null 2>&1; then
+                    tdz_message ERROR "The firewall rule could not be applied."
+                    return 1
+                fi
+                if ! tdz_record_firewall_rule ufw "$port_range" "$protocol"; then
+                    ufw --force delete allow "$port_range/$protocol" >/dev/null 2>&1 || true
+                    tdz_message ERROR "The firewall rule could not be recorded safely."
+                    return 1
+                fi
                 echo -e "${C_GREEN}[OK] Range ${port_range}/${protocol} has been opened in UFW.${C_RESET}"
             else
                 echo -e "${C_RED}[WARNING] Range ${port_range}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
                 return 1
             fi
-        else
-            echo -e "${C_GREEN}[OK] Range ${port_range}/${protocol} is already open in UFW.${C_RESET}"
         fi
     fi
 
     if command -v firewall-cmd &> /dev/null && systemctl is-active --quiet firewalld; then
-        firewall_detected=true
-        if ! firewall-cmd --quiet --query-port="$port_range/$protocol"; then
+        if ! firewall-cmd --quiet --query-port="$port_range/$protocol" --permanent; then
             echo -e "${C_YELLOW}firewalld is active and range ${port_range}/${protocol} is not open.${C_RESET}"
             read -p "  Do you want to open this port range now? (y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                firewall-cmd --add-port="$port_range/$protocol" --permanent
-                firewall-cmd --reload
+                if ! firewall-cmd --add-port="$port_range/$protocol" --permanent >/dev/null 2>&1 ||
+                   ! firewall-cmd --reload >/dev/null 2>&1; then
+                    firewall-cmd --remove-port="$port_range/$protocol" --permanent >/dev/null 2>&1 || true
+                    firewall-cmd --reload >/dev/null 2>&1 || true
+                    tdz_message ERROR "The firewall rule could not be applied."
+                    return 1
+                fi
+                if ! tdz_record_firewall_rule firewalld "$port_range" "$protocol"; then
+                    firewall-cmd --remove-port="$port_range/$protocol" --permanent >/dev/null 2>&1 || true
+                    firewall-cmd --reload >/dev/null 2>&1 || true
+                    tdz_message ERROR "The firewall rule could not be recorded safely."
+                    return 1
+                fi
                 echo -e "${C_GREEN}[OK] Range ${port_range}/${protocol} has been opened in firewalld.${C_RESET}"
             else
                 echo -e "${C_RED}[WARNING] Range ${port_range}/${protocol} was not opened. The service may not work correctly.${C_RESET}"
                 return 1
             fi
-        else
-            echo -e "${C_GREEN}[OK] Range ${port_range}/${protocol} is already open in firewalld.${C_RESET}"
         fi
-    fi
-
-    if ! $firewall_detected; then
-        echo -e "${C_BLUE}[INFO] No active firewall (UFW or firewalld) detected. Assuming range ${port_range}/${protocol} is open.${C_RESET}"
     fi
     return 0
 }
@@ -1481,7 +1628,6 @@ check_and_open_firewall_port_range() {
 check_and_free_ports() {
     local ports_to_check=("$@")
     for port in "${ports_to_check[@]}"; do
-        echo -e "\n${C_BLUE}Checking if port $port is available...${C_RESET}"
         local conflicting_process_info
         conflicting_process_info=$(
             ss -H -lntp "( sport = :$port )" 2>/dev/null
@@ -1508,15 +1654,11 @@ check_and_free_ports() {
                 if ss -H -lntp "( sport = :$port )" 2>/dev/null | grep -q . || ss -H -lunp "( sport = :$port )" 2>/dev/null | grep -q .; then
                      echo -e "${C_RED}[ERROR] Failed to free port $port. Please handle it manually. Aborting.${C_RESET}"
                      return 1
-                else
-                     echo -e "${C_GREEN}[OK] Port $port has been successfully freed.${C_RESET}"
                 fi
             else
                 echo -e "${C_RED}[ERROR] Cannot proceed without freeing port $port. Aborting.${C_RESET}"
                 return 1
             fi
-        else
-            echo -e "${C_GREEN}[OK] Port $port is free to use.${C_RESET}"
         fi
     done
     return 0
@@ -2101,7 +2243,7 @@ EOF
     pkill -f "tdztunnel-limiter" 2>/dev/null
 
     if ! systemctl is-active --quiet tdztunnel-limiter; then
-        systemctl daemon-reload
+        systemctl daemon-reload >/dev/null 2>&1
         systemctl enable tdztunnel-limiter &>/dev/null
         systemctl start tdztunnel-limiter --no-block &>/dev/null
         
@@ -3181,7 +3323,7 @@ create_user() {
         return
     fi
     if db_has_user "$username"; then
-        tdz_message ERROR "User '$username' already exists in TDZ SSH TUNNEL."
+        tdz_message ERROR "User '$username' already exists in the managed database."
         return
     fi
     if id "$username" &>/dev/null; then
@@ -3196,7 +3338,7 @@ create_user() {
                 return
             fi
         else
-            tdz_message ERROR "System user '$username' already exists and is not a TDZ-managed account."
+            tdz_message ERROR "System user '$username' already exists and is not a managed account."
             return
         fi
     fi
@@ -3637,7 +3779,12 @@ list_users_view() {
         case "$view_filter" in
             expired) tdz_row "${C_GREEN}[OK] No expired users found.${C_RESET}" ;;
             quota) tdz_row "${C_GREEN}[OK] No users have exhausted their quota.${C_RESET}" ;;
-            online) tdz_row "${C_YELLOW}[INFO] No managed users are online now.${C_RESET}" ;;
+            online)
+                tdz_row "${C_YELLOW}[INFO] No managed users are online now.${C_RESET}"
+                tdz_box_divider
+                tdz_row2 "${C_GRAY}SESSIONS:${C_RESET} ${C_BOLD}${C_WHITE}0${C_RESET}" \
+                    "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_GREEN}0${C_RESET}"
+                ;;
             *) tdz_row "${C_YELLOW}[INFO] No users are currently being managed.${C_RESET}" ;;
         esac
         tdz_box_bot
@@ -4915,11 +5062,12 @@ _restart_ssh() {
         return 1
     fi
 
-    systemctl restart "${ssh_service_name}"
+    systemctl restart "${ssh_service_name}" >/dev/null 2>&1
     if [ $? -eq 0 ]; then
         echo -e "${C_GREEN}[OK] SSH service ('${ssh_service_name}') restarted successfully.${C_RESET}"
     else
-        echo -e "${C_RED}[ERROR] Failed to restart SSH service ('${ssh_service_name}'). Please check 'journalctl -u ${ssh_service_name}' for errors.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Failed to restart SSH service ('${ssh_service_name}').${C_RESET}"
+        tdz_capture_service_diagnostic "$ssh_service_name"
     fi
 }
 
@@ -5100,7 +5248,7 @@ ensure_badvpn_service_is_quiet() {
         { print }
     ' "$BADVPN_SERVICE_FILE" > "$tmp_service" && mv "$tmp_service" "$BADVPN_SERVICE_FILE"
     rm -f "$tmp_service" 2>/dev/null
-    systemctl daemon-reload
+    systemctl daemon-reload >/dev/null 2>&1
     systemctl restart badvpn.service >/dev/null 2>&1 || true
 }
 
@@ -5184,7 +5332,7 @@ uninstall_badvpn() {
     systemctl disable badvpn.service >/dev/null 2>&1
     echo -e "${C_GREEN}Removing systemd service file...${C_RESET}"
     rm -f "$BADVPN_SERVICE_FILE"
-    systemctl daemon-reload
+    systemctl daemon-reload >/dev/null 2>&1
     echo -e "${C_GREEN}Removing badvpn build directory...${C_RESET}"
     rm -rf "$BADVPN_BUILD_DIR"
     echo -e "${C_GREEN}[OK] badvpn has been uninstalled successfully.${C_RESET}"
@@ -5244,9 +5392,7 @@ ensure_edge_stack_packages() {
     command -v python3 &> /dev/null || missing_packages+=("python3")
 
     if (( ${#missing_packages[@]} > 0 )); then
-        echo -e "\n${C_BLUE}[INFO] Preparing required components...${C_RESET}"
         tdz_apt_install "${missing_packages[@]}" || {
-            echo -e "${C_RED}[ERROR] Required components could not be prepared.${C_RESET}"
             return 1
         }
     fi
@@ -5527,15 +5673,12 @@ generate_self_signed_edge_cert() {
 
 _install_certbot() {
     if command -v certbot &> /dev/null; then
-        echo -e "${C_GREEN}[OK] Certbot is already installed.${C_RESET}"
         return 0
     fi
-    echo -e "${C_BLUE}Installing Certbot...${C_RESET}"
     tdz_apt_install certbot || {
-        echo -e "${C_RED}[ERROR] Failed to install Certbot.${C_RESET}"
+        echo -e "${C_RED}[ERROR] A required certificate component could not be prepared.${C_RESET}"
         return 1
     }
-    echo -e "${C_GREEN}[OK] Certbot installed successfully.${C_RESET}"
     return 0
 }
 
@@ -5551,7 +5694,7 @@ obtain_certbot_edge_cert() {
     if systemctl is-active --quiet haproxy; then restart_haproxy=1; fi
     if systemctl is-active --quiet nginx; then restart_nginx=1; fi
 
-    echo -e "\n${C_BLUE}Stopping HAProxy and Nginx for Certbot validation...${C_RESET}"
+    echo -e "\n${C_BLUE}Preparing certificate validation...${C_RESET}"
     systemctl stop haproxy >/dev/null 2>&1
     systemctl stop nginx >/dev/null 2>&1
     sleep 2
@@ -5562,11 +5705,15 @@ obtain_certbot_edge_cert() {
         return 1
     }
 
-    echo -e "\n${C_BLUE}Requesting a Certbot certificate for ${C_YELLOW}$domain_name${C_RESET}"
-    certbot certonly --standalone -d "$domain_name" --non-interactive --agree-tos -m "$email"
+    mkdir -p "$(dirname "$TDZ_CERTIFICATE_LOG")" 2>/dev/null || true
+    touch "$TDZ_CERTIFICATE_LOG" 2>/dev/null || true
+    chmod 600 "$TDZ_CERTIFICATE_LOG" 2>/dev/null || true
+    echo -e "\n${C_BLUE}Requesting a secure certificate for ${C_YELLOW}$domain_name${C_RESET}"
+    certbot certonly --standalone -d "$domain_name" --non-interactive --agree-tos -m "$email" >>"$TDZ_CERTIFICATE_LOG" 2>&1
     if [ $? -ne 0 ]; then
         echo -e "\n${C_RED}[ERROR] Certbot failed to obtain a certificate.${C_RESET}"
         echo -e "${C_YELLOW}[INFO] Make sure the domain points to this server and port 80 is reachable.${C_RESET}"
+        echo -e "${C_DIM}Diagnostic details: ${TDZ_CERTIFICATE_LOG}${C_RESET}"
         [[ "$restart_nginx" -eq 1 ]] && systemctl start nginx >/dev/null 2>&1
         [[ "$restart_haproxy" -eq 1 ]] && systemctl start haproxy >/dev/null 2>&1
         return 1
@@ -5998,9 +6145,9 @@ install_ws_ssh_bridge() {
     write_ws_ssh_bridge_service
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable tdz-ws-ssh-bridge >/dev/null 2>&1
-    systemctl restart tdz-ws-ssh-bridge || {
+    systemctl restart tdz-ws-ssh-bridge >/dev/null 2>&1 || {
         echo -e "${C_RED}[ERROR] Failed to start WS-to-SSH bridge.${C_RESET}"
-        systemctl status tdz-ws-ssh-bridge --no-pager
+        tdz_capture_service_diagnostic tdz-ws-ssh-bridge.service
         return 1
     }
     sleep 1
@@ -6078,7 +6225,7 @@ EOF
 }
 
 write_haproxy_edge_config() {
-    mkdir -p /etc/haproxy
+    mkdir -p "$(dirname "$HAPROXY_CONFIG")"
     cat > "$HAPROXY_CONFIG" <<EOF
 global
     log /dev/log local0
@@ -6181,7 +6328,7 @@ backend direct_ssh
 
 backend ws_ssh_bridge
     mode tcp
-    # Removed `option tcp-check` + `check` keyword on server line.
+    # Removed the option tcp-check directive and server-line health check.
     # These caused HAProxy to open a fresh TCP connection to the bridge every
     # 2 seconds for health checks. Each check made the bridge spawn a thread,
     # accept the connection, send the branded upgrade response, then try to
@@ -6300,7 +6447,7 @@ validate_edge_public_port() {
         return 1
     fi
     if tdz_is_reserved_edge_port "$port"; then
-        echo -e "${C_RED}[ERROR] Port ${port} is reserved by an internal TDZ service.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Port ${port} is reserved by an internal service.${C_RESET}"
         return 1
     fi
     return 0
@@ -6500,13 +6647,13 @@ install_ssl_tunnel() {
     clear; show_banner
     tdz_screen_title "INSTALL HAPROXY EDGE STACK" \
         "Public ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} → Nginx ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
-    echo -e "\n${C_CYAN}This installer will configure:${C_RESET}"
-    echo -e "   • HAProxy on ${C_WHITE}${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}${C_RESET}"
-    echo -e "   • Internal Nginx on ${C_WHITE}${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}${C_RESET}"
-    echo -e "   • Loopback SSL decryptor on ${C_WHITE}${HAPROXY_INTERNAL_DECRYPT_PORT}${C_RESET}"
+    tdz_section "EDGE LAYOUT"
+    tdz_detail "Public Ports" "${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}"
+    tdz_detail "Internal Ports" "${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
+    tdz_detail "Secure Backend" "$HAPROXY_INTERNAL_DECRYPT_PORT"
 
     if [ -f "$HAPROXY_CONFIG" ] || [ -f "$NGINX_CONFIG_FILE" ]; then
-        echo -e "\n${C_YELLOW}[WARNING] Existing HAProxy/Nginx configs will be replaced with the TDZ SSH TUNNEL edge layout.${C_RESET}"
+        tdz_message WARNING "Existing proxy configuration will be replaced by the managed edge layout."
         read -p "  Continue with the replacement? (y/n): " confirm_replace
         if [[ "$confirm_replace" != "y" && "$confirm_replace" != "Y" ]]; then
             tdz_message CANCELLED "Installation cancelled."
@@ -6516,7 +6663,13 @@ install_ssl_tunnel() {
 
     mkdir -p "$DB_DIR" "$SSL_CERT_DIR"
 
-    ensure_edge_stack_packages || return
+    echo
+    tdz_section "PREPARATION"
+    if ! tdz_progress_run 1 1 "Preparing required components" ensure_edge_stack_packages; then
+        tdz_message ERROR "Required components could not be prepared."
+        echo -e "${C_DIM}Diagnostic details: ${TDZ_PACKAGE_LOG}${C_RESET}"
+        return
+    fi
 
     systemctl stop haproxy >/dev/null 2>&1
     systemctl stop nginx >/dev/null 2>&1
@@ -6556,15 +6709,10 @@ uninstall_ssl_tunnel() {
         systemctl disable haproxy >/dev/null 2>&1
     fi
 
-    if [ -f "$HAPROXY_CONFIG" ]; then
-        cat > "$HAPROXY_CONFIG" <<EOF
-global
-    log /dev/log local0
-    log /dev/log local1 notice
-
-defaults
-    log     global
-EOF
+    if [ -f "${HAPROXY_CONFIG}.bak.tdztunnel" ]; then
+        mv -f "${HAPROXY_CONFIG}.bak.tdztunnel" "$HAPROXY_CONFIG"
+    else
+        rm -f "$HAPROXY_CONFIG"
     fi
 
     local delete_cert="n"
@@ -6629,7 +6777,77 @@ show_dnstt_details() {
     fi
 }
 
+capture_dnstt_resolver_state() {
+    local resolved_active=false resolved_enabled=false resolv_kind="missing" resolv_target=""
+    mkdir -p "$DNSTT_KEYS_DIR" || return 1
+    systemctl is-active --quiet systemd-resolved && resolved_active=true
+    systemctl is-enabled --quiet systemd-resolved && resolved_enabled=true
+    rm -f "$DNSTT_RESOLV_BACKUP"
+    if [[ -L "$TDZ_RESOLV_CONF" ]]; then
+        resolv_kind="symlink"
+        resolv_target=$(readlink "$TDZ_RESOLV_CONF")
+    elif [[ -f "$TDZ_RESOLV_CONF" ]]; then
+        resolv_kind="file"
+        cp -a "$TDZ_RESOLV_CONF" "$DNSTT_RESOLV_BACKUP" || return 1
+    fi
+    {
+        printf 'RESOLVED_ACTIVE=%q\n' "$resolved_active"
+        printf 'RESOLVED_ENABLED=%q\n' "$resolved_enabled"
+        printf 'RESOLV_KIND=%q\n' "$resolv_kind"
+        printf 'RESOLV_TARGET=%q\n' "$resolv_target"
+    } > "$DNSTT_RESOLVER_STATE_FILE"
+    chmod 600 "$DNSTT_RESOLVER_STATE_FILE" "$DNSTT_RESOLV_BACKUP" 2>/dev/null || true
+}
+
+restore_dnstt_resolver_state() {
+    local RESOLVED_ACTIVE=false RESOLVED_ENABLED=false RESOLV_KIND="" RESOLV_TARGET=""
+    chattr -i "$TDZ_RESOLV_CONF" >/dev/null 2>&1 || true
+    if [[ -r "$DNSTT_RESOLVER_STATE_FILE" ]]; then
+        # Root-owned installer state containing only shell-escaped scalar data.
+        source "$DNSTT_RESOLVER_STATE_FILE"
+        rm -f "$TDZ_RESOLV_CONF"
+        case "$RESOLV_KIND" in
+            symlink) [[ -n "$RESOLV_TARGET" ]] && ln -s "$RESOLV_TARGET" "$TDZ_RESOLV_CONF" ;;
+            file) [[ -f "$DNSTT_RESOLV_BACKUP" ]] && cp -a "$DNSTT_RESOLV_BACKUP" "$TDZ_RESOLV_CONF" ;;
+            missing) : ;;
+        esac
+        if [[ "$RESOLVED_ENABLED" == "true" ]]; then
+            systemctl enable systemd-resolved >/dev/null 2>&1 || true
+        else
+            systemctl disable systemd-resolved >/dev/null 2>&1 || true
+        fi
+        if [[ "$RESOLVED_ACTIVE" == "true" ]]; then
+            systemctl start systemd-resolved >/dev/null 2>&1 || true
+        else
+            systemctl stop systemd-resolved >/dev/null 2>&1 || true
+        fi
+        return 0
+    fi
+
+    # Legacy installations did not save resolver state. Restore the standard
+    # systemd-resolved link when that service exists instead of leaving the VPS
+    # permanently on the temporary installer resolver.
+    if systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1; then
+        rm -f "$TDZ_RESOLV_CONF"
+        ln -s "$TDZ_RESOLVED_STUB" "$TDZ_RESOLV_CONF"
+        systemctl enable --now systemd-resolved >/dev/null 2>&1 || true
+    fi
+}
+
+rollback_dnstt_failed_install() {
+    local restore_resolver=${1:-false}
+    systemctl stop dnstt.service >/dev/null 2>&1 || true
+    systemctl disable dnstt.service >/dev/null 2>&1 || true
+    if [[ "$restore_resolver" == "true" ]]; then
+        restore_dnstt_resolver_state
+    fi
+    rm -f "$DNSTT_SERVICE_FILE" "$DNSTT_BINARY" "$DNSTT_CONFIG_FILE"
+    rm -rf "$DNSTT_KEYS_DIR"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
 install_dnstt() {
+    local disable_systemd_resolved=false
     clear; show_banner
     tdz_screen_title "INSTALL DNSTT" "Configure DNS tunnelling on UDP port 53."
     if [ -f "$DNSTT_SERVICE_FILE" ]; then
@@ -6645,14 +6863,10 @@ install_dnstt() {
             echo -e "${C_YELLOW}This is the system's DNS stub resolver. It must be disabled to run DNSTT.${C_RESET}"
             read -p "  Allow the script to automatically disable it and reconfigure DNS? (y/n): " resolve_confirm
             if [[ "$resolve_confirm" == "y" || "$resolve_confirm" == "Y" ]]; then
-                echo -e "${C_GREEN}Stopping and disabling systemd-resolved to free port 53...${C_RESET}"
-                systemctl stop systemd-resolved
-                systemctl disable systemd-resolved
-                chattr -i /etc/resolv.conf &>/dev/null
-                rm -f /etc/resolv.conf
-                echo "nameserver 8.8.8.8" > /etc/resolv.conf
-                chattr +i /etc/resolv.conf
-                echo -e "${C_GREEN}[OK] Port 53 has been freed and DNS set to 8.8.8.8.${C_RESET}"
+                # Defer the resolver change until every input, download and
+                # generated file is ready. Early cancellation then leaves DNS
+                # completely untouched.
+                disable_systemd_resolved=true
             else
                 echo -e "${C_RED}[ERROR] Cannot proceed without freeing port 53. Aborting.${C_RESET}"
                 return
@@ -6739,6 +6953,7 @@ install_dnstt() {
     if ! curl -fLsS "$binary_url" -o "$DNSTT_BINARY"; then
         tdz_progress_failed
         echo -e "${C_RED}[ERROR] The service package could not be prepared.${C_RESET}"
+        rollback_dnstt_failed_install false
         return
     fi
     chmod +x "$DNSTT_BINARY"
@@ -6750,6 +6965,7 @@ install_dnstt() {
     if [[ ! -s "$DNSTT_KEYS_DIR/server.key" || ! -s "$DNSTT_KEYS_DIR/server.pub" ]]; then
         tdz_progress_failed
         echo -e "${C_RED}[ERROR] Secure service configuration failed.${C_RESET}"
+        rollback_dnstt_failed_install false
         return
     fi
     tdz_progress_done
@@ -6785,11 +7001,38 @@ EOF
     if [[ ! -s "$DNSTT_SERVICE_FILE" || ! -s "$DNSTT_CONFIG_FILE" ]]; then
         tdz_progress_failed
         echo -e "${C_RED}[ERROR] Service configuration could not be applied.${C_RESET}"
+        rollback_dnstt_failed_install false
         return
     fi
     tdz_progress_done
 
     tdz_progress_begin 4 4 "Starting and verifying service"
+    local resolver_changed=false
+    if $disable_systemd_resolved; then
+        if ! capture_dnstt_resolver_state; then
+            tdz_progress_failed
+            echo -e "${C_RED}[ERROR] Current resolver settings could not be preserved.${C_RESET}"
+            rollback_dnstt_failed_install false
+            return
+        fi
+        if ! systemctl stop systemd-resolved >/dev/null 2>&1 ||
+           ! systemctl disable systemd-resolved >/dev/null 2>&1; then
+            tdz_progress_failed
+            echo -e "${C_RED}[ERROR] The DNS service could not be prepared.${C_RESET}"
+            rollback_dnstt_failed_install true
+            return
+        fi
+        chattr -i "$TDZ_RESOLV_CONF" >/dev/null 2>&1 || true
+        rm -f "$TDZ_RESOLV_CONF"
+        if ! printf 'nameserver 8.8.8.8\n' > "$TDZ_RESOLV_CONF"; then
+            tdz_progress_failed
+            echo -e "${C_RED}[ERROR] The DNS service could not be prepared.${C_RESET}"
+            rollback_dnstt_failed_install true
+            return
+        fi
+        chattr +i "$TDZ_RESOLV_CONF" >/dev/null 2>&1 || true
+        resolver_changed=true
+    fi
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable dnstt.service >/dev/null 2>&1
     systemctl start dnstt.service >/dev/null 2>&1
@@ -6801,13 +7044,14 @@ EOF
     else
         tdz_progress_failed
         echo -e "\n${C_RED}[ERROR] DNSTT service failed to start.${C_RESET}"
-        journalctl -u dnstt.service -n 15 --no-pager
+        tdz_capture_service_diagnostic dnstt.service
+        rollback_dnstt_failed_install "$resolver_changed"
     fi
 }
 
 uninstall_dnstt() {
     tdz_screen_title "UNINSTALL DNSTT"
-    if [ ! -f "$DNSTT_SERVICE_FILE" ]; then
+    if [[ ! -f "$DNSTT_SERVICE_FILE" && ! -f "$DNSTT_BINARY" && ! -d "$DNSTT_KEYS_DIR" ]]; then
         echo -e "${C_YELLOW}[INFO] DNSTT does not appear to be installed, skipping.${C_RESET}"
         return
     fi
@@ -6827,16 +7071,13 @@ uninstall_dnstt() {
         echo -e "${C_YELLOW}[WARNING] DNS records (NS + A) for $NS_DOMAIN / $TUNNEL_DOMAIN were configured manually.${C_RESET}"
         echo -e "${C_YELLOW}   Please delete them at your DNS provider if no longer needed.${C_RESET}"
     fi
-    echo -e "${C_BLUE}Removing service files and binaries...${C_RESET}"
+    restore_dnstt_resolver_state
     rm -f "$DNSTT_SERVICE_FILE"
     rm -f "$DNSTT_BINARY"
     rm -rf "$DNSTT_KEYS_DIR"
     rm -f "$DNSTT_CONFIG_FILE"
-    systemctl daemon-reload
+    systemctl daemon-reload >/dev/null 2>&1
     
-    echo -e "${C_YELLOW}[INFO] Making /etc/resolv.conf writable again...${C_RESET}"
-    chattr -i /etc/resolv.conf &>/dev/null
-
     echo -e "\n${C_GREEN}[OK] DNSTT has been successfully uninstalled.${C_RESET}"
 }
 
@@ -6996,25 +7237,31 @@ EOF
         fi
     else
         tdz_progress_failed
-        echo -e "\n${C_RED}[ERROR] ZiVPN Service failed to start. Check logs: journalctl -u zivpn.service${C_RESET}"
+        echo -e "\n${C_RED}[ERROR] ZiVPN service failed to start.${C_RESET}"
+        tdz_capture_service_diagnostic zivpn.service
     fi
 }
 
 uninstall_zivpn() {
-    clear; show_banner
-    tdz_screen_title "UNINSTALL ZIVPN"
+    if [[ "$UNINSTALL_MODE" != "silent" ]]; then
+        clear; show_banner
+        tdz_screen_title "UNINSTALL ZIVPN"
+    fi
     
-    if [ ! -f "$ZIVPN_SERVICE_FILE" ] && [ ! -f "$ZIVPN_BIN" ]; then
+    if [[ ! -f "$ZIVPN_SERVICE_FILE" && ! -f "$ZIVPN_BIN" && ! -d "$ZIVPN_DIR" ]]; then
         echo -e "\n${C_YELLOW}[INFO] ZiVPN does not appear to be installed.${C_RESET}"
         return
     fi
 
-    read -p "  Are you sure you want to uninstall ZiVPN? (y/n): " confirm
+    local confirm="y"
+    if [[ "$UNINSTALL_MODE" != "silent" ]]; then
+        read -p "  Are you sure you want to uninstall ZiVPN? (y/n): " confirm
+    fi
     if [[ "$confirm" != "y" ]]; then echo -e "${C_YELLOW}Cancelled.${C_RESET}"; return; fi
 
     echo -e "\n${C_BLUE}Stopping services...${C_RESET}"
-    systemctl stop zivpn.service 2>/dev/null
-    systemctl disable zivpn.service 2>/dev/null
+    systemctl stop zivpn.service >/dev/null 2>&1
+    systemctl disable zivpn.service >/dev/null 2>&1
 
     local iface
     iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
@@ -7027,20 +7274,17 @@ uninstall_zivpn() {
     rm -rf "$ZIVPN_DIR"
     rm -f "$ZIVPN_BIN"
     
-    systemctl daemon-reload
+    systemctl daemon-reload >/dev/null 2>&1
     
-    # Clean cache (from original uninstall script logic)
-    echo -e "${C_BLUE}Cleaning memory cache...${C_RESET}"
-    sync; echo 3 > /proc/sys/vm/drop_caches
-
     echo -e "\n${C_GREEN}[OK] ZiVPN Uninstalled Successfully.${C_RESET}"
 }
 
 purge_nginx() {
     local mode="$1"
+    local purge_failed=false
     if [[ "$mode" != "silent" ]]; then
         clear; show_banner
-        tdz_screen_title "PURGE INTERNAL NGINX" "Remove Nginx and its TDZ edge configuration." "$C_DANGER"
+        tdz_screen_title "PURGE INTERNAL NGINX" "Remove Nginx and its managed edge configuration." "$C_DANGER"
         if ! command -v nginx &> /dev/null; then
             rm -f "$NGINX_PORTS_FILE"
             echo -e "\n${C_YELLOW}[INFO] Nginx is not installed. Nothing to do.${C_RESET}"
@@ -7060,7 +7304,7 @@ purge_nginx() {
     systemctl stop nginx >/dev/null 2>&1
     systemctl disable nginx >/dev/null 2>&1
     echo -e "\n${C_BLUE}Purging Nginx packages...${C_RESET}"
-    tdz_apt_purge nginx nginx-common >/dev/null 2>&1
+    tdz_apt_purge nginx nginx-common >/dev/null 2>&1 || purge_failed=true
     apt-get autoremove -y >/dev/null 2>&1
     echo -e "\n${C_BLUE}Removing leftover files...${C_RESET}"
     rm -f /etc/ssl/certs/nginx-selfsigned.pem
@@ -7071,9 +7315,17 @@ purge_nginx() {
     rm -f "${NGINX_CONFIG_FILE}.bak.selfsigned"
     rm -f "${NGINX_CONFIG_FILE}.bak.tdztunnel"
     rm -f "$NGINX_PORTS_FILE"
-    if [[ "$mode" != "silent" ]]; then
-        echo -e "\n${C_GREEN}[OK] Internal Nginx proxy purged. Shared TDZ SSH TUNNEL certificates were kept.${C_RESET}"
+    if dpkg-query -W -f='${Status}' nginx 2>/dev/null | grep -q 'install ok installed'; then
+        purge_failed=true
     fi
+    if [[ "$purge_failed" == true ]]; then
+        [[ "$mode" == "silent" ]] || tdz_message ERROR "Nginx package cleanup requires attention."
+        return 1
+    fi
+    if [[ "$mode" != "silent" ]]; then
+        echo -e "\n${C_GREEN}[OK] Internal Nginx proxy purged. Shared certificates were kept.${C_RESET}"
+    fi
+    return 0
 }
 
 install_nginx_proxy() {
@@ -7083,7 +7335,7 @@ install_nginx_proxy() {
     echo -e "\n${C_CYAN}This keeps HAProxy on ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT} and rewrites the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
 
     if [ ! -s "$TDZ_SSL_CERT_FILE" ] || [ ! -s "$SSL_CERT_CHAIN_FILE" ] || [ ! -s "$SSL_CERT_KEY_FILE" ]; then
-        echo -e "\n${C_YELLOW}[WARNING] No shared TDZ SSH TUNNEL certificate was found.${C_RESET}"
+        echo -e "\n${C_YELLOW}[WARNING] No shared certificate was found.${C_RESET}"
         echo -e "${C_DIM}Running the full HAProxy edge installer so the certificate and both services stay aligned.${C_RESET}"
         install_ssl_tunnel
         return
@@ -7221,14 +7473,14 @@ nginx_proxy_menu() {
         1) 
             if systemctl is-active --quiet nginx; then
                 echo -e "\n${C_BLUE}Stopping Nginx...${C_RESET}"
-                systemctl stop nginx
+                systemctl stop nginx >/dev/null 2>&1
                 echo -e "${C_GREEN}[OK] Nginx stopped.${C_RESET}"
                 if systemctl is-active --quiet haproxy; then
                     echo -e "${C_YELLOW}[WARNING] HAProxy is still running, but web traffic that depends on internal Nginx will not work until Nginx starts again.${C_RESET}"
                 fi
             else
                 echo -e "\n${C_BLUE}[INFO] Starting Nginx...${C_RESET}"
-                systemctl start nginx
+                systemctl start nginx >/dev/null 2>&1
                 if systemctl is-active --quiet nginx; then
                     echo -e "${C_GREEN}[OK] Nginx started.${C_RESET}"
                 else
@@ -7240,9 +7492,9 @@ nginx_proxy_menu() {
         2)
             echo -e "\n${C_BLUE}Restarting Nginx and HAProxy...${C_RESET}"
             local restart_ok=true
-            systemctl restart nginx || restart_ok=false
+            systemctl restart nginx >/dev/null 2>&1 || restart_ok=false
             if command -v haproxy &> /dev/null; then
-                systemctl restart haproxy || restart_ok=false
+                systemctl restart haproxy >/dev/null 2>&1 || restart_ok=false
             else
                 restart_ok=false
             fi
@@ -7333,27 +7585,30 @@ install_xui_panel() {
 }
 
 uninstall_xui_panel() {
-    clear; show_banner
-    tdz_screen_title "UNINSTALL X-UI PANEL" "Remove the patched panel and its installed files." "$C_DANGER"
-    if ! command -v x-ui &> /dev/null; then
+    local mode="${1:-${UNINSTALL_MODE:-interactive}}"
+    if [[ "$mode" != "silent" ]]; then
+        clear; show_banner
+        tdz_screen_title "UNINSTALL X-UI PANEL" "Remove the patched panel and its installed files." "$C_DANGER"
+    fi
+    if ! command -v x-ui &> /dev/null && [[ ! -e /usr/local/bin/x-ui && ! -d /usr/local/x-ui && ! -d /etc/x-ui ]]; then
         echo -e "\n${C_YELLOW}[INFO] X-UI does not appear to be installed.${C_RESET}"
         return
     fi
-    read -p "  Are you sure you want to thoroughly uninstall X-UI? (y/n): " confirm
+    local confirm="y"
+    if [[ "$mode" != "silent" ]]; then
+        read -p "  Are you sure you want to thoroughly uninstall X-UI? (y/n): " confirm
+    fi
     if [[ "$confirm" == "y" ]]; then
-        echo -e "\n${C_BLUE}Running the default X-UI uninstaller first...${C_RESET}"
-        x-ui uninstall >/dev/null 2>&1
-        echo -e "\n${C_BLUE}Performing a full cleanup to ensure complete removal...${C_RESET}"
-        echo " - Stopping and disabling x-ui service..."
+        if [[ "$mode" != "silent" ]]; then
+            x-ui uninstall >/dev/null 2>&1 || true
+        fi
         systemctl stop x-ui >/dev/null 2>&1
         systemctl disable x-ui >/dev/null 2>&1
-        echo " - Removing x-ui files and directories..."
         rm -f /etc/systemd/system/x-ui.service
         rm -f /usr/local/bin/x-ui
         rm -rf /usr/local/x-ui/
         rm -rf /etc/x-ui/
-        echo " - Reloading systemd daemon..."
-        systemctl daemon-reload
+        systemctl daemon-reload >/dev/null 2>&1
         echo -e "\n${C_GREEN}[OK] X-UI has been thoroughly uninstalled.${C_RESET}"
     else
         tdz_message CANCELLED "Uninstallation cancelled."
@@ -7646,35 +7901,41 @@ refresh_dashboard_cache() {
 }
 
 show_banner() {
+    tdz_refresh_box_width
     refresh_banner_cache
     refresh_dashboard_cache
     [[ -t 1 ]] && clear
     echo
-    # ╔══ Top double-border banner ══╗  (inner width 64)
-    echo -e "  ${C_CYAN}╔════════════════════════════════════════════════════════════════╗${C_RESET}"
-    # Title line — centered, 64 visible chars
-    local title_content="${C_CYAN}TDZ SSH TUNNEL v0.0.1 BETA${C_RESET}"
-    local title_clean="TDZ SSH TUNNEL v0.0.1 BETA"
-    local title_pad=$(( (64 - ${#title_clean}) / 2 ))
+    printf "  %s╔" "$C_CYAN"
+    printf '═%.0s' $(seq 1 "$TDZ_BOX_WIDTH")
+    printf "╗%s\n" "$C_RESET"
+    # Title and attribution stay centered at desktop and mobile widths.
+    local title_clean title_content
+    title_clean=$(_tdz_fit "TDZ SSH TUNNEL v0.0.1 BETA" "$TDZ_BOX_WIDTH")
+    title_content="${C_CYAN}${title_clean}${C_RESET}"
+    local title_pad=$(( (TDZ_BOX_WIDTH - ${#title_clean}) / 2 ))
     [[ $title_pad -lt 0 ]] && title_pad=0
     local title_lpad="" title_rpad=""
     [[ $title_pad -gt 0 ]] && printf -v title_lpad "%${title_pad}s" ""
-    local title_rpad_len=$(( 64 - ${#title_clean} - title_pad ))
+    local title_rpad_len=$(( TDZ_BOX_WIDTH - ${#title_clean} - title_pad ))
     [[ $title_rpad_len -lt 0 ]] && title_rpad_len=0
     [[ $title_rpad_len -gt 0 ]] && printf -v title_rpad "%${title_rpad_len}s" ""
     printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$title_lpad" "$title_content" "$title_rpad"
     # Subtitle line — centered
-    local sub_content="${C_GRAY}Powered By: t.me/TuhinBroh${C_RESET}"
-    local sub_clean="Powered By: t.me/TuhinBroh"
-    local sub_pad=$(( (64 - ${#sub_clean}) / 2 ))
+    local sub_clean sub_content
+    sub_clean=$(_tdz_fit "Powered By: t.me/TuhinBroh" "$TDZ_BOX_WIDTH")
+    sub_content="${C_GRAY}${sub_clean}${C_RESET}"
+    local sub_pad=$(( (TDZ_BOX_WIDTH - ${#sub_clean}) / 2 ))
     [[ $sub_pad -lt 0 ]] && sub_pad=0
     local sub_lpad="" sub_rpad=""
     [[ $sub_pad -gt 0 ]] && printf -v sub_lpad "%${sub_pad}s" ""
-    local sub_rpad_len=$(( 64 - ${#sub_clean} - sub_pad ))
+    local sub_rpad_len=$(( TDZ_BOX_WIDTH - ${#sub_clean} - sub_pad ))
     [[ $sub_rpad_len -lt 0 ]] && sub_rpad_len=0
     [[ $sub_rpad_len -gt 0 ]] && printf -v sub_rpad "%${sub_rpad_len}s" ""
     printf "  ${C_CYAN}║${C_RESET}%s%s%s${C_CYAN}║${C_RESET}\n" "$sub_lpad" "$sub_content" "$sub_rpad"
-    echo -e "  ${C_CYAN}╚════════════════════════════════════════════════════════════════╝${C_RESET}"
+    printf "  %s╚" "$C_CYAN"
+    printf '═%.0s' $(seq 1 "$TDZ_BOX_WIDTH")
+    printf "╝%s\n" "$C_RESET"
 }
 
 protocol_menu() {
@@ -7745,103 +8006,253 @@ protocol_menu() {
     done
 }
 
+tdz_remove_managed_trial_jobs() {
+    command -v atq >/dev/null 2>&1 && command -v atrm >/dev/null 2>&1 || return 0
+    local job_id
+    local cleanup_failed=false
+    while read -r job_id _rest; do
+        [[ "$job_id" =~ ^[0-9]+$ ]] || continue
+        if at -c "$job_id" 2>/dev/null | grep -Fq "$TRIAL_CLEANUP_SCRIPT"; then
+            atrm "$job_id" >/dev/null 2>&1 || cleanup_failed=true
+        fi
+    done < <(atq 2>/dev/null)
+    [[ "$cleanup_failed" != true ]]
+}
+
+tdz_remove_auto_reboot_job() {
+    command -v crontab >/dev/null 2>&1 || return 0
+    local current filtered
+    local cleanup_failed=false
+    current=$(mktemp) || return 1
+    filtered=$(mktemp) || { rm -f "$current"; return 1; }
+    if crontab -l > "$current" 2>/dev/null; then
+        grep -vF "$AUTO_REBOOT_CRON_TAG" "$current" |
+            grep -vE '^[[:space:]]*0[[:space:]]+0[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+systemctl[[:space:]]+reboot[[:space:]]*$' \
+                > "$filtered" || true
+        if [[ -s "$filtered" ]]; then
+            crontab "$filtered" >/dev/null 2>&1 || cleanup_failed=true
+        else
+            crontab -r >/dev/null 2>&1 || cleanup_failed=true
+        fi
+    fi
+    rm -f "$current" "$filtered"
+    [[ "$cleanup_failed" != true ]]
+}
+
+tdz_uninstall_background_services() {
+    local service
+    local cleanup_failed=false
+    for service in tdztunnel-limiter tdztunnel-bandwidth tdz-ws-ssh-bridge \
+        udp-custom udpgw tdzproxy; do
+        systemctl stop "$service" >/dev/null 2>&1 || true
+        systemctl disable "$service" >/dev/null 2>&1 || true
+        systemctl is-active --quiet "$service" && cleanup_failed=true
+    done
+    if command -v pm2 >/dev/null 2>&1; then
+        pm2 delete "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1 || true
+        pm2 save >/dev/null 2>&1 || true
+        pm2 describe "$AUTO_BACKUP_PM2_NAME" >/dev/null 2>&1 && cleanup_failed=true
+    fi
+    tdz_remove_managed_trial_jobs || cleanup_failed=true
+    rm -f "$LIMITER_SERVICE" "$LIMITER_SCRIPT" "$BANDWIDTH_SERVICE" "$BANDWIDTH_SCRIPT"
+    rm -rf "$LEGACY_BANDWIDTH_DIR"
+    rm -f "$TRIAL_CLEANUP_SCRIPT"
+    [[ "$cleanup_failed" != true ]]
+}
+
+tdz_remove_legacy_dead_components() {
+    rm -f "$LEGACY_UDP_SERVICE" "$LEGACY_UDPGW_SERVICE" \
+        "$LEGACY_UDPGW_BINARY" "$LEGACY_PROXY_SERVICE" \
+        "$LEGACY_PROXY_BINARY" "$LEGACY_PROXY_CONFIG"
+    rm -rf "$LEGACY_UDP_DIR"
+}
+
+tdz_uninstall_optional_components() {
+    local cleanup_failed=false
+    if [[ -r "$EDGE_CERT_INFO_FILE" ]]; then
+        load_edge_cert_info
+        if [[ "$EDGE_CERT_MODE" == "certbot" && -n "$EDGE_DOMAIN" ]] && command -v certbot >/dev/null 2>&1; then
+            certbot delete --cert-name "$EDGE_DOMAIN" --non-interactive >>"$TDZ_CERTIFICATE_LOG" 2>&1 || cleanup_failed=true
+        fi
+    fi
+    if declare -F tdz_openvpn_uninstall >/dev/null 2>&1; then
+        tdz_openvpn_uninstall silent || cleanup_failed=true
+    fi
+    uninstall_zivpn || cleanup_failed=true
+    uninstall_dnstt || cleanup_failed=true
+    uninstall_badvpn || cleanup_failed=true
+    tdz_remove_legacy_dead_components || cleanup_failed=true
+    uninstall_ssl_tunnel || cleanup_failed=true
+    purge_nginx silent || cleanup_failed=true
+    rm -rf /etc/nginx
+    uninstall_xui_panel silent || cleanup_failed=true
+    if dpkg-query -W -f='${Status}' haproxy 2>/dev/null | grep -q 'install ok installed'; then
+        tdz_apt_purge haproxy || cleanup_failed=true
+    fi
+    rm -rf /etc/haproxy
+    if dpkg-query -W -f='${Status}' haproxy 2>/dev/null | grep -q 'install ok installed'; then
+        cleanup_failed=true
+    fi
+    [[ "$cleanup_failed" != true ]]
+}
+
+tdz_uninstall_system_integration() {
+    local cleanup_failed=false
+    remove_ssh_auth_session_hook >/dev/null 2>&1 || cleanup_failed=true
+    tdz_remove_recorded_firewall_rules || cleanup_failed=true
+    tdz_remove_auto_reboot_job || cleanup_failed=true
+    rm -f "$LOGIN_INFO_SCRIPT" "$SSHD_TDZ_CONFIG" "$SSH_BANNER_FILE" || cleanup_failed=true
+    rm -rf "$SSH_AUTH_SESSION_DIR" || cleanup_failed=true
+    chattr -i "$TDZ_RESOLV_CONF" >/dev/null 2>&1 || true
+    systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl reset-failed >/dev/null 2>&1 || true
+    [[ "$cleanup_failed" != true ]]
+}
+
+tdz_uninstall_application_files() {
+    local diagnostic
+    rm -f "$AUTO_BACKUP_CONF" "$AUTO_BACKUP_SCRIPT" "$AUTO_BACKUP_LOG"
+    rm -rf "$AUTO_BACKUP_DIR" "$BADVPN_BUILD_DIR"
+    rm -rf "$DB_DIR" "$TDZ_LIB_DIR"
+    rm -f "$WS_SSH_BRIDGE_SCRIPT" "$WS_SSH_BRIDGE_SERVICE"
+    for diagnostic in "$TDZ_PACKAGE_LOG" "$TDZ_CERTIFICATE_LOG" "$TDZ_SERVICE_LOG" \
+        "${TDZ_OVPN_DIAG_LOG:-/var/log/tdz-openvpn-setup.log}"; do
+        if [[ -s "$diagnostic" ]]; then
+            printf '\n--- %s ---\n' "$diagnostic" >> "$TDZ_UNINSTALL_LOG"
+            tail -n 250 "$diagnostic" >> "$TDZ_UNINSTALL_LOG" 2>/dev/null || true
+        fi
+        rm -f "$diagnostic"
+    done
+    rm -f /var/log/tdz-panel-install.log
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+tdz_verify_uninstall_cleanup() {
+    local path unit
+    local -a leftovers=() managed_paths=(
+        "$DB_DIR" "$TDZ_LIB_DIR" \
+        "$LIMITER_SERVICE" "$LIMITER_SCRIPT" "$BANDWIDTH_SERVICE" "$BANDWIDTH_SCRIPT" \
+        "$TRIAL_CLEANUP_SCRIPT" "$SSHD_TDZ_CONFIG" "$SSH_AUTH_SESSION_DIR" \
+        "$SSH_BANNER_FILE" "$LOGIN_INFO_SCRIPT" \
+        "$AUTO_BACKUP_CONF" "$AUTO_BACKUP_SCRIPT" "$AUTO_BACKUP_LOG" "$AUTO_BACKUP_DIR" \
+        "$BADVPN_SERVICE_FILE" "$BADVPN_BUILD_DIR" "$DNSTT_SERVICE_FILE" "$DNSTT_BINARY" \
+        "$DNSTT_KEYS_DIR" "$ZIVPN_SERVICE_FILE" "$ZIVPN_BIN" "$ZIVPN_DIR" \
+        "$WS_SSH_BRIDGE_SERVICE" "$WS_SSH_BRIDGE_SCRIPT" \
+        "$LEGACY_UDP_DIR" "$LEGACY_UDP_SERVICE" "$LEGACY_UDPGW_BINARY" \
+        "$LEGACY_UDPGW_SERVICE" "$LEGACY_PROXY_BINARY" "$LEGACY_PROXY_SERVICE" \
+        "$LEGACY_PROXY_CONFIG" \
+        /etc/nginx /etc/haproxy /usr/local/bin/x-ui /usr/local/x-ui /etc/x-ui \
+        /etc/systemd/system/x-ui.service
+    )
+    if [[ -n "${TDZ_OVPN_ROOT:-}" ]]; then
+        managed_paths+=(
+            "$TDZ_OVPN_ROOT" "$TDZ_OVPN_PORTAL_BASE" "$TDZ_OVPN_PAM_SERVICE"
+            "$TDZ_OVPN_SYSCTL" "$TDZ_OVPN_FIREWALL"
+        )
+        if declare -F tdz_openvpn_managed_runtime_files >/dev/null 2>&1; then
+            while IFS= read -r path; do
+                [[ -n "$path" ]] && managed_paths+=("$path")
+            done < <(tdz_openvpn_managed_runtime_files)
+        fi
+    fi
+    for path in "${managed_paths[@]}"; do
+        [[ -e "$path" || -L "$path" ]] && leftovers+=("$path")
+    done
+    for unit in tdztunnel-limiter tdztunnel-bandwidth tdz-ws-ssh-bridge \
+        badvpn dnstt zivpn haproxy nginx x-ui udp-custom udpgw tdzproxy \
+        tdz-openvpn-network tdz-openvpn-tcp tdz-openvpn-udp tdz-openvpn-http \
+        tdz-openvpn-wss tdz-openvpn-ssl tdz-openvpn-portal tdz-openvpn-accounting; do
+        if systemctl is-active --quiet "$unit.service"; then
+            leftovers+=("active service: $unit.service")
+        fi
+    done
+    if (( ${#leftovers[@]} > 0 )); then
+        printf 'Cleanup verification found remaining items:\n' >> "$TDZ_UNINSTALL_LOG"
+        printf '  %s\n' "${leftovers[@]}" >> "$TDZ_UNINSTALL_LOG"
+        return 1
+    fi
+    rm -f "$TDZ_MENU_BINARY" || return 1
+    [[ ! -e "$TDZ_MENU_BINARY" && ! -L "$TDZ_MENU_BINARY" ]]
+}
+
 uninstall_script() {
     clear; show_banner
     tdz_screen_title "UNINSTALL TDZ SSH TUNNEL" \
         "Permanently remove the script, services, and configuration." "$C_DANGER"
-    echo
-    tdz_message WARNING "This removes the installed TDZ components, services, and configuration."
-    tdz_message WARNING "This action cannot be undone."
-    read -p "  Type 'yes' to confirm and proceed with uninstallation: " confirm
+    tdz_message WARNING "This permanently removes managed services, configuration, backups, and optional components. It cannot be undone."
+    read -r -p "  Type 'yes' to confirm and proceed with uninstallation: " confirm
     if [[ "$confirm" != "yes" ]]; then
         tdz_message CANCELLED "Uninstallation cancelled."
         return
     fi
+
     local -a removable_users=()
-    local remove_users_confirm
-    local remove_users_on_uninstall=false
+    local remove_users_confirm="n" remove_users_on_uninstall=false
+    local uninstall_failed=false
     mapfile -t removable_users < <(get_tdztunnel_known_users)
     if [[ ${#removable_users[@]} -gt 0 ]]; then
-        echo -e "\n${C_YELLOW}TDZ SSH TUNNEL SSH users detected on this VPS:${C_RESET} ${removable_users[*]}"
-        read -p "  Do you also want to permanently delete these SSH users before uninstalling? (y/n): " remove_users_confirm
-        if [[ "$remove_users_confirm" == "y" || "$remove_users_confirm" == "Y" ]]; then
-            remove_users_on_uninstall=true
-        fi
+        echo -e "\n${C_YELLOW}Managed SSH users:${C_RESET} ${removable_users[*]}"
+        read -r -p "  Permanently delete these SSH users too? (y/n): " remove_users_confirm
+        [[ "$remove_users_confirm" == "y" || "$remove_users_confirm" == "Y" ]] && remove_users_on_uninstall=true
     fi
+
     export UNINSTALL_MODE="silent"
+    mkdir -p "$(dirname "$TDZ_UNINSTALL_LOG")" 2>/dev/null || true
+    : > "$TDZ_UNINSTALL_LOG"
+    chmod 600 "$TDZ_UNINSTALL_LOG" 2>/dev/null || true
+    local TDZ_ACTION_LOG="$TDZ_UNINSTALL_LOG"
     echo
     tdz_section "UNINSTALLATION PROGRESS"
-    
+
     if [[ "$remove_users_on_uninstall" == "true" ]]; then
-        echo -e "\n${C_BLUE}Removing TDZ SSH TUNNEL SSH users before uninstall...${C_RESET}"
-        delete_tdztunnel_user_accounts "${removable_users[@]}"
+        tdz_progress_run 1 6 "Removing selected accounts" delete_tdztunnel_user_accounts "${removable_users[@]}" || uninstall_failed=true
+    else
+        tdz_progress_run 1 6 "Preserving managed accounts" true || uninstall_failed=true
     fi
-    
-    echo -e "\n${C_BLUE}Removing active limiter service...${C_RESET}"
-    systemctl stop tdztunnel-limiter &>/dev/null
-    systemctl disable tdztunnel-limiter &>/dev/null
-    rm -f "$LIMITER_SERVICE"
-    rm -f "$LIMITER_SCRIPT"
-    
-    echo -e "\n${C_BLUE}Removing bandwidth monitoring service...${C_RESET}"
-    systemctl stop tdztunnel-bandwidth &>/dev/null
-    systemctl disable tdztunnel-bandwidth &>/dev/null
-    rm -f "$BANDWIDTH_SERVICE"
-    rm -f "$BANDWIDTH_SCRIPT"
-    rm -rf "$LEGACY_BANDWIDTH_DIR"
-    rm -f "$TRIAL_CLEANUP_SCRIPT"
-    
-    echo -e "\n${C_BLUE}Removing SSH login banner...${C_RESET}"
-    remove_ssh_auth_session_hook >/dev/null 2>&1 || true
-    rm -f "$LOGIN_INFO_SCRIPT"
-    rm -f "$SSHD_TDZ_CONFIG"
-    rm -rf "$SSH_AUTH_SESSION_DIR"
-    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null
-    
-    chattr -i /etc/resolv.conf &>/dev/null
+    tdz_progress_run 2 6 "Stopping background services" tdz_uninstall_background_services || uninstall_failed=true
+    tdz_progress_run 3 6 "Removing optional components" tdz_uninstall_optional_components || uninstall_failed=true
+    tdz_progress_run 4 6 "Restoring system integration" tdz_uninstall_system_integration || uninstall_failed=true
+    tdz_progress_run 5 6 "Removing application files" tdz_uninstall_application_files || uninstall_failed=true
+    tdz_progress_run 6 6 "Verifying cleanup" tdz_verify_uninstall_cleanup || uninstall_failed=true
 
-    if declare -F tdz_openvpn_uninstall >/dev/null 2>&1; then
-        tdz_openvpn_uninstall silent
+    if [[ "$uninstall_failed" == true ]]; then
+        tdz_message ERROR "Cleanup finished with one or more items requiring attention."
+        echo -e "${C_DIM}Diagnostic details: ${TDZ_UNINSTALL_LOG}${C_RESET}"
+        exit 1
     fi
-    purge_nginx "silent"
-    uninstall_dnstt
-    uninstall_badvpn
-    uninstall_ssl_tunnel
-    uninstall_zivpn
-
-    echo -e "\n${C_BLUE}Reloading systemd daemon...${C_RESET}"
-    systemctl daemon-reload
-    
-    echo -e "\n${C_BLUE}Removing script and configuration files...${C_RESET}"
-    rm -rf "$BADVPN_BUILD_DIR"
-    rm -rf "$DB_DIR"
-    rm -rf "$TDZ_LIB_DIR"
-    rm -f "$(command -v menu)"
-    
+    rm -f "$TDZ_UNINSTALL_LOG"
     tdz_message OK "TDZ SSH TUNNEL was removed successfully."
-    echo -e "  ${C_DIM}All associated files and services were removed. The 'menu' command is no longer available.${C_RESET}"
+    echo -e "  ${C_DIM}Managed services, files, and configuration were verified as removed.${C_RESET}"
     exit 0
 }
 
 # --- NEW FEATURES ---
 
+ensure_trial_scheduler() {
+    tdz_apt_install at >/dev/null 2>&1 || return 1
+    systemctl enable atd >/dev/null 2>&1 || return 1
+    systemctl start atd >/dev/null 2>&1 || return 1
+    systemctl is-active --quiet atd
+}
+
 create_trial_account() {
     clear; show_banner
-    
-    # Ensure 'at' daemon is available
+
     if ! command -v at &>/dev/null; then
-        echo -e "${C_YELLOW}[WARNING] 'at' command not found. Installing...${C_RESET}"
-        tdz_apt_install at >/dev/null 2>&1 || {
-            echo -e "${C_RED}[ERROR] Failed to install 'at'. Cannot schedule auto-expiry.${C_RESET}"
+        echo
+        tdz_section "PREPARATION"
+        if ! tdz_progress_run 1 1 "Preparing scheduling service" ensure_trial_scheduler; then
+            tdz_message ERROR "The trial scheduling service could not be prepared."
+            return
+        fi
+    fi
+
+    if ! systemctl is-active --quiet atd; then
+        systemctl start atd >/dev/null 2>&1 || {
+            tdz_message ERROR "The trial scheduling service could not be started."
             return
         }
-        systemctl enable atd &>/dev/null
-        systemctl start atd &>/dev/null
-    fi
-    
-    # Ensure atd is running
-    if ! systemctl is-active --quiet atd; then
-        systemctl start atd &>/dev/null
     fi
     
     echo
@@ -8386,7 +8797,7 @@ traffic_monitor_menu() {
     tdz_box_divider
     tdz_menu1 "[ 1]" "Live Monitor (No Installation)"
     tdz_menu1 "[ 2]" "Total Traffic Since Boot"
-    tdz_menu1 "[ 3]" "Daily and Monthly Logs (vnStat)"
+    tdz_menu1 "[ 3]" "Daily and Monthly History"
     tdz_box_divider
     tdz_menu1 "[ 0]" "Return"
     tdz_box_bot
@@ -8413,25 +8824,29 @@ traffic_monitor_menu() {
             press_enter
             ;;
         3) 
-           # vnStat Logic
            if ! command -v vnstat &> /dev/null; then
-               echo -e "\n${C_YELLOW}[WARNING] vnStat is not installed.${C_RESET}"
-               echo -e "   This tool provides persistent history (Daily/Monthly reports)."
-               echo -e "   It is lightweight but requires installation."
-               read -p "  Install vnStat now? (y/n): " confirm
+               tdz_message INFO "Persistent daily and monthly traffic history needs a one-time service setup."
+               read -p "  Prepare traffic history now? (y/n): " confirm
                 if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                     echo -e "\n${C_BLUE}Installing vnStat...${C_RESET}"
-                     tdz_apt_install vnstat >/dev/null 2>&1 || {
-                         echo -e "${C_RED}[ERROR] Failed to install vnStat.${C_RESET}"
-                         sleep 1
-                         return
-                     }
-                     systemctl enable vnstat >/dev/null 2>&1
-                     systemctl restart vnstat >/dev/null 2>&1
+                    echo
+                    tdz_section "PREPARATION"
+                    tdz_progress_begin 1 1 "Preparing traffic history"
+                    if ! tdz_apt_install vnstat >/dev/null 2>&1; then
+                        tdz_progress_failed
+                        tdz_message ERROR "Traffic history could not be prepared."
+                        return
+                    fi
+                    systemctl enable vnstat >/dev/null 2>&1
+                    systemctl restart vnstat >/dev/null 2>&1
                     local default_iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
                     vnstat --add -i "$default_iface" >/dev/null 2>&1
-                    echo -e "${C_GREEN}[OK] Installed.${C_RESET}"
-                    sleep 1
+                    if systemctl is-active --quiet vnstat; then
+                        tdz_progress_done
+                    else
+                        tdz_progress_failed
+                        tdz_message ERROR "Traffic history could not be started."
+                        return
+                    fi
                else
                     return
                fi
@@ -8599,7 +9014,7 @@ auto_reboot_menu() {
     clear; show_banner
     # Check status
     local cron_check
-    cron_check=$(crontab -l 2>/dev/null | grep "systemctl reboot")
+    cron_check=$(crontab -l 2>/dev/null | grep -E "${AUTO_REBOOT_CRON_TAG}|^[[:space:]]*0[[:space:]]+0[[:space:]]+\\*[[:space:]]+\\*[[:space:]]+\\*[[:space:]]+systemctl[[:space:]]+reboot[[:space:]]*$")
     local status="Disabled" status_color="$C_RED"
     if [[ -n "$cron_check" ]]; then
         status="Active (Midnight)"
@@ -8623,14 +9038,14 @@ auto_reboot_menu() {
     case $r_choice in
         1)
             # Remove existing to prevent duplicates
-            (crontab -l 2>/dev/null | grep -v "systemctl reboot") | crontab -
+            tdz_remove_auto_reboot_job
             # Add new job
-            (crontab -l 2>/dev/null; echo "0 0 * * * systemctl reboot") | crontab -
+            (crontab -l 2>/dev/null; echo "0 0 * * * systemctl reboot $AUTO_REBOOT_CRON_TAG") | crontab -
             echo -e "\n${C_GREEN}[OK] Auto-reboot scheduled for every day at 00:00.${C_RESET}"
             press_enter
             ;;
         2)
-            (crontab -l 2>/dev/null | grep -v "systemctl reboot") | crontab -
+            tdz_remove_auto_reboot_job
             echo -e "\n${C_GREEN}[OK] Auto-reboot disabled.${C_RESET}"
             press_enter
             ;;

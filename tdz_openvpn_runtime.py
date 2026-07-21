@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TDZ OpenVPN account hooks, session accounting, and management control.
+"""OpenVPN account hooks, session accounting, and management control.
 
 The helper intentionally has no network-facing API.  OpenVPN invokes the
 ``connect`` and ``disconnect`` commands, while the TDZ limiter invokes
@@ -580,35 +580,35 @@ def command_connect() -> int:
     # also export username at that hook.
     username = (os.environ.get("username") or os.environ.get("common_name") or "").strip()
     if not _safe_username(username) or username == "root":
-        print("TDZ account is not allowed", file=sys.stderr)
+        print("account is not allowed", file=sys.stderr)
         return 1
     instance = os.environ.get("TDZ_OVPN_INSTANCE", "").strip()
     trusted_ip = (os.environ.get("trusted_ip") or os.environ.get("trusted_ip6") or "").strip()
     trusted_port = os.environ.get("trusted_port", "").strip()
     if instance not in {"tcp", "udp"} or not trusted_ip or not trusted_port.isdigit():
-        print("TDZ OpenVPN hook context is incomplete", file=sys.stderr)
+        print("OpenVPN hook context is incomplete", file=sys.stderr)
         return 1
     signature = peer_signature(username, instance, trusted_ip, trusted_port)
     with state_lock():
         accounts = read_accounts()
         account = accounts.get(username)
         if account is None:
-            print("TDZ account was not found", file=sys.stderr)
+            print("account was not found", file=sys.stderr)
             return 1
         if account_locked(username):
-            print("TDZ account is locked", file=sys.stderr)
+            print("account is locked", file=sys.stderr)
             return 1
         if account.account_type == "pending":
             try:
                 account = activate_pending(account)
             except (OSError, RuntimeError, ValueError):
-                print("TDZ first-use activation failed", file=sys.stderr)
+                print("first-use activation failed", file=sys.stderr)
                 return 1
         if account_expired(account):
-            print("TDZ account has expired", file=sys.stderr)
+            print("account has expired", file=sys.stderr)
             return 1
         if quota_exceeded(account):
-            print("TDZ bandwidth limit reached", file=sys.stderr)
+            print("bandwidth limit reached", file=sys.stderr)
             return 1
         sessions = live_sessions()
         cleanup_admissions(sessions)
@@ -629,7 +629,7 @@ def command_connect() -> int:
             + pending_count
             >= account.limit
         ):
-            print("TDZ connection limit reached", file=sys.stderr)
+            print("connection limit reached", file=sys.stderr)
             return 1
         if not current_is_live:
             reserve_admission(username, instance, trusted_ip, trusted_port)
@@ -781,7 +781,7 @@ def command_kill_user(username: str, reason: str = "policy") -> int:
         if session.username != username:
             continue
         print(
-            "TDZ OpenVPN disconnect: "
+            "OpenVPN disconnect: "
             f"user={session.username} instance={session.instance} "
             f"client={session.client_id} reason={reason}",
             file=sys.stderr,
@@ -824,12 +824,12 @@ def command_watch(interval: float) -> int:
         try:
             accounting_cycle()
         except Exception as exc:  # keep accounting alive across transient files/service restarts
-            print(f"TDZ OpenVPN runtime warning: {exc}", file=sys.stderr, flush=True)
+            print(f"OpenVPN runtime warning: {exc}", file=sys.stderr, flush=True)
         time.sleep(interval)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="TDZ OpenVPN local runtime helper")
+    parser = argparse.ArgumentParser(description="OpenVPN local runtime helper")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("connect")
     sub.add_parser("disconnect")
