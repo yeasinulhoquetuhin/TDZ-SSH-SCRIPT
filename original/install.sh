@@ -32,6 +32,8 @@ SSHD_CONFIG="/etc/ssh/sshd_config"
 SSHD_DROPIN_DIR="/etc/ssh/sshd_config.d"
 SSHD_DROPIN="$SSHD_DROPIN_DIR/tdztunnel.conf"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)"
+# ── Binary mode: prefer RAM-based scripts over download ──
+[[ -n "${TDZ_RAM:-}" && -d "${TDZ_RAM}" ]] && SCRIPT_DIR="${TDZ_RAM}"
 MENU_URL="${MENU_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/menu.sh}"
 BRIDGE_URL="${BRIDGE_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/ws_ssh_bridge.py}"
 OVPN_MODULE_URL="${OVPN_MODULE_URL:-https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/openvpn_module.sh}"
