@@ -2,7 +2,12 @@
 set -e
 
 REPO="yeasinulhoquetuhin/TDZ-SSH-SCRIPT"
-BIN="/usr/local/tdz"
+BIN_DIR="/usr/local/tdz"
+
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+CYAN="\033[1;36m"
+NC="\033[0m"
 
 detect_arch() {
     case "$(uname -m)" in
@@ -19,24 +24,45 @@ detect_arch() {
     esac
 }
 
+# ── Check root ──
+if [ "$(id -u)" != "0" ]; then
+    echo -e "${RED}[ERROR] Must run as root!${NC}"
+    exit 1
+fi
+
 ARCH=$(detect_arch)
 URL="https://github.com/${REPO}/releases/latest/download/tdz-linux-${ARCH}.tar.gz"
 
-echo "[*] TDZ SSH TUNNEL Installer"
-echo "    Arch: ${ARCH}"
-echo "    Downloading..."
+echo ""
+echo -e "${CYAN}============================================${NC}"
+echo -e "${CYAN}   TDZ SSH TUNNEL - Binary Installer${NC}"
+echo -e "${CYAN}   Architecture: ${ARCH}${NC}"
+echo -e "${CYAN}============================================${NC}"
+echo ""
 
-mkdir -p "${BIN}"
-cd "${BIN}"
-
+# ── Download ──
+echo -e "${GREEN}[1/3] Downloading binary...${NC}"
+mkdir -p "${BIN_DIR}"
+cd "${BIN_DIR}"
 curl -fsSL -o tdz.tar.gz "${URL}"
 tar xzf tdz.tar.gz
 chmod +x tdz
 rm -f tdz.tar.gz
 
-ln -sf "${BIN}/tdz" /usr/local/bin/menu
-ln -sf "${BIN}/tdz" /usr/local/bin/tdz
+# ── Symlinks ──
+ln -sf "${BIN_DIR}/tdz" /usr/local/bin/menu 2>/dev/null || true
+ln -sf "${BIN_DIR}/tdz" /usr/local/bin/tdz 2>/dev/null || true
+
+echo -e "${GREEN}[2/3] Binary installed (${ARCH})${NC}"
+echo ""
+
+# ── Run TDZ setup ──
+echo -e "${GREEN}[3/3] Running TDZ setup...${NC}"
+echo ""
+"${BIN_DIR}/tdz" install
 
 echo ""
-echo "[OK] TDZ SSH TUNNEL installed!"
-echo "     Run: menu"
+echo -e "${CYAN}============================================${NC}"
+echo -e "${GREEN}   TDZ SSH TUNNEL Installed!${NC}"
+echo -e "${CYAN}   Run: menu${NC}"
+echo -e "${CYAN}============================================${NC}"
