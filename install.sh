@@ -172,6 +172,32 @@ remove_path() {
     fi
 }
 
+sanitize_tdz_pam_hooks() {
+    local tmp_file
+    [[ -f "$SSH_PAM_CONFIG" ]] || return 0
+    tmp_file=$(mktemp "${SSH_PAM_CONFIG}.tdz-safe.XXXXXX") || return 1
+    if ! awk -v helper="/usr/local/bin/tdz-ssh-auth" '
+        $0 == "# TDZ SSH TUNNEL post-auth session banner - begin" ||
+        $0 == "# TDZ SSH TUNNEL post-auth session banner - end" ||
+        $0 == "# TDZ SSH TUNNEL denied-account retry guard - begin" ||
+        $0 == "# TDZ SSH TUNNEL denied-account retry guard - end" ||
+        index($0, helper) || index($0, "tdz_ssh_auth_session.py") ||
+        index($0, "pam_succeed_if.so quiet user = root") ||
+        index($0, "pam_succeed_if.so quiet user ingroup tdzusers") { next }
+        { print }
+    ' "$SSH_PAM_CONFIG" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    chmod --reference="$SSH_PAM_CONFIG" "$tmp_file" 2>/dev/null || chmod 644 "$tmp_file"
+    chown --reference="$SSH_PAM_CONFIG" "$tmp_file" 2>/dev/null || true
+    if cmp -s "$tmp_file" "$SSH_PAM_CONFIG"; then
+        rm -f "$tmp_file"
+        return 0
+    fi
+    mv -f "$tmp_file" "$SSH_PAM_CONFIG"
+}
+
 rollback() {
     $FINISHED && return 0
     local path source
@@ -183,6 +209,9 @@ rollback() {
             cp -a "$source" "$path" 2>/dev/null || true
         fi
     done
+    # A failed update must never restore a release-specific PAM helper in a
+    # state that can block the VPS administrator from signing in.
+    sanitize_tdz_pam_hooks >/dev/null 2>&1 || true
     reload_system_state
 }
 
@@ -403,6 +432,9 @@ verify_runtime() {
 }
 
 refresh_and_finish() {
+    # Remove the previous release's hook before the new runtime installs its
+    # validated, administrator-safe PAM integration.
+    sanitize_tdz_pam_hooks
     install_guard_service
     sync_runtime
     verify_runtime

@@ -27,26 +27,18 @@ TDZ SSH TUNNEL is a binary-distributed SSH tunnel management system designed for
 
 Built from scratch by **Yeasinul Hoque Tuhin**, this project represents a complete, ground-up implementation of a modern SSH tunnel management solution, independently developed with advanced features including dynamic HTML banners, per-user traffic accounting, multi-protocol support, and automated user lifecycle management.
 
-## v0.0.1 BETA Binary Release
+## v0.0.1 BETA Release
 
-The official release installs one architecture-specific `tdz` executable. The
-interactive menu, account workers, Telegram backup worker, WebSocket bridge,
-OpenVPN runtime, portal, gateway, firewall helper, and authenticated SSH session
-helper are packed inside that executable. They are opened through private,
-deleted runtime file descriptors and are not installed as ordinary source files.
+The official installer selects the correct architecture-specific package,
+verifies its checksum, and safely installs or updates TDZ SSH TUNNEL.
 
 - **Eight Linux builds:** `amd64`, `arm64`, `armv7`, `armv6`, `386`, `ppc64le`, `s390x`, and `riscv64`
 - **Checksummed downloads:** the installer verifies each archive against the release `checksums.txt`
 - **Safe updates:** accounts, quotas, usage, banners, certificates, OpenVPN state, and operator settings are preserved
 - **Version pinning:** every published tag remains directly installable
 - **Compatibility migration:** services and scheduled jobs created by earlier source releases are redirected to the packed runtime
-- **Branding integrity:** the managed OpenSSH identification is `SSH-2.0-OpenSSH_<version> @TuhinBroh`; accidental edits or deletion of its managed drop-in are restored automatically while the guard service is enabled
-
-OpenVPN client profiles and generated server configuration remain visible so the
-service can be operated normally. The account database also remains available to
-root for management and backup. No binary can make code impossible to inspect by
-a VPS root user, but this release removes the normal editable runtime-source
-installation used by earlier versions.
+- **Login safety:** administrator access remains independent from managed account policy checks
+- **Responsive menus:** shared menu rendering and live service/session checks are bounded so every management screen opens promptly
 
 ---
 
@@ -93,8 +85,8 @@ Account status, expiration, remaining validity, active connections, and compact 
   </tr>
   <tr>
     <td align="center" valign="top" width="50%">
-      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/protocol-panel-management.png" alt="Protocol and panel management" height="170"><br>
-      <b>Protocols &amp; Panels</b>
+      <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/protocol-panel-management.png" alt="Protocol management" height="170"><br>
+      <b>Protocols</b>
     </td>
     <td align="center" valign="top" width="50%">
       <img src="https://raw.githubusercontent.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT/master/screenshot/ssh-banner-management.png" alt="SSH banner management" height="170"><br>
