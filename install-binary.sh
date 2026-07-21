@@ -2,7 +2,6 @@
 set -e
 
 REPO="yeasinulhoquetuhin/TDZ-SSH-SCRIPT"
-VERSION="${1:-latest}"
 BIN="/usr/local/tdz"
 
 detect_arch() {
@@ -10,26 +9,27 @@ detect_arch() {
         x86_64|amd64) echo "amd64" ;;
         aarch64|arm64) echo "arm64" ;;
         i386|i686)     echo "i386" ;;
-        armv7l)        echo "arm" ;;
+        armv7l)        echo "armv7" ;;
+        armv6l)        echo "armv6" ;;
+        armv5*)        echo "armv5" ;;
+        s390x)         echo "s390x" ;;
+        mips64*)       echo "mips64" ;;
+        riscv64*)      echo "riscv64" ;;
         *) echo "amd64" ;;
     esac
 }
 
 ARCH=$(detect_arch)
-URL="https://github.com/${REPO}/releases/${VERSION}/download/tdz-linux-${ARCH}.tar.gz"
+URL="https://github.com/${REPO}/releases/latest/download/tdz-linux-${ARCH}.tar.gz"
 
-echo "[*] Installing TDZ SSH TUNNEL..."
+echo "[*] TDZ SSH TUNNEL Installer"
 echo "    Arch: ${ARCH}"
+echo "    Downloading..."
 
 mkdir -p "${BIN}"
 cd "${BIN}"
 
-if [ "${VERSION}" = "latest" ]; then
-    URL=$(curl -sL "https://github.com/${REPO}/releases/latest" | grep -o "download/tdz-linux-${ARCH}.tar.gz" | head -1)
-    URL="https://github.com/${REPO}/releases/latest/${URL}"
-fi
-
-curl -L -o tdz.tar.gz "${URL}"
+curl -fsSL -o tdz.tar.gz "${URL}"
 tar xzf tdz.tar.gz
 chmod +x tdz
 rm -f tdz.tar.gz
@@ -38,5 +38,5 @@ ln -sf "${BIN}/tdz" /usr/local/bin/menu
 ln -sf "${BIN}/tdz" /usr/local/bin/tdz
 
 echo ""
-echo "TDZ SSH TUNNEL installed!"
-echo "Run: menu"
+echo "[OK] TDZ SSH TUNNEL installed!"
+echo "     Run: menu"
