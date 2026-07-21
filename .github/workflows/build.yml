@@ -5,6 +5,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -45,8 +48,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm || '' }}
-        run: |
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o tdz ./cmd/tdz/
+        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o tdz ./cmd/tdz/
 
       - name: UPX pack
         run: |
