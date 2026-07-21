@@ -1,6 +1,6 @@
 original/
 internal/mgr/scripts/
-tdz
-tdz-nopack
+/tdz
+/tdz-nopack
 *.tar.gz
 dist/
