@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only HTTP-to-HTTPS documentation and download portal for OpenVPN."""
+"""Read-only HTTP-to-HTTPS documentation and download portal for TDZ OpenVPN."""
 
 from __future__ import annotations
 
@@ -245,7 +245,7 @@ class PortalHandler(BaseHTTPRequestHandler):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="OpenVPN profile portal")
+    parser = argparse.ArgumentParser(description="TDZ OpenVPN profile portal")
     parser.add_argument("--listen", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=1180)
     parser.add_argument("--public-host", required=True)
@@ -288,7 +288,7 @@ def main() -> None:
     )
     try:
         print(
-            f"OpenVPN HTTP/HTTPS portal listening on {args.listen}:{args.port}",
+            f"TDZ OpenVPN HTTP/HTTPS portal listening on {args.listen}:{args.port}",
             flush=True,
         )
         server.serve_forever(poll_interval=0.5)

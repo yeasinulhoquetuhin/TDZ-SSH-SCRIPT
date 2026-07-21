@@ -522,6 +522,16 @@ class ModuleTests(unittest.TestCase):
             self.assertNotIn("PENDING", plain)
             self.assertIn("3", plain)
 
+            menu = MENU.read_text()
+            start = menu.index('if [[ "$view_filter" == "online" ]]', menu.index("list_users_view() {"))
+            end = menu.index("\n    else", start)
+            footer = menu[start:end]
+            self.assertLess(footer.index("TOTAL:"), footer.index("SESSIONS:"))
+            self.assertIn("${C_WHITE}${user_count}", footer)
+            self.assertIn("${C_WHITE}${session_count}", footer)
+            self.assertNotIn("${C_GREEN}${user_count}", footer)
+            self.assertNotIn("${C_GREEN}${session_count}", footer)
+
     def test_empty_online_list_still_shows_zero_totals(self):
         with tempfile.TemporaryDirectory() as temp:
             database = Path(temp) / "users.db"
@@ -540,6 +550,58 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("SESSIONS:", plain)
             self.assertIn("TOTAL:", plain)
             self.assertNotIn("PENDING", plain)
+
+    def test_standalone_service_uninstallers_have_bounded_progress_and_verification(self):
+        menu = MENU.read_text()
+        functions = {
+            "uninstall_badvpn": "load_edge_cert_info",
+            "uninstall_ssl_tunnel": "show_dnstt_details",
+            "uninstall_dnstt": "install_zivpn",
+            "uninstall_zivpn": "purge_nginx",
+            "purge_nginx": "install_nginx_proxy",
+        }
+        for function, following_function in functions.items():
+            with self.subTest(function=function):
+                start = menu.index(f"{function}() {{")
+                end = menu.index(f"\n{following_function}() {{", start)
+                body = menu[start:end]
+                self.assertIn("tdz_progress_begin", body)
+                self.assertIn("systemctl is-active --quiet", body)
+                self.assertRegex(body, r'Verifying|verifying')
+
+        openvpn = MODULE.read_text()
+        start = openvpn.index("tdz_openvpn_uninstall() {")
+        end = openvpn.index("\ntdz_openvpn_regenerate_profiles_action() {", start)
+        body = openvpn[start:end]
+        self.assertIn('tdz_openvpn_progress_begin 1 4 "Stopping services"', body)
+        self.assertIn('tdz_openvpn_progress_begin 4 4 "Verifying cleanup"', body)
+        self.assertIn("systemctl is-active --quiet", body)
+
+    def test_badvpn_uninstall_finishes_and_verifies_temp_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            service = root / "badvpn.service"
+            build = root / "badvpn-build"
+            service.write_text("unit")
+            build.mkdir()
+            result = self.run_menu_bash(
+                f"""
+                BADVPN_SERVICE_FILE={service}
+                BADVPN_BUILD_DIR={build}
+                systemctl() {{
+                    [[ "$1" == "is-active" ]] && return 1
+                    return 0
+                }}
+                UNINSTALL_MODE=interactive
+                uninstall_badvpn
+                [[ ! -e "$BADVPN_SERVICE_FILE" ]] || exit 21
+                [[ ! -e "$BADVPN_BUILD_DIR" ]] || exit 22
+                """
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("[1/3]", result.stdout)
+            self.assertIn("[3/3]", result.stdout)
+            self.assertIn("BadVPN was removed successfully", result.stdout)
 
     def test_menu_actions_pause_exactly_once(self):
         menu = MENU.read_text()
@@ -1419,13 +1481,13 @@ TEST TLS KEY
                 "https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT",
             }
             self.assertIn('class="section project-spotlight"', portal)
-            self.assertIn("One project, one workflow.", portal)
+            self.assertIn("Part of TDZ SSH TUNNEL.", portal)
             self.assertIn("View GitHub repository", portal)
             self.assertNotIn("TDZ SSH TUNNEL powers both SSH and OpenVPN.", portal)
             self.assertNotIn('class="section project-spotlight"', docs + downloads)
             for page_name in ("index.html", "docs.html", "download.html"):
                 page_text = (public / page_name).read_text()
-                self.assertIn("<title>OPENVPN PORTAL</title>", page_text)
+                self.assertIn("<title>TDZ • OVPN PORTAL</title>", page_text)
                 self.assertIn("Developed By:", page_text)
                 self.assertIn("Yeasinul Hoque Tuhin", page_text)
                 self.assertIn('class="developer-link" href="https://tuhinbro.com/"', page_text)
@@ -2051,12 +2113,25 @@ TEST TLS KEY
         protocol = menu[start:end]
         openvpn = protocol.index('tdz_menu_status "[10]" "OpenVPN Protocol Suite"')
         install_xui = protocol.index('tdz_menu_status "[11]" "Install X-UI')
-        uninstall_xui = protocol.index('tdz_menu1 "[12]" "Uninstall X-UI Panel"')
         self.assertLess(openvpn, install_xui)
-        self.assertLess(install_xui, uninstall_xui)
         self.assertIn("10) if declare -F tdz_openvpn_menu", protocol)
         self.assertIn("11) tdz_run_action install_xui_panel", protocol)
-        self.assertIn("12) tdz_run_action uninstall_xui_panel", protocol)
+        self.assertNotIn("Uninstall X-UI Panel", protocol)
+        self.assertNotIn("12) tdz_run_action", protocol)
+        self.assertIn("if tdz_xui_is_installed", protocol)
+
+        xui_start = menu.index("tdz_xui_is_installed() {")
+        xui_end = menu.index("\n}\n\n# The panel's own", xui_start)
+        xui_detection = menu[xui_start:xui_end]
+        self.assertNotIn("command -v x-ui", xui_detection)
+        self.assertIn("systemctl is-active --quiet x-ui.service", xui_detection)
+        self.assertIn("/usr/local/x-ui/x-ui", xui_detection)
+
+        traffic_start = menu.index("traffic_monitor_menu() {")
+        traffic_end = menu.index("\n}\n\nauto_reboot_menu()", traffic_start)
+        traffic = menu[traffic_start:traffic_end]
+        self.assertIn('tdz_menu1 "[ 1]" "Live Monitor"', traffic)
+        self.assertNotIn("No Installation", traffic)
 
         openvpn_module = MODULE.read_text()
         suite_start = openvpn_module.index("tdz_openvpn_menu() {")

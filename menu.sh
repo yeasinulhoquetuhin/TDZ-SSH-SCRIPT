@@ -3782,8 +3782,8 @@ list_users_view() {
             online)
                 tdz_row "${C_YELLOW}[INFO] No managed users are online now.${C_RESET}"
                 tdz_box_divider
-                tdz_row2 "${C_GRAY}SESSIONS:${C_RESET} ${C_BOLD}${C_WHITE}0${C_RESET}" \
-                    "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_GREEN}0${C_RESET}"
+                tdz_row2 "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_WHITE}0${C_RESET}" \
+                    "${C_GRAY}SESSIONS:${C_RESET} ${C_BOLD}${C_WHITE}0${C_RESET}"
                 ;;
             *) tdz_row "${C_YELLOW}[INFO] No users are currently being managed.${C_RESET}" ;;
         esac
@@ -3793,8 +3793,8 @@ list_users_view() {
 
     tdz_box_divider
     if [[ "$view_filter" == "online" ]]; then
-        tdz_row2 "${C_GRAY}SESSIONS:${C_RESET} ${C_BOLD}${C_WHITE}${session_count}${C_RESET}" \
-            "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_GREEN}${user_count}${C_RESET}"
+        tdz_row2 "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
+            "${C_GRAY}SESSIONS:${C_RESET} ${C_BOLD}${C_WHITE}${session_count}${C_RESET}"
     else
         tdz_row2 "${C_GRAY}SHOWN${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
             "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_CYAN}PENDING ${pending_count}${C_RESET}"
@@ -5322,20 +5322,46 @@ EOF
 }
 
 uninstall_badvpn() {
-    tdz_screen_title "UNINSTALL BADVPN"
-    if [ ! -f "$BADVPN_SERVICE_FILE" ]; then
-        echo -e "${C_YELLOW}[INFO] badvpn is not installed, skipping.${C_RESET}"
-        return
+    local mode="${UNINSTALL_MODE:-interactive}" cleanup_failed=false
+    [[ "$mode" == "silent" ]] || tdz_screen_title "UNINSTALL BADVPN"
+    if [[ ! -f "$BADVPN_SERVICE_FILE" && ! -d "$BADVPN_BUILD_DIR" ]] &&
+       ! systemctl is-active --quiet badvpn.service; then
+        [[ "$mode" == "silent" ]] || tdz_message INFO "BadVPN is not installed."
+        return 0
     fi
-    echo -e "${C_GREEN}Stopping and disabling badvpn service...${C_RESET}"
-    systemctl stop badvpn.service >/dev/null 2>&1
-    systemctl disable badvpn.service >/dev/null 2>&1
-    echo -e "${C_GREEN}Removing systemd service file...${C_RESET}"
-    rm -f "$BADVPN_SERVICE_FILE"
-    systemctl daemon-reload >/dev/null 2>&1
-    echo -e "${C_GREEN}Removing badvpn build directory...${C_RESET}"
-    rm -rf "$BADVPN_BUILD_DIR"
-    echo -e "${C_GREEN}[OK] badvpn has been uninstalled successfully.${C_RESET}"
+
+    [[ "$mode" == "silent" ]] || { echo; tdz_section "UNINSTALLATION PROGRESS"; }
+    tdz_progress_begin 1 3 "Stopping service"
+    systemctl stop badvpn.service >/dev/null 2>&1 || true
+    systemctl disable badvpn.service >/dev/null 2>&1 || true
+    if systemctl is-active --quiet badvpn.service; then
+        cleanup_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
+    fi
+
+    tdz_progress_begin 2 3 "Removing service files"
+    if rm -f "$BADVPN_SERVICE_FILE" && rm -rf "$BADVPN_BUILD_DIR"; then
+        tdz_progress_done
+    else
+        cleanup_failed=true; tdz_progress_failed
+    fi
+
+    tdz_progress_begin 3 3 "Verifying cleanup"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if ! systemctl is-active --quiet badvpn.service &&
+       [[ ! -e "$BADVPN_SERVICE_FILE" && ! -e "$BADVPN_BUILD_DIR" ]]; then
+        tdz_progress_done
+    else
+        cleanup_failed=true; tdz_progress_failed
+    fi
+
+    if [[ "$cleanup_failed" == true ]]; then
+        [[ "$mode" == "silent" ]] || tdz_message ERROR "BadVPN cleanup requires attention."
+        return 1
+    fi
+    [[ "$mode" == "silent" ]] || tdz_message OK "BadVPN was removed successfully."
+    return 0
 }
 
 load_edge_cert_info() {
@@ -6700,50 +6726,82 @@ install_ssl_tunnel() {
 }
 
 uninstall_ssl_tunnel() {
-    tdz_screen_title "UNINSTALL HAPROXY EDGE STACK"
-    if ! command -v haproxy &> /dev/null; then
-        echo -e "${C_YELLOW}[INFO] HAProxy is not installed, skipping service removal.${C_RESET}"
-    else
-        echo -e "${C_GREEN}Stopping and disabling HAProxy...${C_RESET}"
-        systemctl stop haproxy >/dev/null 2>&1
-        systemctl disable haproxy >/dev/null 2>&1
+    local mode="${UNINSTALL_MODE:-interactive}" delete_cert="n" cleanup_failed=false step_failed=false
+    local had_config_backup=false
+    [[ "$mode" == "silent" ]] || tdz_screen_title "UNINSTALL HAPROXY EDGE STACK"
+    [[ -f "${HAPROXY_CONFIG}.bak.tdztunnel" ]] && had_config_backup=true
+    if ! command -v haproxy &>/dev/null && [[ ! -e "$HAPROXY_CONFIG" &&
+         ! -e "${HAPROXY_CONFIG}.bak.tdztunnel" && ! -e "$WS_SSH_BRIDGE_SERVICE" &&
+         ! -e "$WS_SSH_BRIDGE_SCRIPT" && ! -e "$TDZ_SSL_CERT_FILE" &&
+         ! -e "$SSL_CERT_CHAIN_FILE" && ! -e "$SSL_CERT_KEY_FILE" ]] &&
+       ! systemctl is-active --quiet haproxy.service; then
+        [[ "$mode" == "silent" ]] || tdz_message INFO "HAProxy edge stack is not installed."
+        return 0
     fi
 
-    if [ -f "${HAPROXY_CONFIG}.bak.tdztunnel" ]; then
-        mv -f "${HAPROXY_CONFIG}.bak.tdztunnel" "$HAPROXY_CONFIG"
-    else
-        rm -f "$HAPROXY_CONFIG"
-    fi
-
-    local delete_cert="n"
-    if [[ "$UNINSTALL_MODE" == "silent" ]]; then
+    if [[ "$mode" == "silent" ]]; then
         delete_cert="y"
-    elif [ -f "$TDZ_SSL_CERT_FILE" ] || [ -f "$SSL_CERT_CHAIN_FILE" ] || [ -f "$SSL_CERT_KEY_FILE" ]; then
+    elif [[ -f "$TDZ_SSL_CERT_FILE" || -f "$SSL_CERT_CHAIN_FILE" || -f "$SSL_CERT_KEY_FILE" ]]; then
         if systemctl is-active --quiet nginx; then
             echo -e "${C_YELLOW}[WARNING] The shared certificate is also used by the internal Nginx proxy.${C_RESET}"
         fi
         read -p "  Delete the shared TLS certificate too? (y/n): " delete_cert
     fi
 
+    [[ "$mode" == "silent" ]] || { echo; tdz_section "UNINSTALLATION PROGRESS"; }
+    tdz_progress_begin 1 3 "Stopping edge services"
+    systemctl stop haproxy.service >/dev/null 2>&1 || true
+    systemctl disable haproxy.service >/dev/null 2>&1 || true
+    uninstall_ws_ssh_bridge >/dev/null 2>&1 || true
+    if systemctl is-active --quiet haproxy.service ||
+       systemctl is-active --quiet tdz-ws-ssh-bridge.service; then
+        cleanup_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
+    fi
+
+    tdz_progress_begin 2 3 "Restoring configuration"
+    step_failed=false
+    if $had_config_backup; then
+        mv -f "${HAPROXY_CONFIG}.bak.tdztunnel" "$HAPROXY_CONFIG" || step_failed=true
+    else
+        rm -f "$HAPROXY_CONFIG" || step_failed=true
+    fi
     if [[ "$delete_cert" == "y" || "$delete_cert" == "Y" ]]; then
         if systemctl is-active --quiet nginx; then
-            echo -e "${C_GREEN}Stopping Nginx because the shared certificate is being removed...${C_RESET}"
-            systemctl stop nginx >/dev/null 2>&1
+            systemctl stop nginx >/dev/null 2>&1 || true
         fi
-        rm -f "$TDZ_SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" "$EDGE_CERT_INFO_FILE"
-        rm -f "$NGINX_PORTS_FILE"
-        echo -e "${C_GREEN}Shared certificate files removed.${C_RESET}"
+        rm -f "$TDZ_SSL_CERT_FILE" "$SSL_CERT_CHAIN_FILE" "$SSL_CERT_KEY_FILE" \
+            "$EDGE_CERT_INFO_FILE" "$NGINX_PORTS_FILE" || step_failed=true
         if declare -F tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 && tdz_openvpn_is_installed; then
             tdz_openvpn_refresh_gateway_tls >/dev/null 2>&1 || true
         fi
     fi
-
-    echo -e "${C_GREEN}[OK] HAProxy edge stack has been removed.${C_RESET}"
-    echo -e "${C_GREEN}Stopping WS-to-SSH bridge...${C_RESET}"
-    uninstall_ws_ssh_bridge
-    if systemctl is-active --quiet nginx; then
-        echo -e "${C_DIM}The internal Nginx proxy is still installed on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
+    if [[ "$step_failed" == true ]]; then
+        cleanup_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
     fi
+
+    tdz_progress_begin 3 3 "Verifying cleanup"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if systemctl is-active --quiet haproxy.service ||
+       systemctl is-active --quiet tdz-ws-ssh-bridge.service ||
+       [[ -e "${HAPROXY_CONFIG}.bak.tdztunnel" || -e "$WS_SSH_BRIDGE_SERVICE" ||
+          -e "$WS_SSH_BRIDGE_SCRIPT" ]]; then
+        cleanup_failed=true
+    fi
+    if [[ "$delete_cert" == "y" || "$delete_cert" == "Y" ]]; then
+        [[ -e "$TDZ_SSL_CERT_FILE" || -e "$SSL_CERT_CHAIN_FILE" || -e "$SSL_CERT_KEY_FILE" ]] && cleanup_failed=true
+    fi
+    if [[ "$cleanup_failed" == true ]]; then
+        tdz_progress_failed
+        [[ "$mode" == "silent" ]] || tdz_message ERROR "HAProxy edge cleanup requires attention."
+        return 1
+    fi
+    tdz_progress_done
+    [[ "$mode" == "silent" ]] || tdz_message OK "HAProxy edge stack was removed successfully."
+    return 0
 }
 
 show_dnstt_details() {
@@ -7050,35 +7108,70 @@ EOF
 }
 
 uninstall_dnstt() {
-    tdz_screen_title "UNINSTALL DNSTT"
-    if [[ ! -f "$DNSTT_SERVICE_FILE" && ! -f "$DNSTT_BINARY" && ! -d "$DNSTT_KEYS_DIR" ]]; then
-        echo -e "${C_YELLOW}[INFO] DNSTT does not appear to be installed, skipping.${C_RESET}"
-        return
+    local mode="${UNINSTALL_MODE:-interactive}" confirm="y" cleanup_failed=false step_failed=false
+    local dns_notice=""
+    [[ "$mode" == "silent" ]] || tdz_screen_title "UNINSTALL DNSTT"
+    if [[ ! -f "$DNSTT_SERVICE_FILE" && ! -f "$DNSTT_BINARY" &&
+          ! -d "$DNSTT_KEYS_DIR" && ! -f "$DNSTT_CONFIG_FILE" ]] &&
+       ! systemctl is-active --quiet dnstt.service; then
+        [[ "$mode" == "silent" ]] || tdz_message INFO "DNSTT is not installed."
+        return 0
     fi
-    local confirm="y"
-    if [[ "$UNINSTALL_MODE" != "silent" ]]; then
+    if [[ "$mode" != "silent" ]]; then
         read -p "  Are you sure you want to uninstall DNSTT? (y/n): " confirm
     fi
     if [[ "$confirm" != "y" ]]; then
         tdz_message CANCELLED "Uninstallation cancelled."
-        return
+        return 0
     fi
-    echo -e "${C_BLUE}Stopping and disabling DNSTT service...${C_RESET}"
-    systemctl stop dnstt.service > /dev/null 2>&1
-    systemctl disable dnstt.service > /dev/null 2>&1
-    if [ -f "$DNSTT_CONFIG_FILE" ]; then
+    if [[ -f "$DNSTT_CONFIG_FILE" ]]; then
         source "$DNSTT_CONFIG_FILE"
-        echo -e "${C_YELLOW}[WARNING] DNS records (NS + A) for $NS_DOMAIN / $TUNNEL_DOMAIN were configured manually.${C_RESET}"
-        echo -e "${C_YELLOW}   Please delete them at your DNS provider if no longer needed.${C_RESET}"
+        dns_notice="DNS records for ${NS_DOMAIN:-the nameserver} / ${TUNNEL_DOMAIN:-the tunnel domain} must be removed manually at the DNS provider."
     fi
-    restore_dnstt_resolver_state
-    rm -f "$DNSTT_SERVICE_FILE"
-    rm -f "$DNSTT_BINARY"
-    rm -rf "$DNSTT_KEYS_DIR"
-    rm -f "$DNSTT_CONFIG_FILE"
-    systemctl daemon-reload >/dev/null 2>&1
-    
-    echo -e "\n${C_GREEN}[OK] DNSTT has been successfully uninstalled.${C_RESET}"
+
+    [[ "$mode" == "silent" ]] || { echo; tdz_section "UNINSTALLATION PROGRESS"; }
+    tdz_progress_begin 1 3 "Stopping service"
+    systemctl stop dnstt.service >/dev/null 2>&1 || true
+    systemctl disable dnstt.service >/dev/null 2>&1 || true
+    if systemctl is-active --quiet dnstt.service; then
+        cleanup_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
+    fi
+
+    tdz_progress_begin 2 3 "Restoring resolver settings"
+    if restore_dnstt_resolver_state; then
+        tdz_progress_done
+    else
+        cleanup_failed=true; tdz_progress_failed
+    fi
+
+    tdz_progress_begin 3 3 "Removing and verifying files"
+    step_failed=false
+    if rm -f "$DNSTT_SERVICE_FILE" "$DNSTT_BINARY" "$DNSTT_CONFIG_FILE" &&
+       rm -rf "$DNSTT_KEYS_DIR"; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    else
+        step_failed=true
+    fi
+    if [[ -e "$DNSTT_SERVICE_FILE" || -e "$DNSTT_BINARY" ||
+          -e "$DNSTT_KEYS_DIR" || -e "$DNSTT_CONFIG_FILE" ]] ||
+       systemctl is-active --quiet dnstt.service; then
+        step_failed=true
+    fi
+    if $step_failed; then
+        cleanup_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
+    fi
+
+    if [[ "$cleanup_failed" == true ]]; then
+        [[ "$mode" == "silent" ]] || tdz_message ERROR "DNSTT cleanup requires attention."
+        return 1
+    fi
+    [[ "$mode" == "silent" ]] || tdz_message OK "DNSTT was removed successfully."
+    [[ -n "$dns_notice" && "$mode" != "silent" ]] && tdz_message WARNING "$dns_notice"
+    return 0
 }
 
 # --- ZiVPN Installation Logic ---
@@ -7243,52 +7336,79 @@ EOF
 }
 
 uninstall_zivpn() {
-    if [[ "$UNINSTALL_MODE" != "silent" ]]; then
+    local mode="${UNINSTALL_MODE:-interactive}" confirm="y" cleanup_failed=false step_failed=false iface=""
+    if [[ "$mode" != "silent" ]]; then
         clear; show_banner
         tdz_screen_title "UNINSTALL ZIVPN"
     fi
-    
-    if [[ ! -f "$ZIVPN_SERVICE_FILE" && ! -f "$ZIVPN_BIN" && ! -d "$ZIVPN_DIR" ]]; then
-        echo -e "\n${C_YELLOW}[INFO] ZiVPN does not appear to be installed.${C_RESET}"
-        return
+    if [[ ! -f "$ZIVPN_SERVICE_FILE" && ! -f "$ZIVPN_BIN" && ! -d "$ZIVPN_DIR" ]] &&
+       ! systemctl is-active --quiet zivpn.service; then
+        [[ "$mode" == "silent" ]] || tdz_message INFO "ZiVPN is not installed."
+        return 0
     fi
 
-    local confirm="y"
-    if [[ "$UNINSTALL_MODE" != "silent" ]]; then
+    if [[ "$mode" != "silent" ]]; then
         read -p "  Are you sure you want to uninstall ZiVPN? (y/n): " confirm
     fi
-    if [[ "$confirm" != "y" ]]; then echo -e "${C_YELLOW}Cancelled.${C_RESET}"; return; fi
+    if [[ "$confirm" != "y" ]]; then
+        tdz_message CANCELLED "Uninstallation cancelled."
+        return 0
+    fi
 
-    echo -e "\n${C_BLUE}Stopping services...${C_RESET}"
-    systemctl stop zivpn.service >/dev/null 2>&1
-    systemctl disable zivpn.service >/dev/null 2>&1
+    [[ "$mode" == "silent" ]] || { echo; tdz_section "UNINSTALLATION PROGRESS"; }
+    tdz_progress_begin 1 3 "Stopping service"
+    systemctl stop zivpn.service >/dev/null 2>&1 || true
+    systemctl disable zivpn.service >/dev/null 2>&1 || true
+    if systemctl is-active --quiet zivpn.service; then
+        cleanup_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
+    fi
 
-    local iface
+    tdz_progress_begin 2 3 "Removing network rules"
     iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
     if [ -n "$iface" ]; then
         iptables -t nat -D PREROUTING -i "$iface" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
     fi
-    
-    echo -e "${C_BLUE}Removing files...${C_RESET}"
-    rm -f "$ZIVPN_SERVICE_FILE"
-    rm -rf "$ZIVPN_DIR"
-    rm -f "$ZIVPN_BIN"
-    
-    systemctl daemon-reload >/dev/null 2>&1
-    
-    echo -e "\n${C_GREEN}[OK] ZiVPN Uninstalled Successfully.${C_RESET}"
+    tdz_progress_done
+
+    tdz_progress_begin 3 3 "Removing and verifying files"
+    step_failed=false
+    if rm -f "$ZIVPN_SERVICE_FILE" "$ZIVPN_BIN" && rm -rf "$ZIVPN_DIR"; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    else
+        step_failed=true
+    fi
+    if [[ -e "$ZIVPN_SERVICE_FILE" || -e "$ZIVPN_BIN" || -e "$ZIVPN_DIR" ]] ||
+       systemctl is-active --quiet zivpn.service; then
+        step_failed=true
+    fi
+    if $step_failed; then
+        cleanup_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
+    fi
+
+    if [[ "$cleanup_failed" == true ]]; then
+        [[ "$mode" == "silent" ]] || tdz_message ERROR "ZiVPN cleanup requires attention."
+        return 1
+    fi
+    [[ "$mode" == "silent" ]] || tdz_message OK "ZiVPN was removed successfully."
+    return 0
 }
 
 purge_nginx() {
-    local mode="$1"
-    local purge_failed=false
+    local mode="${1:-interactive}" purge_failed=false step_failed=false package
+    local -a nginx_packages=(nginx nginx-common nginx-core nginx-full nginx-light nginx-extras)
+    local -a installed_nginx_packages=()
     if [[ "$mode" != "silent" ]]; then
         clear; show_banner
         tdz_screen_title "PURGE INTERNAL NGINX" "Remove Nginx and its managed edge configuration." "$C_DANGER"
-        if ! command -v nginx &> /dev/null; then
+        if ! command -v nginx &> /dev/null && [[ ! -d /etc/nginx ]] &&
+           ! dpkg-query -W -f='${Status}' "${nginx_packages[@]}" 2>/dev/null | grep -q 'install ok installed'; then
             rm -f "$NGINX_PORTS_FILE"
-            echo -e "\n${C_YELLOW}[INFO] Nginx is not installed. Nothing to do.${C_RESET}"
-            return
+            tdz_message INFO "Nginx is not installed."
+            return 0
         fi
         echo -e "\n${C_YELLOW}[WARNING] This removes the internal Nginx proxy on ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}.${C_RESET}"
         if systemctl is-active --quiet haproxy; then
@@ -7300,23 +7420,58 @@ purge_nginx() {
             return
         fi
     fi
-    echo -e "\n${C_BLUE}Stopping Nginx service...${C_RESET}"
-    systemctl stop nginx >/dev/null 2>&1
-    systemctl disable nginx >/dev/null 2>&1
-    echo -e "\n${C_BLUE}Purging Nginx packages...${C_RESET}"
-    tdz_apt_purge nginx nginx-common >/dev/null 2>&1 || purge_failed=true
-    apt-get autoremove -y >/dev/null 2>&1
-    echo -e "\n${C_BLUE}Removing leftover files...${C_RESET}"
-    rm -f /etc/ssl/certs/nginx-selfsigned.pem
-    rm -f /etc/ssl/private/nginx-selfsigned.key
-    rm -rf /etc/nginx
-    rm -f "${NGINX_CONFIG_FILE}.bak"
-    rm -f "${NGINX_CONFIG_FILE}.bak.certbot"
-    rm -f "${NGINX_CONFIG_FILE}.bak.selfsigned"
-    rm -f "${NGINX_CONFIG_FILE}.bak.tdztunnel"
-    rm -f "$NGINX_PORTS_FILE"
-    if dpkg-query -W -f='${Status}' nginx 2>/dev/null | grep -q 'install ok installed'; then
-        purge_failed=true
+
+    [[ "$mode" == "silent" ]] || { echo; tdz_section "UNINSTALLATION PROGRESS"; }
+    tdz_progress_begin 1 4 "Stopping service"
+    systemctl stop nginx.service >/dev/null 2>&1 || true
+    systemctl disable nginx.service >/dev/null 2>&1 || true
+    if systemctl is-active --quiet nginx.service; then
+        purge_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
+    fi
+
+    tdz_progress_begin 2 4 "Removing service packages"
+    step_failed=false
+    for package in "${nginx_packages[@]}"; do
+        if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
+            installed_nginx_packages+=("$package")
+        fi
+    done
+    if (( ${#installed_nginx_packages[@]} == 0 )); then
+        :
+    elif tdz_apt_purge "${installed_nginx_packages[@]}" >/dev/null 2>&1; then
+        apt-get autoremove -y >>"$TDZ_PACKAGE_LOG" 2>&1 || step_failed=true
+    else
+        step_failed=true
+    fi
+    if [[ "$step_failed" == true ]]; then
+        purge_failed=true; tdz_progress_failed
+    else
+        tdz_progress_done
+    fi
+
+    tdz_progress_begin 3 4 "Removing configuration files"
+    if rm -f /etc/ssl/certs/nginx-selfsigned.pem /etc/ssl/private/nginx-selfsigned.key \
+        "${NGINX_CONFIG_FILE}.bak" "${NGINX_CONFIG_FILE}.bak.certbot" \
+        "${NGINX_CONFIG_FILE}.bak.selfsigned" "${NGINX_CONFIG_FILE}.bak.tdztunnel" \
+        "$NGINX_PORTS_FILE" && rm -rf /etc/nginx; then
+        tdz_progress_done
+    else
+        purge_failed=true; tdz_progress_failed
+    fi
+
+    tdz_progress_begin 4 4 "Verifying cleanup"
+    for package in "${nginx_packages[@]}"; do
+        if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
+            purge_failed=true
+        fi
+    done
+    if [[ "$purge_failed" != true && ! -e /etc/nginx ]] &&
+       ! systemctl is-active --quiet nginx.service; then
+        tdz_progress_done
+    else
+        tdz_progress_failed
     fi
     if [[ "$purge_failed" == true ]]; then
         [[ "$mode" == "silent" ]] || tdz_message ERROR "Nginx package cleanup requires attention."
@@ -7584,35 +7739,22 @@ install_xui_panel() {
     esac
 }
 
-uninstall_xui_panel() {
-    local mode="${1:-${UNINSTALL_MODE:-interactive}}"
-    if [[ "$mode" != "silent" ]]; then
-        clear; show_banner
-        tdz_screen_title "UNINSTALL X-UI PANEL" "Remove the patched panel and its installed files." "$C_DANGER"
-    fi
-    if ! command -v x-ui &> /dev/null && [[ ! -e /usr/local/bin/x-ui && ! -d /usr/local/x-ui && ! -d /etc/x-ui ]]; then
-        echo -e "\n${C_YELLOW}[INFO] X-UI does not appear to be installed.${C_RESET}"
-        return
-    fi
-    local confirm="y"
-    if [[ "$mode" != "silent" ]]; then
-        read -p "  Are you sure you want to thoroughly uninstall X-UI? (y/n): " confirm
-    fi
-    if [[ "$confirm" == "y" ]]; then
-        if [[ "$mode" != "silent" ]]; then
-            x-ui uninstall >/dev/null 2>&1 || true
-        fi
-        systemctl stop x-ui >/dev/null 2>&1
-        systemctl disable x-ui >/dev/null 2>&1
-        rm -f /etc/systemd/system/x-ui.service
-        rm -f /usr/local/bin/x-ui
-        rm -rf /usr/local/x-ui/
-        rm -rf /etc/x-ui/
-        systemctl daemon-reload >/dev/null 2>&1
-        echo -e "\n${C_GREEN}[OK] X-UI has been thoroughly uninstalled.${C_RESET}"
-    else
-        tdz_message CANCELLED "Uninstallation cancelled."
-    fi
+tdz_xui_is_installed() {
+    systemctl is-active --quiet x-ui.service && return 0
+    [[ -f /etc/systemd/system/x-ui.service && -x /usr/local/x-ui/x-ui ]]
+}
+
+# The panel's own `x-ui uninstall` command remains the interactive uninstaller.
+# This non-interactive cleanup is used only by the complete script removal.
+tdz_cleanup_xui_files() {
+    systemctl stop x-ui.service >/dev/null 2>&1 || true
+    systemctl disable x-ui.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/x-ui.service /usr/local/bin/x-ui /usr/bin/x-ui
+    rm -rf /usr/local/x-ui /etc/x-ui
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    ! systemctl is-active --quiet x-ui.service &&
+        [[ ! -e /etc/systemd/system/x-ui.service && ! -e /usr/local/x-ui &&
+           ! -e /etc/x-ui && ! -e /usr/local/bin/x-ui && ! -e /usr/bin/x-ui ]]
 }
 
 refresh_ssh_session_cache() {
@@ -7956,7 +8098,7 @@ protocol_menu() {
         fi
         if systemctl is-active --quiet dnstt.service; then dnstt_status="Active"; dnstt_color="$C_GREEN"; fi
         if systemctl is-active --quiet nginx; then nginx_status="Active"; nginx_color="$C_GREEN"; fi
-        if command -v x-ui &> /dev/null; then xui_status="Installed"; xui_color="$C_GREEN"; fi
+        if tdz_xui_is_installed; then xui_status="Installed"; xui_color="$C_GREEN"; fi
         if declare -F tdz_openvpn_is_active >/dev/null 2>&1 && tdz_openvpn_is_active; then
             openvpn_status="Active"; openvpn_color="$C_GREEN"
         elif declare -F tdz_openvpn_is_installed >/dev/null 2>&1 && tdz_openvpn_is_installed; then
@@ -7983,7 +8125,6 @@ protocol_menu() {
         tdz_box_divider
         tdz_row "${C_GRAY}MANAGEMENT PANELS${C_RESET}"
         tdz_menu_status "[11]" "Install X-UI ${XUI_PATCHED_LABEL}" "$xui_status" "$xui_color"
-        tdz_menu1 "[12]" "Uninstall X-UI Panel"
         tdz_box_divider
         tdz_menu1 "[ 0]" "Return to Main Menu"
         tdz_box_bot
@@ -7999,7 +8140,7 @@ protocol_menu() {
             7) nginx_proxy_menu ;;
             8) tdz_run_action install_zivpn ;; 9) tdz_run_action uninstall_zivpn ;;
             10) if declare -F tdz_openvpn_menu >/dev/null 2>&1; then tdz_openvpn_menu; else invalid_option; fi ;;
-            11) tdz_run_action install_xui_panel ;; 12) tdz_run_action uninstall_xui_panel ;;
+            11) tdz_run_action install_xui_panel ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -8085,7 +8226,7 @@ tdz_uninstall_optional_components() {
     uninstall_ssl_tunnel || cleanup_failed=true
     purge_nginx silent || cleanup_failed=true
     rm -rf /etc/nginx
-    uninstall_xui_panel silent || cleanup_failed=true
+    tdz_cleanup_xui_files || cleanup_failed=true
     if dpkg-query -W -f='${Status}' haproxy 2>/dev/null | grep -q 'install ok installed'; then
         tdz_apt_purge haproxy || cleanup_failed=true
     fi
@@ -8142,7 +8283,7 @@ tdz_verify_uninstall_cleanup() {
         "$LEGACY_UDP_DIR" "$LEGACY_UDP_SERVICE" "$LEGACY_UDPGW_BINARY" \
         "$LEGACY_UDPGW_SERVICE" "$LEGACY_PROXY_BINARY" "$LEGACY_PROXY_SERVICE" \
         "$LEGACY_PROXY_CONFIG" \
-        /etc/nginx /etc/haproxy /usr/local/bin/x-ui /usr/local/x-ui /etc/x-ui \
+        /etc/nginx /etc/haproxy /usr/local/bin/x-ui /usr/bin/x-ui /usr/local/x-ui /etc/x-ui \
         /etc/systemd/system/x-ui.service
     )
     if [[ -n "${TDZ_OVPN_ROOT:-}" ]]; then
@@ -8795,7 +8936,7 @@ traffic_monitor_menu() {
     tdz_box_divider
     tdz_row "${C_GRAY}INTERFACE${C_RESET} ${C_WHITE}${iface:-Not detected}${C_RESET}"
     tdz_box_divider
-    tdz_menu1 "[ 1]" "Live Monitor (No Installation)"
+    tdz_menu1 "[ 1]" "Live Monitor"
     tdz_menu1 "[ 2]" "Total Traffic Since Boot"
     tdz_menu1 "[ 3]" "Daily and Monthly History"
     tdz_box_divider

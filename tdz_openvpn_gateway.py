@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenVPN transport gateway.
+"""TDZ OpenVPN transport gateway.
 
 The gateway exposes a fixed local OpenVPN TCP backend through one of three
 frontends:
@@ -649,7 +649,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Fixed-backend OpenVPN gateway")
+    parser = argparse.ArgumentParser(description="TDZ fixed-backend OpenVPN gateway")
     parser.add_argument("--listen", default="0.0.0.0")
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--backend-host", default="127.0.0.1")

@@ -638,7 +638,7 @@ tdz_openvpn_write_systemd_units() {
     for instance in tcp udp; do
         cat > "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-${instance}.service" <<EOF
 [Unit]
-Description=OpenVPN ${instance^^} Server
+Description=TDZ OpenVPN ${instance^^} Server
 After=network-online.target tdz-openvpn-network.service
 Wants=network-online.target
 Requires=tdz-openvpn-network.service
@@ -662,7 +662,7 @@ EOF
 
     cat > "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-portal.service" <<EOF
 [Unit]
-Description=OpenVPN Profile Portal
+Description=TDZ OpenVPN Profile Portal
 After=network-online.target
 Wants=network-online.target
 
@@ -695,7 +695,7 @@ EOF
 
     cat > "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-accounting.service" <<EOF
 [Unit]
-Description=OpenVPN Account and Usage Enforcement
+Description=TDZ OpenVPN Account and Usage Enforcement
 After=tdz-openvpn-tcp.service tdz-openvpn-udp.service
 Wants=tdz-openvpn-tcp.service tdz-openvpn-udp.service
 
@@ -715,7 +715,7 @@ tdz_openvpn_write_gateway_unit() {
     local name=$1 port=$2 mode=$3 extra=$4
     cat > "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-${name}.service" <<EOF
 [Unit]
-Description=OpenVPN ${name^^} Gateway
+Description=TDZ OpenVPN ${name^^} Gateway
 After=network-online.target tdz-openvpn-tcp.service
 Wants=network-online.target
 Requires=tdz-openvpn-tcp.service
@@ -829,7 +829,7 @@ EOF
     printf 'net.ipv4.ip_forward=1\n' > "$TDZ_OVPN_SYSCTL"
     cat > "$TDZ_OVPN_SYSTEMD_DIR/tdz-openvpn-network.service" <<EOF
 [Unit]
-Description=OpenVPN Network Rules
+Description=TDZ OpenVPN Network Rules
 After=network-pre.target
 Before=tdz-openvpn-tcp.service tdz-openvpn-udp.service
 
@@ -979,7 +979,7 @@ EOF
 
     cp "$TDZ_OVPN_PKI/ca.crt" "$TDZ_OVPN_PROFILES/tdz-openvpn-ca.crt"
     cat > "$TDZ_OVPN_PROFILES/connection-guide.txt" <<EOF
-OpenVPN Connection Guide
+TDZ SSH TUNNEL - OpenVPN Connection Guide
 
 Server: $TDZ_OVPN_HOST
 Portal: https://$TDZ_OVPN_HOST:$TDZ_OVPN_PORTAL_PORT$TDZ_OVPN_PUBLIC_PATH/
@@ -1063,7 +1063,7 @@ tdz_openvpn_portal_write_header() {
     cat <<EOF
 <header class="site-header">
   <div class="shell nav-shell">
-    <a class="brand" href="$TDZ_OVPN_PUBLIC_PATH/" aria-label="OpenVPN Portal home">
+    <a class="brand" href="$TDZ_OVPN_PUBLIC_PATH/" aria-label="TDZ OpenVPN Portal home">
       <span class="site-logo site-logo-header" aria-hidden="true"><img src="$TDZ_OVPN_LOGO_URL" alt=""></span>
       <span class="brand-copy"><strong>TDZ</strong><small>OVPN PORTAL</small></span>
     </a>
@@ -1357,14 +1357,14 @@ tdz_openvpn_portal_write_index() {
     {
         cat <<EOF
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0d121a"><meta name="description" content="OpenVPN transport portal"><title>OPENVPN PORTAL</title><link rel="icon" type="image/png" href="$TDZ_OVPN_LOGO_URL"><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0d121a"><meta name="description" content="TDZ SSH TUNNEL OpenVPN transport portal"><title>TDZ • OVPN PORTAL</title><link rel="icon" type="image/png" href="$TDZ_OVPN_LOGO_URL"><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
 EOF
         tdz_openvpn_portal_write_header overview
         cat <<EOF
 <main class="shell">
   <section class="hero">
     <div class="hero-copy">
-      <div class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>OpenVPN protocol suite</div>
+      <div class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>TDZ SSH TUNNEL • OpenVPN suite</div>
       <h1>Fast when it can be.<br><span>Flexible when it must.</span></h1>
       <p class="lead">One clean portal for direct OpenVPN, HTTP, WebSocket and TLS adapter profiles—with the same SSH/OVPN account across every route.</p>
       <div class="actions"><a class="button primary" href="$TDZ_OVPN_PUBLIC_PATH/download">Download profiles <span aria-hidden="true">↓</span></a><a class="button" href="$TDZ_OVPN_PUBLIC_PATH/docs">Open setup guide <span aria-hidden="true">→</span></a></div>
@@ -1401,7 +1401,7 @@ EOF
 EOF
         tdz_openvpn_portal_write_support
         cat <<EOF
-  <section class="section project-spotlight"><div><div class="kicker">Open source project</div><h2>One project, one workflow.</h2><p>The portal, profiles and OpenVPN services are generated and managed together.</p></div><a class="button" href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT" target="_blank" rel="noopener noreferrer">View GitHub repository ↗</a></section>
+  <section class="section project-spotlight"><div><div class="kicker">Open source project</div><h2>Part of TDZ SSH TUNNEL.</h2><p>The portal, profiles and OpenVPN services are generated and managed by the same server-side project.</p></div><a class="button" href="https://github.com/yeasinulhoquetuhin/TDZ-SSH-SCRIPT" target="_blank" rel="noopener noreferrer">View GitHub repository ↗</a></section>
 </main>
 EOF
         tdz_openvpn_portal_write_footer
@@ -1413,7 +1413,7 @@ tdz_openvpn_portal_write_docs() {
     {
         cat <<EOF
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0d121a"><meta name="description" content="OpenVPN setup guide"><title>OPENVPN PORTAL</title><link rel="icon" type="image/png" href="$TDZ_OVPN_LOGO_URL"><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0d121a"><meta name="description" content="TDZ OpenVPN setup guide"><title>TDZ • OVPN PORTAL</title><link rel="icon" type="image/png" href="$TDZ_OVPN_LOGO_URL"><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
 EOF
         tdz_openvpn_portal_write_header docs
         cat <<EOF
@@ -1427,7 +1427,7 @@ EOF
 
       <section class="content-section" id="payloads"><div class="kicker">Payload reference</div><h2>Use the gateway and backend correctly</h2><div class="grid two"><article class="card payload-card"><div class="payload-head"><span class="label">HTTP CONNECT payload</span><button class="copy-button" type="button" data-copy-target="http-connect-payload">Copy</button></div><div class="payload" id="http-connect-payload">CONNECT $TDZ_OVPN_HOST:$TDZ_OVPN_TCP_PORT HTTP/1.1[crlf]Host: $TDZ_OVPN_HOST[crlf]Connection: keep-alive[crlf][crlf]</div><p class="note">Gateway: $TDZ_OVPN_HOST:$TDZ_OVPN_HTTP_PORT • Backend: $TDZ_OVPN_HOST:$TDZ_OVPN_TCP_PORT</p></article><article class="card payload-card"><div class="payload-head"><span class="label">WebSocket payload</span><button class="copy-button" type="button" data-copy-target="websocket-payload">Copy</button></div><div class="payload" id="websocket-payload">GET / HTTP/1.1[crlf]Host: $TDZ_OVPN_HOST[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]</div><p class="note">Use port $TDZ_OVPN_HTTP_PORT for WS or $TDZ_OVPN_WSS_PORT for WSS with SNI.</p></article></div></section>
 
-      <section class="content-section" id="verification"><div class="kicker">Verification order</div><h2>Test one layer at a time</h2><div class="grid"><article class="card"><div class="card-index">01</div><h3>Direct TCP / UDP</h3><p>Confirms the OpenVPN core, profile and account authentication.</p></article><article class="card"><div class="card-index">02</div><h3>HTTP CONNECT / WS</h3><p>Confirms the HTTP adapter after direct authentication works.</p></article><article class="card"><div class="card-index">03</div><h3>SSL / WSS</h3><p>Confirms outer TLS, correct SNI and adapter compatibility.</p></article></div></section>
+      <section class="content-section" id="verification"><div class="kicker">Verification order</div><h2>Test one layer at a time</h2><div class="grid"><article class="card"><div class="card-index">01</div><h3>Direct TCP / UDP</h3><p>Confirms the OpenVPN core, profile and TDZ authentication.</p></article><article class="card"><div class="card-index">02</div><h3>HTTP CONNECT / WS</h3><p>Confirms the HTTP adapter after direct authentication works.</p></article><article class="card"><div class="card-index">03</div><h3>SSL / WSS</h3><p>Confirms outer TLS, correct SNI and adapter compatibility.</p></article></div></section>
 
       <section class="content-section" id="policy"><div class="kicker">Account policy</div><h2>Your existing SSH/OVPN login applies</h2><div class="grid two"><div class="callout"><span class="callout-mark">ID</span><div><strong>Username and password</strong><p>Profiles never contain credentials. Enter the active SSH/OVPN account after import.</p></div></div><div class="callout"><span class="callout-mark">BW</span><div><strong>Shared usage accounting</strong><p>OpenVPN traffic is reconciled against the same bandwidth quota.</p></div></div><div class="callout"><span class="callout-mark">EX</span><div><strong>Expiry and first use</strong><p>Pending activation and expiry follow the shared lifecycle.</p></div></div><div class="callout"><span class="callout-mark">CN</span><div><strong>Connection admission</strong><p>Session limits are checked before a connection is admitted.</p></div></div></div></section>
 
@@ -1447,7 +1447,7 @@ tdz_openvpn_portal_write_downloads() {
     {
         cat <<EOF
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0d121a"><meta name="description" content="Download OpenVPN profiles"><title>OPENVPN PORTAL</title><link rel="icon" type="image/png" href="$TDZ_OVPN_LOGO_URL"><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0d121a"><meta name="description" content="Download TDZ OpenVPN profiles"><title>TDZ • OVPN PORTAL</title><link rel="icon" type="image/png" href="$TDZ_OVPN_LOGO_URL"><script src="$TDZ_OVPN_PUBLIC_PATH/assets/portal.js"></script><link rel="stylesheet" href="$TDZ_OVPN_PUBLIC_PATH/assets/portal.css"></head><body>
 EOF
         tdz_openvpn_portal_write_header download
         cat <<EOF
@@ -1949,7 +1949,7 @@ tdz_openvpn_apply_port_layout() {
     }
     if ! tdz_openvpn_requested_ports_valid "$requested_portal" "$requested_ssl" \
         "$requested_tcp" "$requested_udp" "$requested_http" "$requested_wss"; then
-        echo -e "${C_RED}[ERROR] Ports must be unique numbers from 1-65535 and must not conflict with reserved system ports.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Ports must be unique numbers from 1-65535 and must not conflict with TDZ system ports.${C_RESET}"
         return 1
     fi
     if tdz_openvpn_ports_match_layout "$requested_portal" "$requested_ssl" \
@@ -2066,7 +2066,7 @@ tdz_openvpn_configure_ports() {
 
     if ! tdz_openvpn_requested_ports_valid "$new_portal" "$new_ssl" "$new_tcp" \
         "$new_udp" "$new_http" "$new_wss"; then
-        echo -e "${C_RED}[ERROR] Ports must be unique and cannot overlap reserved system services.${C_RESET}"
+        echo -e "${C_RED}[ERROR] Ports must be unique and cannot overlap TDZ system services.${C_RESET}"
         return 1
     fi
     if tdz_openvpn_ports_match_layout "$new_portal" "$new_ssl" "$new_tcp" \
@@ -2164,8 +2164,11 @@ tdz_openvpn_configure_support_contact() {
 }
 
 tdz_openvpn_uninstall() {
-    local mode=${1:-interactive} confirm="" data_parent
-    local cleanup_failed=false
+    local mode=${1:-interactive} confirm="" data_parent unit path
+    local cleanup_failed=false step_failed=false
+    local -a units=(tdz-openvpn-accounting tdz-openvpn-portal tdz-openvpn-http
+        tdz-openvpn-wss tdz-openvpn-ssl tdz-openvpn-tcp tdz-openvpn-udp
+        tdz-openvpn-network)
     # Load ownership metadata before state is removed. Legacy installations
     # without the flag intentionally leave an unknown pre-existing account
     # untouched rather than deleting it on a guess.
@@ -2178,36 +2181,79 @@ tdz_openvpn_uninstall() {
             return 0
         }
     fi
+
+    if [[ "$mode" != "silent" ]] && declare -F tdz_section >/dev/null 2>&1; then
+        echo
+        tdz_section "UNINSTALLATION PROGRESS"
+    fi
+
+    tdz_openvpn_progress_begin 1 4 "Stopping services"
     tdz_openvpn_stop_services
-    local unit
-    for unit in tdz-openvpn-accounting tdz-openvpn-portal tdz-openvpn-http tdz-openvpn-wss \
-        tdz-openvpn-ssl tdz-openvpn-tcp tdz-openvpn-udp tdz-openvpn-network; do
+    step_failed=false
+    for unit in "${units[@]}"; do
         systemctl disable "$unit.service" >/dev/null 2>&1 || true
-        systemctl is-active --quiet "$unit.service" && cleanup_failed=true
-        rm -f "$TDZ_OVPN_SYSTEMD_DIR/${unit}.service" || cleanup_failed=true
+        systemctl is-active --quiet "$unit.service" && step_failed=true
+        rm -f "$TDZ_OVPN_SYSTEMD_DIR/${unit}.service" || step_failed=true
     done
+    if $step_failed; then
+        cleanup_failed=true; tdz_openvpn_progress_failed
+    else
+        tdz_openvpn_progress_done
+    fi
+
+    tdz_openvpn_progress_begin 2 4 "Restoring network settings"
+    step_failed=false
     if [[ -x "$TDZ_OVPN_FIREWALL" ]]; then
-        "$TDZ_OVPN_FIREWALL" stop >/dev/null 2>&1 || cleanup_failed=true
+        "$TDZ_OVPN_FIREWALL" stop >/dev/null 2>&1 || step_failed=true
     fi
-    rm -f "$TDZ_OVPN_FIREWALL" "$TDZ_OVPN_PAM_SERVICE" "$TDZ_OVPN_SYSCTL" || cleanup_failed=true
+    rm -f "$TDZ_OVPN_FIREWALL" "$TDZ_OVPN_PAM_SERVICE" "$TDZ_OVPN_SYSCTL" || step_failed=true
     if [[ "$TDZ_OVPN_IP_FORWARD_PREVIOUS" =~ ^[01]$ ]]; then
-        sysctl -w "net.ipv4.ip_forward=$TDZ_OVPN_IP_FORWARD_PREVIOUS" >/dev/null 2>&1 || cleanup_failed=true
+        sysctl -w "net.ipv4.ip_forward=$TDZ_OVPN_IP_FORWARD_PREVIOUS" >/dev/null 2>&1 || step_failed=true
     fi
-    rm -rf "$TDZ_OVPN_ROOT" "$TDZ_OVPN_PORTAL_BASE" || cleanup_failed=true
+    if $step_failed; then
+        cleanup_failed=true; tdz_openvpn_progress_failed
+    else
+        tdz_openvpn_progress_done
+    fi
+
+    tdz_openvpn_progress_begin 3 4 "Removing service files"
+    step_failed=false
+    rm -rf "$TDZ_OVPN_ROOT" "$TDZ_OVPN_PORTAL_BASE" || step_failed=true
     data_parent=$(dirname "$TDZ_OVPN_ROOT")
     if [[ -d "$data_parent" ]]; then
-        chown root:root "$data_parent" >/dev/null 2>&1 || cleanup_failed=true
-        chmod 700 "$data_parent" >/dev/null 2>&1 || cleanup_failed=true
+        chown root:root "$data_parent" >/dev/null 2>&1 || step_failed=true
+        chmod 700 "$data_parent" >/dev/null 2>&1 || step_failed=true
     fi
     if [[ "$TDZ_OVPN_SERVICE_USER_CREATED" == "1" ]] && id "$TDZ_OVPN_SERVICE_USER" >/dev/null 2>&1; then
-        userdel "$TDZ_OVPN_SERVICE_USER" >/dev/null 2>&1 || cleanup_failed=true
+        userdel "$TDZ_OVPN_SERVICE_USER" >/dev/null 2>&1 || step_failed=true
     fi
     if [[ "$TDZ_OVPN_SERVICE_GROUP_CREATED" == "1" ]] &&
        getent group "$TDZ_OVPN_SERVICE_USER" >/dev/null 2>&1; then
-        groupdel "$TDZ_OVPN_SERVICE_USER" >/dev/null 2>&1 || cleanup_failed=true
+        groupdel "$TDZ_OVPN_SERVICE_USER" >/dev/null 2>&1 || step_failed=true
     fi
+    if $step_failed; then
+        cleanup_failed=true; tdz_openvpn_progress_failed
+    else
+        tdz_openvpn_progress_done
+    fi
+
+    tdz_openvpn_progress_begin 4 4 "Verifying cleanup"
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl reset-failed >/dev/null 2>&1 || true
+    step_failed=false
+    for unit in "${units[@]}"; do
+        systemctl is-active --quiet "$unit.service" && step_failed=true
+        [[ -e "$TDZ_OVPN_SYSTEMD_DIR/${unit}.service" ]] && step_failed=true
+    done
+    for path in "$TDZ_OVPN_ROOT" "$TDZ_OVPN_PORTAL_BASE" "$TDZ_OVPN_FIREWALL" \
+        "$TDZ_OVPN_PAM_SERVICE" "$TDZ_OVPN_SYSCTL"; do
+        [[ -e "$path" || -L "$path" ]] && step_failed=true
+    done
+    if $step_failed; then
+        cleanup_failed=true; tdz_openvpn_progress_failed
+    else
+        tdz_openvpn_progress_done
+    fi
     if [[ "$cleanup_failed" == true ]]; then
         [[ "$mode" == "silent" ]] || echo -e "${C_RED}[ERROR] OpenVPN cleanup requires attention.${C_RESET}"
         return 1
