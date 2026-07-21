@@ -1,0 +1,31 @@
+name: Release tooling checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - name: Check shell syntax
+        run: bash -n install.sh release-tools/build-release.sh
+      - name: Test release tooling
+        run: go test ./release-tools/...
+      - name: Verify public runtime boundary
+        run: |
+          test -s release-tools/launcher/payload.enc
+          test ! -e menu.sh
+          test ! -e openvpn_module.sh
+          test ! -e tdz_openvpn_runtime.py
+          test ! -e tdz_openvpn_gateway.py
+          test ! -e tdz_openvpn_portal.py
+          test ! -e tdz_ssh_auth_session.py
+          test ! -e ws_ssh_bridge.py

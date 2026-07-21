@@ -1,1 +1,4 @@
 *.tar.gz
+.release-work/
+__pycache__/
+*.pyc
