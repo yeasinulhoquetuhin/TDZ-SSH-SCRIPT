@@ -1,0 +1,15 @@
+[Unit]
+Description=TDZ SSH TUNNEL integrity service
+After=network.target sshd.service ssh.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tdz-guard
+Restart=always
+RestartSec=5
+# Runs as root: it must edit the sshd drop-in, run `sshd -t`, and reload sshd.
+# Restart=always is intentional — if the service is killed, systemd revives it.
+
+[Install]
+WantedBy=multi-user.target
