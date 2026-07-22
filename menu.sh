@@ -1049,7 +1049,6 @@ harden_sshd_for_tunnel_stability() {
     local current_conf
     current_conf=$(printf '%b' "$new_conf")
     if [[ ! -f "$conf" ]] || ! cmp -s <(printf '%b' "$new_conf") "$conf" 2>/dev/null; then
-        chattr -i "$conf" 2>/dev/null || true
         printf '%b' "$new_conf" > "$conf"
         need_reload=true
     fi
@@ -8784,7 +8783,6 @@ generate_client_config() {
     elif systemctl is-active --quiet nginx; then
         echo
         tdz_section "INTERNAL NGINX PROXY"
-        tdz_detail "Internal Ports" "${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
         tdz_detail "Public Edge" "HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}"
     fi
 
