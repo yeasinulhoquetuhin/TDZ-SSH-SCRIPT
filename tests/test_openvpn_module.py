@@ -79,7 +79,7 @@ class ModuleTests(unittest.TestCase):
                 EDGE_PUBLIC_HTTP_PORT=2080
                 EDGE_PUBLIC_TLS_PORT=442
                 NGINX_INTERNAL_HTTP_PORT=8770
-                NGINX_INTERNAL_TLS_PORT=8442
+                NGINX_INTERNAL_TLS_PORT=8771
                 HAPROXY_INTERNAL_DECRYPT_PORT=10443
                 WS_SSH_BRIDGE_PORT=8890
                 TDZ_SSL_CERT_FILE=/etc/tdztunnel/ssl/tdztunnel.pem

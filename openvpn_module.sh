@@ -194,7 +194,7 @@ tdz_openvpn_valid_telegram_username() {
 tdz_openvpn_forbidden_port() {
     local port=${1:-} reserved
     case "$port" in
-        22|53|80|442|443|1080|1180|2053|2080|2086|2096|2288|2289|5300|5667|7300|8080|8443|8880|8888|8770|8442|8890|10443) return 0 ;;
+        22|53|80|442|443|1080|1180|2053|2080|2086|2096|2288|2289|5300|5667|7300|8080|8443|8880|8888|8770|8771|8890|10443) return 0 ;;
         *) ;;
     esac
     for reserved in "${EDGE_PUBLIC_HTTP_PORT:-}" "${EDGE_PUBLIC_TLS_PORT:-}" \

@@ -50,7 +50,7 @@ DEFAULT_EDGE_PUBLIC_TLS_PORT="442"
 EDGE_PUBLIC_HTTP_PORT="$DEFAULT_EDGE_PUBLIC_HTTP_PORT"
 EDGE_PUBLIC_TLS_PORT="$DEFAULT_EDGE_PUBLIC_TLS_PORT"
 NGINX_INTERNAL_HTTP_PORT="8770"
-NGINX_INTERNAL_TLS_PORT="8442"
+NGINX_INTERNAL_TLS_PORT="8771"
 HAPROXY_INTERNAL_DECRYPT_PORT="10443"
 # WebSocket-to-SSH bridge (DarkTunnel / HTTP Custom / NPV payload support)
 WS_SSH_BRIDGE_SCRIPT="/usr/local/bin/tdz-ws-ssh-bridge.py"
@@ -8779,7 +8779,6 @@ generate_client_config() {
         tdz_detail "Host" "$host_domain"
         tdz_detail "HTTP / Raw SSH" "$EDGE_PUBLIC_HTTP_PORT"
         tdz_detail "TLS / SNI / SSL" "$EDGE_PUBLIC_TLS_PORT"
-        tdz_detail "Internal Backend" "Nginx ${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT}"
         tdz_detail "SNI / Bug Host" "$host_domain"
     elif systemctl is-active --quiet nginx; then
         echo
