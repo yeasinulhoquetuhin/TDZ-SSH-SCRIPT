@@ -3845,8 +3845,10 @@ list_users_view() {
     if [[ "$view_filter" == "online" ]]; then
         tdz_row2 "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
             "${C_GRAY}SESSIONS:${C_RESET} ${C_BOLD}${C_WHITE}${session_count}${C_RESET}"
+    elif [[ "$view_filter" == "expired" || "$view_filter" == "quota" ]]; then
+        tdz_row2 "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" ""
     else
-        tdz_row2 "${C_GRAY}SHOWN${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
+        tdz_row2 "${C_GRAY}TOTAL:${C_RESET} ${C_BOLD}${C_WHITE}${user_count}${C_RESET}" \
             "${C_GREEN}ACTIVE ${active_count}${C_RESET} ${C_GRAY}/${C_RESET} ${C_CYAN}PENDING ${pending_count}${C_RESET}"
         (( attention_count > 0 )) && tdz_row2 "" "${C_YELLOW}ATTENTION ${attention_count}${C_RESET}"
     fi
