@@ -192,8 +192,10 @@ setup verification.
 
 - Root access, APT, Bash, OpenSSH and systemd are required.
 - OpenVPN needs Python 3.7 or newer and a compatible PAM plugin.
-- DNSTT needs exclusive access to UDP port 53 and may replace the VPS resolver
-  service configuration.
+- DNSTT listens on UDP port 54; incoming public UDP port 53 is forwarded to it.
+  Local DNS resolvers can keep port 53 without replacing the VPS resolver
+  configuration. Public UDP 53 must remain reachable and cannot be shared with
+  another public DNS service on the same IP.
 - The installer keeps recoverable account credentials in
   `/etc/tdztunnel/users.db` for account display and backup/restore. The database
   remains root-only (`0600`); protect all root backups accordingly.
