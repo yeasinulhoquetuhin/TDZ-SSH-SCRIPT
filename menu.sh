@@ -5983,7 +5983,7 @@ write_ws_ssh_bridge_script() {
     candidate=$(mktemp "${WS_SSH_BRIDGE_SCRIPT}.XXXXXX") || return 1
     cat > "$candidate" <<'PYEOF'
 #!/usr/bin/env python3
-"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3.1."""
+"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3.2."""
 import socket, select, threading, sys, os, signal, time, re
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
@@ -5993,7 +5993,7 @@ SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
 BRANDING_FILE = os.environ.get("TDZ_WS_BRIDGE_BRANDING", "/etc/tdztunnel/ws_branding.conf")
 
 SWITCHING_RESPONSE_BASE = (
-b'HTTP/1.1 101 Script By: tuhinbro.com\r\n'
+b'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> <font color="#0057B7" size="7">tuhinbro.com</font></b>\r\n'
 b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
@@ -6385,7 +6385,7 @@ refresh_ws_ssh_bridge_runtime() {
     local force="${1:-}" backup was_active=false failed=false
     [[ -f "$WS_SSH_BRIDGE_SERVICE" ]] || return 0
     if [[ "$force" != force ]] &&
-       grep -Fqx '"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3.1."""' "$WS_SSH_BRIDGE_SCRIPT" 2>/dev/null; then
+       grep -Fqx '"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3.2."""' "$WS_SSH_BRIDGE_SCRIPT" 2>/dev/null; then
         return 0
     fi
     backup=$(mktemp -d) || return 1

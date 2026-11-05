@@ -147,7 +147,11 @@ class BridgeTests(unittest.TestCase):
 
     def assert_upgrade(self, reader):
         header = reader.until(b"\r\n\r\n")
-        self.assertTrue(header.startswith(b"HTTP/1.1 101 Script By: tuhinbro.com\r\n"))
+        self.assertEqual(
+            header.split(b"\r\n", 1)[0],
+            b'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> '
+            b'<font color="#0057B7" size="7">tuhinbro.com</font></b>',
+        )
         self.assertIn(b"Upgrade: websocket\r\n", header)
         self.assertIn(b"Connection: Upgrade\r\n", header)
         self.assertNotIn(b"Content-Length", header)

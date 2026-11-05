@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3.1."""
+"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3.2."""
 import socket, select, threading, sys, os, signal, time, re
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
@@ -9,7 +9,7 @@ SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
 BRANDING_FILE = os.environ.get("TDZ_WS_BRIDGE_BRANDING", "/etc/tdztunnel/ws_branding.conf")
 
 SWITCHING_RESPONSE_BASE = (
-b'HTTP/1.1 101 Script By: tuhinbro.com\r\n'
+b'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> <font color="#0057B7" size="7">tuhinbro.com</font></b>\r\n'
 b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
