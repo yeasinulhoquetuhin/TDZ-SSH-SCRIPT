@@ -324,8 +324,8 @@ FAKE_SERVER
         self.assertEqual(self.resolver.read_text(), "nameserver 127.0.0.53\n")
         self.assertFalse(any("systemd-resolved" in call for call in self.calls()))
 
-    def test_v2ray_custom_port_is_validated_saved_and_used_in_service(self):
-        result = self.run_menu(r'''
+    def test_v2ray_custom_and_default_ports_are_saved_and_used_in_service(self):
+        setup = r'''
             ss() { return 0; }
             curl() {
                 while (( $# )); do
@@ -345,16 +345,22 @@ FAKE_SERVER
                 done
                 return 1
             }
-            install_dnstt <<< $'2\n\n0\n65536\n-1\nabc\n08088\nsgx.example.com\nns.sgx.example.com\n\n'
-        ''')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count("Enter a valid backend port"), 5)
-        self.assertIn("Local V2Ray Backend", result.stdout)
-        self.assertNotIn("Local V2Ray Backend (Port", result.stdout)
-        self.assertIn("ns.sgx.example.com 127.0.0.1:8088", self.service.read_text())
-        self.assertIn("V2Ray\\ \\(port\\ 8088\\)", self.config.read_text())
-        self.assertIn("on port 8088 without TLS", result.stdout)
-        self.assertNotIn("8787", result.stdout)
+        '''
+        for port_input, expected_port, errors in (("0\n65536\n-1\nabc\n08088", 8088, 4),
+                                                  ("", 8787, 0)):
+            with self.subTest(port=expected_port):
+                result = self.run_menu(
+                    setup + '\ninstall_dnstt <<< "$TDZ_DNSTT_TEST_INPUT"',
+                    TDZ_DNSTT_TEST_INPUT=f"2\n{port_input}\nsgx.example.com\nns.sgx.example.com\n\n",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.count("Enter a valid backend port"), errors)
+                self.assertIn("Local V2Ray Backend (Port 8787)", result.stdout)
+                self.assertIn(f"ns.sgx.example.com 127.0.0.1:{expected_port}", self.service.read_text())
+                self.assertIn(f"V2Ray\\ \\(port\\ {expected_port}\\)", self.config.read_text())
+                self.assertIn(f"on port {expected_port} without TLS", result.stdout)
+                cleanup = self.run_menu('UNINSTALL_MODE=silent; uninstall_dnstt')
+                self.assertEqual(cleanup.returncode, 0, cleanup.stderr)
 
     def test_uninstall_failure_keeps_files_needed_to_retry_rule_removal(self):
         self.seed_legacy()

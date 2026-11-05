@@ -7396,7 +7396,7 @@ install_dnstt() {
     tdz_box_header "DNSTT FORWARD TARGET"
     tdz_box_divider
     tdz_menu1 "[ 1]" "Local SSH Service (Port 22)"
-    tdz_menu1 "[ 2]" "Local V2Ray Backend"
+    tdz_menu1 "[ 2]" "Local V2Ray Backend (Port 8787)"
     tdz_box_bot
     echo
     read -r -p "$(echo -e "${C_PROMPT}  Select a target [2]: ${C_RESET}")" fwd_choice
@@ -7410,7 +7410,8 @@ install_dnstt() {
         
     elif [[ "$fwd_choice" == "2" ]]; then
         while true; do
-            read -r -p "  Choose a local V2Ray backend port (1-65535): " forward_port || return 1
+            read -r -p "  Choose a local V2Ray backend port (1-65535) [8787]: " forward_port || return 1
+            forward_port=${forward_port:-8787}
             if [[ "$forward_port" =~ ^[0-9]{1,5}$ ]] &&
                (( 10#$forward_port >= 1 && 10#$forward_port <= 65535 )); then
                 forward_port=$((10#$forward_port))
