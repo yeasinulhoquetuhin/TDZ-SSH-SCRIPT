@@ -210,10 +210,14 @@ class DnsttTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), old_config)
         self.assertEqual((self.keys / "server.key").read_text(), "keep-private-key\n")
         plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.stdout)
+        server_details = plain.split("CLIENT CONNECTION CONFIGURATION", 1)[0]
+        self.assertRegex(server_details, r"DNSTT Listener:\s+54 / UDP \(server-side\)")
+        client_details = plain.split("CLIENT CONNECTION CONFIGURATION", 1)[1]
+        self.assertNotIn("DNSTT Listener", client_details)
+        self.assertNotIn("server-side", client_details)
         for section in ("DNSTT CONNECTION DETAILS", "DNSTT / SLOWDNS"):
             details = plain.split(section, 1)[1]
             self.assertRegex(details, r"Public DNS Port:\s+53 / UDP")
-            self.assertRegex(details, r"DNSTT Listener:\s+54 / UDP \(server-side\)")
             self.assertRegex(details, r"SSH Port:\s+22 / TCP")
         self.assertIn("1.1.1.1:53 / 8.8.8.8:53", plain)
         self.assertEqual(self.calls().count(["start", "dnstt.service"]), 1)

@@ -7106,10 +7106,12 @@ dnstt_current_listen_port() {
 }
 
 show_dnstt_port_details() {
-    local listener
-    listener=$(dnstt_current_listen_port)
+    local view="${1:-server}" listener
     tdz_detail "Public DNS Port" "$DNSTT_PUBLIC_PORT / UDP"
-    tdz_detail "DNSTT Listener" "$listener / UDP (server-side)"
+    if [[ "$view" == server ]]; then
+        listener=$(dnstt_current_listen_port)
+        tdz_detail "DNSTT Listener" "$listener / UDP (server-side)"
+    fi
     if [[ "${FORWARD_DESC:-}" == *"SSH"* ]]; then
         tdz_detail "SSH Port" "22 / TCP"
     fi
@@ -9192,7 +9194,7 @@ generate_client_config() {
                 tdz_section "DNSTT / SLOWDNS"
                 tdz_detail "Nameserver" "$TUNNEL_DOMAIN"
                 tdz_detail "Public Key" "$PUBLIC_KEY"
-                show_dnstt_port_details
+                show_dnstt_port_details client
                 tdz_detail "DNS Resolver" "1.1.1.1:53 / 8.8.8.8:53"
             fi
         fi
