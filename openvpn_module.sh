@@ -1857,6 +1857,7 @@ tdz_openvpn_install() {
 }
 
 tdz_openvpn_show_details() {
+    local view="${1:-server}"
     local tls_label="Private OpenVPN certificate" shared_fingerprint="" gateway_fingerprint=""
     if ! tdz_openvpn_load_state; then
         echo -e "${C_RED}[ERROR] OpenVPN is not installed.${C_RESET}"
@@ -1878,7 +1879,7 @@ tdz_openvpn_show_details() {
         tdz_detail "HTTP / WS" "$TDZ_OVPN_HTTP_PORT"
         tdz_detail "WSS / SNI" "$TDZ_OVPN_WSS_PORT / $TDZ_OVPN_HOST"
         tdz_detail "SSL / SNI" "$TDZ_OVPN_SSL_PORT / $TDZ_OVPN_HOST"
-        tdz_detail "Outer TLS" "$tls_label"
+        [[ "$view" == client ]] || tdz_detail "Outer TLS" "$tls_label"
         tdz_detail "Download Portal" "https://${TDZ_OVPN_HOST}:${TDZ_OVPN_PORTAL_PORT}${TDZ_OVPN_PUBLIC_PATH}/" "$C_CYAN"
 
     else
@@ -2369,7 +2370,7 @@ tdz_openvpn_menu() {
 
 tdz_openvpn_append_client_details() {
     tdz_openvpn_is_installed || return 0
-    tdz_openvpn_show_details
+    tdz_openvpn_show_details client
     echo -e "  ${C_DIM}Use the same SSH username and password shown above.${C_RESET}"
 }
 
