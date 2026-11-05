@@ -7080,7 +7080,11 @@ show_dnstt_details() {
         fi
         
         if [[ "$FORWARD_DESC" == *"V2Ray"* ]]; then
-            tdz_detail "Action Required" "Run V2Ray (VLESS/VMess/Trojan) on port 8787 without TLS" "$C_YELLOW"
+            if [[ "$FORWARD_DESC" =~ \(port[[:space:]]+([0-9]+)\) ]]; then
+                tdz_detail "Action Required" "Run V2Ray (VLESS/VMess/Trojan) on port ${BASH_REMATCH[1]} without TLS" "$C_YELLOW"
+            else
+                tdz_detail "Action Required" "Run the configured local V2Ray backend without TLS" "$C_YELLOW"
+            fi
         elif [[ "$FORWARD_DESC" == *"SSH"* ]]; then
             tdz_detail "Action Required" "Configure the SSH client to use this DNS tunnel" "$C_YELLOW"
         fi
@@ -7392,7 +7396,7 @@ install_dnstt() {
     tdz_box_header "DNSTT FORWARD TARGET"
     tdz_box_divider
     tdz_menu1 "[ 1]" "Local SSH Service (Port 22)"
-    tdz_menu1 "[ 2]" "Local V2Ray Backend (Port 8787)"
+    tdz_menu1 "[ 2]" "Local V2Ray Backend"
     tdz_box_bot
     echo
     read -r -p "$(echo -e "${C_PROMPT}  Select a target [2]: ${C_RESET}")" fwd_choice
@@ -7405,9 +7409,17 @@ install_dnstt() {
 
         
     elif [[ "$fwd_choice" == "2" ]]; then
-        forward_port="8787"
-        forward_desc="V2Ray (port 8787)"
-        echo -e "${C_GREEN}[INFO] DNSTT will forward to V2Ray on 127.0.0.1:8787.${C_RESET}"
+        while true; do
+            read -r -p "  Choose a local V2Ray backend port (1-65535): " forward_port || return 1
+            if [[ "$forward_port" =~ ^[0-9]{1,5}$ ]] &&
+               (( 10#$forward_port >= 1 && 10#$forward_port <= 65535 )); then
+                forward_port=$((10#$forward_port))
+                break
+            fi
+            tdz_message ERROR "Enter a valid backend port from 1 to 65535."
+        done
+        forward_desc="V2Ray (port $forward_port)"
+        echo -e "${C_GREEN}[INFO] DNSTT will forward to V2Ray on 127.0.0.1:$forward_port.${C_RESET}"
     else
         echo -e "${C_RED}[ERROR] Invalid choice. Aborting.${C_RESET}"
         return

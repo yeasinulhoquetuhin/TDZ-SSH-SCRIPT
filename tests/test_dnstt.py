@@ -238,6 +238,7 @@ class DnsttTests(unittest.TestCase):
     def test_client_config_only_shows_ssh_dns_backend(self):
         self.seed_legacy()
         for backend, visible in (("SSH (port 22)", True), ("V2Ray (port 8787)", False),
+                                 ("V2Ray (port 8088)", False),
                                  (None, False)):
             with self.subTest(backend=backend):
                 self.config.write_text(
@@ -322,6 +323,38 @@ FAKE_SERVER
             self.assertFalse(path.exists(), path)
         self.assertEqual(self.resolver.read_text(), "nameserver 127.0.0.53\n")
         self.assertFalse(any("systemd-resolved" in call for call in self.calls()))
+
+    def test_v2ray_custom_port_is_validated_saved_and_used_in_service(self):
+        result = self.run_menu(r'''
+            ss() { return 0; }
+            curl() {
+                while (( $# )); do
+                    if [[ "$1" == -o ]]; then
+                        cat > "$2" <<'FAKE_SERVER'
+#!/bin/bash
+while (( $# )); do
+    case "$1" in
+        -privkey-file|-pubkey-file) printf 'test-key\n' > "$2"; shift ;;
+    esac
+    shift
+done
+FAKE_SERVER
+                        return 0
+                    fi
+                    shift
+                done
+                return 1
+            }
+            install_dnstt <<< $'2\n\n0\n65536\n-1\nabc\n08088\nsgx.example.com\nns.sgx.example.com\n\n'
+        ''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("Enter a valid backend port"), 5)
+        self.assertIn("Local V2Ray Backend", result.stdout)
+        self.assertNotIn("Local V2Ray Backend (Port", result.stdout)
+        self.assertIn("ns.sgx.example.com 127.0.0.1:8088", self.service.read_text())
+        self.assertIn("V2Ray\\ \\(port\\ 8088\\)", self.config.read_text())
+        self.assertIn("on port 8088 without TLS", result.stdout)
+        self.assertNotIn("8787", result.stdout)
 
     def test_uninstall_failure_keeps_files_needed_to_retry_rule_removal(self):
         self.seed_legacy()
