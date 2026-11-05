@@ -66,6 +66,10 @@ DNSTT_KEYS_DIR="/etc/tdztunnel/dnstt"
 DNSTT_CONFIG_FILE="$DB_DIR/dnstt_info.conf"
 DNSTT_RESOLVER_STATE_FILE="$DNSTT_KEYS_DIR/resolver.state"
 DNSTT_RESOLV_BACKUP="$DNSTT_KEYS_DIR/resolv.conf.before"
+DNSTT_NETWORK_SERVICE_FILE="/etc/systemd/system/tdz-dnstt-network.service"
+DNSTT_NETWORK_SCRIPT="$DNSTT_KEYS_DIR/network.sh"
+DNSTT_PUBLIC_PORT="53"
+DNSTT_LISTEN_PORT="54"
 TDZ_RESOLV_CONF="${TDZ_RESOLV_CONF:-/etc/resolv.conf}"
 TDZ_RESOLVED_STUB="${TDZ_RESOLVED_STUB:-/run/systemd/resolve/stub-resolv.conf}"
 # Cleanup-only paths from releases that previously offered two dead optional
@@ -1489,6 +1493,18 @@ update_setup() {
     setup_bandwidth_service
     setup_trial_cleanup_script
 
+    refresh_ws_ssh_bridge_runtime force || {
+        tdz_message ERROR "HTTP/WS bridge refresh failed; its previous runtime was restored."
+        return 1
+    }
+
+    if [[ -f "$DNSTT_SERVICE_FILE" ]]; then
+        refresh_dnstt_runtime || {
+            echo -e "${C_RED}[ERROR] DNSTT port update failed; its previous setup was restored.${C_RESET}"
+            return 1
+        }
+    fi
+
     if declare -F tdz_openvpn_refresh_runtime >/dev/null 2>&1 && tdz_openvpn_is_installed; then
         tdz_openvpn_refresh_runtime || {
             echo -e "${C_RED}[ERROR] OpenVPN refresh failed; its previous working state was restored.${C_RESET}"
@@ -2422,6 +2438,9 @@ sync_runtime_components_if_needed() {
     if [[ -f "$BADVPN_SERVICE_FILE" ]]; then
         ensure_badvpn_service_is_quiet
     fi
+    refresh_ws_ssh_bridge_runtime || {
+        tdz_message ERROR "HTTP/WS bridge update failed; its previous runtime was restored."
+    }
     if declare -F tdz_openvpn_needs_refresh >/dev/null 2>&1 && tdz_openvpn_needs_refresh; then
         tdz_openvpn_refresh_runtime >/dev/null 2>&1 || true
     fi
@@ -5953,16 +5972,18 @@ select_edge_certificate() {
 }
 
 # ============================================================================
-# WebSocket-to-SSH Bridge — accepts DarkTunnel-style WS upgrade payloads
-# (GET wss://[cf] HTTP/1.1 ... Upgrade: websocket) and bridges raw TCP to SSH.
+# HTTP / WS-to-SSH Bridge — accepts HTTP payloads, X-Real-Host / X-Split,
+# and DarkTunnel-style WS requests, then bridges raw TCP to the local SSH service.
 # Replaces nginx_cleartext for port 2080 because nginx returns 400 Bad Request
 # on the non-standard wss:// absolute-URI form.
 # ============================================================================
 write_ws_ssh_bridge_script() {
-    mkdir -p "$(dirname "$WS_SSH_BRIDGE_SCRIPT")"
-    cat > "$WS_SSH_BRIDGE_SCRIPT" <<'PYEOF'
+    local candidate
+    mkdir -p "$(dirname "$WS_SSH_BRIDGE_SCRIPT")" || return 1
+    candidate=$(mktemp "${WS_SSH_BRIDGE_SCRIPT}.XXXXXX") || return 1
+    cat > "$candidate" <<'PYEOF'
 #!/usr/bin/env python3
-"""TDZ SSH TUNNEL WebSocket-to-SSH Bridge v2 (with branding support)."""
+"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3."""
 import socket, select, threading, sys, os, signal, time
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
@@ -5972,11 +5993,13 @@ SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
 BRANDING_FILE = os.environ.get("TDZ_WS_BRIDGE_BRANDING", "/etc/tdztunnel/ws_branding.conf")
 
 SWITCHING_RESPONSE_BASE = (
-b'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> <font color="#0057B7" size="7">tuhinbro.com</font></b>\r\n'
+b'HTTP/1.1 101 Script By: tuhinbro.com\r\n'
 b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
 MAX_HEADER_BYTES = 65536
+HTTP_METHODS = (b"GET ", b"CONNECT ", b"POST ", b"HEAD ", b"PUT ",
+                b"OPTIONS ", b"DELETE ", b"PATCH ", b"TRACE ")
 RECV_CHUNK = 256 * 1024
 # Kernel socket buffers. Default Linux SO_RCVBUF is ~200KB which is WAY too
 # small for high-BDP paths (BD <-> SG at 80ms RTT × 100Mbps = 1MB BDP).
@@ -6074,7 +6097,118 @@ def load_branding_headers():
 def build_switching_response():
     return SWITCHING_RESPONSE_BASE + load_branding_headers() + b"\r\n"
 
-def bridge_socks(c, s):
+class HandshakeError(Exception):
+    def __init__(self, status, reason):
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
+def read_handshake(client):
+    """Read fragmented headers, or stop immediately at a direct SSH prefix."""
+    buf = b""
+    deadline = time.monotonic() + HANDSHAKE_TIMEOUT
+    while True:
+        if buf.startswith(b"SSH-"):
+            return None, buf
+        end = buf.find(b"\r\n\r\n")
+        if end >= 0:
+            if end + 4 > MAX_HEADER_BYTES:
+                raise HandshakeError(431, "Request Header Fields Too Large")
+            return buf[:end], buf[end + 4:]
+        if len(buf) >= MAX_HEADER_BYTES:
+            raise HandshakeError(431, "Request Header Fields Too Large")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise socket.timeout("handshake timeout")
+        client.settimeout(remaining)
+        chunk = client.recv(min(4096, MAX_HEADER_BYTES - len(buf)))
+        if not chunk:
+            raise EOFError("incomplete handshake")
+        buf += chunk
+
+
+def parse_payload_headers(header):
+    request, *lines = header.split(b"\r\n")
+    parts = request.split()
+    if len(parts) != 3 or parts[0] + b" " not in HTTP_METHODS or parts[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
+        raise HandshakeError(400, "Bad Request")
+    headers = {}
+    for line in lines:
+        name, separator, value = line.partition(b":")
+        if not separator or not name.strip():
+            raise HandshakeError(400, "Bad Request")
+        name = name.strip().lower()
+        value = value.strip()
+        if name in (b"x-real-host", b"x-split") and name in headers:
+            raise HandshakeError(400, "Bad Request")
+        headers[name] = value
+    target = headers.get(b"x-real-host", b"")
+    if target:
+        # The ws-http header is accepted only for the configured SSH service.
+        # It cannot select another local service or an arbitrary remote host.
+        allowed_hosts = {SSH_HOST.lower(), "localhost", "127.0.0.1", "::1"}
+        try:
+            target = target.decode("ascii")
+            if target.startswith("["):
+                host, suffix = target[1:].split("]", 1)
+                if not suffix.startswith(":"):
+                    raise ValueError("missing port")
+                port = suffix[1:]
+            else:
+                host, port = target.rsplit(":", 1)
+            valid = host.lower() in allowed_hosts and port.isdigit() and int(port) == SSH_PORT
+        except (UnicodeError, ValueError):
+            valid = False
+        if not valid:
+            raise HandshakeError(403, "Forbidden")
+    return bool(headers.get(b"x-split"))
+
+
+class SplitPayload:
+    """Strip optional extra HTTP prefaces without discarding SSH stream bytes."""
+    def __init__(self):
+        self.pending = b""
+        self.finished = False
+        self.discarded = 0
+
+    def feed(self, data):
+        if self.finished:
+            return data
+        self.pending += data
+        while self.pending:
+            candidate = self.pending.lstrip(b"\r\n")
+            if not candidate:
+                if len(self.pending) > MAX_HEADER_BYTES:
+                    raise HandshakeError(431, "Request Header Fields Too Large")
+                return b""
+            if any(candidate.startswith(method) for method in HTTP_METHODS):
+                end = candidate.find(b"\r\n\r\n")
+                if end < 0:
+                    if self.discarded + len(self.pending) >= MAX_HEADER_BYTES:
+                        raise HandshakeError(431, "Request Header Fields Too Large")
+                    return b""
+                self.discarded += len(self.pending) - len(candidate) + end + 4
+                if self.discarded > MAX_HEADER_BYTES:
+                    raise HandshakeError(431, "Request Header Fields Too Large")
+                self.pending = candidate[end + 4:]
+                continue
+            if any(method.startswith(candidate) for method in HTTP_METHODS):
+                return b""
+            # Once the actual stream begins, forward every byte unchanged.
+            result = candidate
+            self.pending = b""
+            self.finished = True
+            return result
+        return b""
+
+
+def send_error(client, error):
+    response = "HTTP/1.1 {} {}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".format(error.status, error.reason)
+    client.sendall(response.encode("ascii"))
+
+
+def bridge_socks(c, s, split_payload=None):
     """High-throughput bidirectional TCP bridge.
     Optimizations vs. naive version:
       - TCP_NODELAY on BOTH sockets (was client-only)
@@ -6114,6 +6248,13 @@ def bridge_socks(c, s):
                 if not n:
                     return
                 try:
+                    if sock is c and split_payload is not None:
+                        data = split_payload.feed(bytes(memoryview(buf)[:n]))
+                        if data:
+                            other.sendall(data)
+                        if split_payload.finished:
+                            split_payload = None
+                        continue
                     # sendall with memoryview of exactly the bytes we got —
                     # avoids creating a sliced copy.
                     other.sendall(memoryview(buf)[:n])
@@ -6127,38 +6268,44 @@ def bridge_socks(c, s):
             except OSError: pass
 
 def handle(client, addr):
+    ssh = None
+    response_sent = False
     try:
         # Increased handshake timeout: mobile networks (especially on first
         # TLS+WS handshake through HAProxy) can take 15-25s on slow links.
-        client.settimeout(HANDSHAKE_TIMEOUT)
-        buf = b""
-        while b"\r\n\r\n" not in buf and len(buf) < MAX_HEADER_BYTES:
-            try: chunk = client.recv(4096)
-            except socket.timeout: return
-            if not chunk: return
-            buf += chunk
-        if buf.startswith(b"SSH-"):
-            client.settimeout(None)
-            try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
-            except Exception as e: log(f"ssh connect fail: {e}"); return
-            ssh.sendall(buf)
-            bridge_socks(client, ssh); return
-        header, sep, leftover = buf.partition(b"\r\n\r\n")
-        try: client.sendall(build_switching_response())
-        except OSError: return
-        try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
-        except Exception as e: log(f"ssh connect fail: {e}"); return
-        if leftover:
-            try: ssh.sendall(leftover)
-            except OSError: return
+        header, leftover = read_handshake(client)
+        split_payload = SplitPayload() if header is not None and parse_payload_headers(header) else None
+        try:
+            ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
+        except OSError:
+            if header is not None:
+                send_error(client, HandshakeError(502, "Bad Gateway"))
+            return
+        # The connect timeout is only for establishment, not active SSH traffic.
+        ssh.settimeout(None)
         client.settimeout(None)
+        if header is not None:
+            client.sendall(build_switching_response())
+            response_sent = True
+        if split_payload is not None:
+            leftover = split_payload.feed(leftover)
+        if leftover:
+            ssh.sendall(leftover)
         log(f"bridged {addr[0]}:{addr[1]} -> SSH {SSH_HOST}:{SSH_PORT}")
-        bridge_socks(client, ssh)
+        bridge_socks(client, ssh, split_payload)
+    except HandshakeError as error:
+        if not response_sent:
+            try: send_error(client, error)
+            except OSError: pass
+    except (socket.timeout, EOFError):
+        pass
     except Exception as e:
         log(f"err {addr}: {e}")
     finally:
-        try: client.close()
-        except OSError: pass
+        for sock in (client, ssh):
+            if sock is not None:
+                try: sock.close()
+                except OSError: pass
 
 def main():
     log(f"starting on {LISTEN_HOST}:{LISTEN_PORT} -> SSH {SSH_HOST}:{SSH_PORT}")
@@ -6189,13 +6336,21 @@ def main():
 
 if __name__ == "__main__": main()
 PYEOF
-    chmod +x "$WS_SSH_BRIDGE_SCRIPT"
+    if ! python3 -c 'import sys; p = sys.argv[1]; compile(open(p, "rb").read(), p, "exec")' "$candidate"; then
+        rm -f "$candidate"
+        return 1
+    fi
+    chmod 755 "$candidate" && mv -f "$candidate" "$WS_SSH_BRIDGE_SCRIPT" || {
+        rm -f "$candidate"
+        return 1
+    }
 }
 
 write_ws_ssh_bridge_service() {
+    mkdir -p "$(dirname "$WS_SSH_BRIDGE_SERVICE")" || return 1
     cat > "$WS_SSH_BRIDGE_SERVICE" <<EOF
 [Unit]
-Description=TDZ SSH TUNNEL WebSocket-to-SSH Bridge (DarkTunnel payload support)
+Description=TDZ HTTP payload / WS-to-SSH Bridge - Script By: tuhinbro.com
 After=network-online.target ssh.service
 Wants=network-online.target
 
@@ -6217,12 +6372,51 @@ WantedBy=multi-user.target
 EOF
 }
 
+refresh_ws_ssh_bridge_runtime() {
+    local force="${1:-}" backup was_active=false failed=false
+    [[ -f "$WS_SSH_BRIDGE_SERVICE" ]] || return 0
+    if [[ "$force" != force ]] &&
+       grep -Fqx '"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3."""' "$WS_SSH_BRIDGE_SCRIPT" 2>/dev/null; then
+        return 0
+    fi
+    backup=$(mktemp -d) || return 1
+    if [[ -f "$WS_SSH_BRIDGE_SCRIPT" ]]; then
+        cp -a "$WS_SSH_BRIDGE_SCRIPT" "$backup/bridge.py" || { rm -rf "$backup"; return 1; }
+    fi
+    cp -a "$WS_SSH_BRIDGE_SERVICE" "$backup/bridge.service" || { rm -rf "$backup"; return 1; }
+    systemctl is-active --quiet tdz-ws-ssh-bridge && was_active=true
+    if ! write_ws_ssh_bridge_script || ! write_ws_ssh_bridge_service ||
+       ! systemctl daemon-reload >/dev/null 2>&1; then
+        failed=true
+    elif $was_active; then
+        if ! systemctl restart tdz-ws-ssh-bridge >/dev/null 2>&1; then
+            failed=true
+        else
+            sleep 1
+            systemctl is-active --quiet tdz-ws-ssh-bridge || failed=true
+        fi
+    fi
+    if $failed; then
+        if [[ -f "$backup/bridge.py" ]]; then
+            cp -a "$backup/bridge.py" "$WS_SSH_BRIDGE_SCRIPT"
+        else
+            rm -f "$WS_SSH_BRIDGE_SCRIPT"
+        fi
+        cp -a "$backup/bridge.service" "$WS_SSH_BRIDGE_SERVICE"
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        $was_active && systemctl restart tdz-ws-ssh-bridge >/dev/null 2>&1 || true
+        rm -rf "$backup"
+        return 1
+    fi
+    rm -rf "$backup"
+}
+
 install_ws_ssh_bridge() {
-    echo -e "${C_BLUE}Writing WS-to-SSH bridge script...${C_RESET}"
-    write_ws_ssh_bridge_script
-    write_ws_ssh_bridge_service
-    systemctl daemon-reload >/dev/null 2>&1
-    systemctl enable tdz-ws-ssh-bridge >/dev/null 2>&1
+    echo -e "${C_BLUE}Preparing HTTP/WS-to-SSH bridge...${C_RESET}"
+    write_ws_ssh_bridge_script || return 1
+    write_ws_ssh_bridge_service || return 1
+    systemctl daemon-reload >/dev/null 2>&1 || return 1
+    systemctl enable tdz-ws-ssh-bridge >/dev/null 2>&1 || return 1
     systemctl restart tdz-ws-ssh-bridge >/dev/null 2>&1 || {
         echo -e "${C_RED}[ERROR] Failed to start WS-to-SSH bridge.${C_RESET}"
         tdz_capture_service_diagnostic tdz-ws-ssh-bridge.service
@@ -6230,7 +6424,7 @@ install_ws_ssh_bridge() {
     }
     sleep 1
     if systemctl is-active --quiet tdz-ws-ssh-bridge; then
-        echo -e "${C_GREEN}[OK] WS-to-SSH bridge active on 127.0.0.1:${WS_SSH_BRIDGE_PORT}${C_RESET}"
+        echo -e "${C_GREEN}[OK] HTTP/WS-to-SSH bridge active on 127.0.0.1:${WS_SSH_BRIDGE_PORT}${C_RESET}"
     else
         echo -e "${C_RED}[ERROR] WS-to-SSH bridge is not active.${C_RESET}"
         return 1
@@ -6863,6 +7057,7 @@ show_dnstt_details() {
         tdz_section "DNSTT CONNECTION DETAILS"
         tdz_detail "Tunnel Domain" "$TUNNEL_DOMAIN" "$C_YELLOW"
         tdz_detail "Public Key" "$PUBLIC_KEY" "$C_YELLOW"
+        show_dnstt_port_details
         if [[ -n "$FORWARD_DESC" ]]; then
             tdz_detail "Forwarding To" "$FORWARD_DESC"
         else
@@ -6885,6 +7080,208 @@ show_dnstt_details() {
     else
         echo -e "\n${C_YELLOW}[INFO] DNSTT configuration file not found. Details are unavailable.${C_RESET}"
     fi
+}
+
+dnstt_current_listen_port() {
+    local port=""
+    if [[ -r "$DNSTT_SERVICE_FILE" ]]; then
+        port=$(awk '/^ExecStart=/ {
+            for (i=1; i<NF; i++) if ($i == "-udp") {
+                value=$(i+1); sub(/^.*:/, "", value); print value; exit
+            }
+        }' "$DNSTT_SERVICE_FILE")
+    fi
+    # Older installations listen directly on 53 and have no port metadata.
+    tdz_is_valid_port_number "$port" || port="$DNSTT_PUBLIC_PORT"
+    printf '%s\n' "$port"
+}
+
+show_dnstt_port_details() {
+    local listener
+    listener=$(dnstt_current_listen_port)
+    tdz_detail "Public DNS Port" "$DNSTT_PUBLIC_PORT / UDP"
+    tdz_detail "DNSTT Listener" "$listener / UDP (server-side)"
+    if [[ "${FORWARD_DESC:-}" == *"SSH"* ]]; then
+        tdz_detail "SSH Port" "22 / TCP"
+    fi
+}
+
+dnstt_check_listener_port() {
+    local listeners
+    if ! listeners=$(ss -H -lun "( sport = :$DNSTT_LISTEN_PORT )" 2>/dev/null); then
+        tdz_message ERROR "Could not check UDP port $DNSTT_LISTEN_PORT."
+        return 1
+    fi
+    if [[ -n "$listeners" ]]; then
+        tdz_message ERROR "UDP port $DNSTT_LISTEN_PORT is already in use. Free it before installing DNSTT."
+        return 1
+    fi
+}
+
+write_dnstt_network_service() {
+    mkdir -p "$DNSTT_KEYS_DIR" "$(dirname "$DNSTT_NETWORK_SERVICE_FILE")" || return 1
+    {
+        printf '#!/bin/bash\nset -euo pipefail\n'
+        printf 'PUBLIC_PORT=%q\nLISTEN_PORT=%q\n' "$DNSTT_PUBLIC_PORT" "$DNSTT_LISTEN_PORT"
+        cat <<'EOF'
+# Only incoming non-loopback traffic is redirected. Local resolver services
+# retain port 53, and locally generated DNS queries never enter PREROUTING.
+nat_rule=(-t nat PREROUTING ! -i lo -p udp --dport "$PUBLIC_PORT"
+    -m addrtype --dst-type LOCAL -m comment --comment tdz-dnstt-dns
+    -j REDIRECT --to-ports "$LISTEN_PORT")
+input_rule=(INPUT ! -i lo -p udp --dport "$LISTEN_PORT"
+    -m comment --comment tdz-dnstt-listener -j ACCEPT)
+
+rule_add() {
+    local command="$1"; shift
+    local table=filter chain
+    if [[ "$1" == -t ]]; then table="$2"; shift 2; fi
+    chain="$1"; shift
+    "$command" -w 5 -t "$table" -C "$chain" "$@" >/dev/null 2>&1 ||
+        "$command" -w 5 -t "$table" -I "$chain" 1 "$@"
+}
+
+rule_remove() {
+    local command="$1"; shift
+    local table=filter chain
+    if [[ "$1" == -t ]]; then table="$2"; shift 2; fi
+    chain="$1"; shift
+    while "$command" -w 5 -t "$table" -C "$chain" "$@" >/dev/null 2>&1; do
+        "$command" -w 5 -t "$table" -D "$chain" "$@" || return 1
+    done
+}
+
+remove_rules() {
+    local command failed=0
+    for command in iptables ip6tables; do
+        command -v "$command" >/dev/null 2>&1 || continue
+        rule_remove "$command" "${nat_rule[@]}" || failed=1
+        rule_remove "$command" "${input_rule[@]}" || failed=1
+    done
+    return "$failed"
+}
+
+case "${1:-start}" in
+    start)
+        command -v iptables >/dev/null 2>&1
+        trap 'rc=$?; if (( rc != 0 )); then remove_rules || true; fi; exit "$rc"' EXIT
+        rule_add iptables "${input_rule[@]}"
+        rule_add iptables "${nat_rule[@]}"
+        # Support AAAA records too when the host has a usable IPv6 stack.
+        if [[ -r /proc/net/if_inet6 ]] && grep -q . /proc/net/if_inet6; then
+            command -v ip6tables >/dev/null 2>&1
+            rule_add ip6tables "${input_rule[@]}"
+            rule_add ip6tables "${nat_rule[@]}"
+        fi
+        ;;
+    stop) remove_rules ;;
+    *) exit 2 ;;
+esac
+EOF
+    } > "$DNSTT_NETWORK_SCRIPT" || return 1
+    chmod 700 "$DNSTT_NETWORK_SCRIPT" || return 1
+    cat > "$DNSTT_NETWORK_SERVICE_FILE" <<EOF
+[Unit]
+Description=TDZ DNSTT public DNS forwarding ($DNSTT_PUBLIC_PORT to $DNSTT_LISTEN_PORT UDP)
+After=network-pre.target ufw.service firewalld.service netfilter-persistent.service
+Before=dnstt.service
+PartOf=dnstt.service
+
+[Service]
+Type=oneshot
+ExecStart=$DNSTT_NETWORK_SCRIPT start
+ExecStop=$DNSTT_NETWORK_SCRIPT stop
+RemainAfterExit=yes
+EOF
+}
+
+stop_dnstt_network() {
+    local failed=false
+    systemctl stop tdz-dnstt-network.service >/dev/null 2>&1 || true
+    systemctl disable tdz-dnstt-network.service >/dev/null 2>&1 || true
+    # Also clean up a partial activation for which systemd never ran ExecStop.
+    if [[ -f "$DNSTT_NETWORK_SCRIPT" ]]; then
+        bash "$DNSTT_NETWORK_SCRIPT" stop >/dev/null 2>&1 || failed=true
+    fi
+    systemctl is-active --quiet tdz-dnstt-network.service && failed=true
+    [[ "$failed" == false ]]
+}
+
+refresh_dnstt_runtime() {
+    local old_port was_active=false backup staged_service failed=false
+    [[ -f "$DNSTT_SERVICE_FILE" ]] || return 0
+    old_port=$(dnstt_current_listen_port)
+    if [[ "$old_port" == "$DNSTT_LISTEN_PORT" &&
+          -f "$DNSTT_NETWORK_SERVICE_FILE" && -f "$DNSTT_NETWORK_SCRIPT" ]] &&
+       grep -Fq 'Requires=tdz-dnstt-network.service' "$DNSTT_SERVICE_FILE"; then
+        return 0
+    fi
+    # Port migration keeps the existing domain, key, target, MTU and enabled state.
+    systemctl is-active --quiet dnstt.service && was_active=true
+    if [[ "$old_port" != "$DNSTT_LISTEN_PORT" ]] || ! $was_active; then
+        dnstt_check_listener_port || return 1
+    fi
+    command -v iptables >/dev/null 2>&1 || tdz_apt_install iptables || return 1
+    backup=$(mktemp -d) || return 1
+    cp -a "$DNSTT_SERVICE_FILE" "$backup/dnstt.service" || { rm -rf "$backup"; return 1; }
+    if [[ -f "$DNSTT_NETWORK_SERVICE_FILE" ]]; then
+        cp -a "$DNSTT_NETWORK_SERVICE_FILE" "$backup/network.service" || { rm -rf "$backup"; return 1; }
+    fi
+    if [[ -f "$DNSTT_NETWORK_SCRIPT" ]]; then
+        cp -a "$DNSTT_NETWORK_SCRIPT" "$backup/network.sh" || { rm -rf "$backup"; return 1; }
+    fi
+    staged_service="$backup/dnstt.updated"
+    if ! awk -v port="$DNSTT_LISTEN_PORT" '
+        /^ExecStart=/ {
+            if (!sub(/-udp[[:space:]]+[^[:space:]]+/, "-udp :" port)) exit 1
+            updated=1
+        }
+        { print }
+        /^\[Unit\]$/ {
+            print "Requires=tdz-dnstt-network.service"
+            print "After=tdz-dnstt-network.service"
+        }
+        END { if (!updated) exit 1 }
+    ' "$DNSTT_SERVICE_FILE" > "$staged_service"; then
+        rm -rf "$backup"
+        return 1
+    fi
+    if $was_active; then
+        systemctl stop dnstt.service >/dev/null 2>&1 || { rm -rf "$backup"; return 1; }
+    fi
+    if ! write_dnstt_network_service ||
+       ! cp "$staged_service" "$DNSTT_SERVICE_FILE" ||
+       ! systemctl daemon-reload >/dev/null 2>&1; then
+        failed=true
+    elif $was_active; then
+        if ! systemctl start dnstt.service >/dev/null 2>&1; then
+            failed=true
+        else
+            sleep 2
+            systemctl is-active --quiet dnstt.service || failed=true
+            systemctl is-active --quiet tdz-dnstt-network.service || failed=true
+        fi
+    fi
+    if $failed; then
+        systemctl stop dnstt.service >/dev/null 2>&1 || true
+        stop_dnstt_network || true
+        cp -a "$backup/dnstt.service" "$DNSTT_SERVICE_FILE"
+        if [[ -f "$backup/network.service" ]]; then
+            cp -a "$backup/network.service" "$DNSTT_NETWORK_SERVICE_FILE"
+        else
+            rm -f "$DNSTT_NETWORK_SERVICE_FILE"
+        fi
+        if [[ -f "$backup/network.sh" ]]; then
+            cp -a "$backup/network.sh" "$DNSTT_NETWORK_SCRIPT"
+        else
+            rm -f "$DNSTT_NETWORK_SCRIPT"
+        fi
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        $was_active && systemctl start dnstt.service >/dev/null 2>&1 || true
+        rm -rf "$backup"
+        return 1
+    fi
+    rm -rf "$backup"
 }
 
 capture_dnstt_resolver_state() {
@@ -6948,49 +7345,34 @@ rollback_dnstt_failed_install() {
     local restore_resolver=${1:-false}
     systemctl stop dnstt.service >/dev/null 2>&1 || true
     systemctl disable dnstt.service >/dev/null 2>&1 || true
+    stop_dnstt_network || {
+        tdz_message ERROR "Could not remove DNSTT forwarding. Saved files were kept for cleanup."
+        return 1
+    }
     if [[ "$restore_resolver" == "true" ]]; then
         restore_dnstt_resolver_state
     fi
-    rm -f "$DNSTT_SERVICE_FILE" "$DNSTT_BINARY" "$DNSTT_CONFIG_FILE"
+    rm -f "$DNSTT_SERVICE_FILE" "$DNSTT_NETWORK_SERVICE_FILE" "$DNSTT_BINARY" "$DNSTT_CONFIG_FILE"
     rm -rf "$DNSTT_KEYS_DIR"
     systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 install_dnstt() {
-    local disable_systemd_resolved=false
     clear; show_banner
-    tdz_screen_title "INSTALL DNSTT" "Configure DNS tunnelling on UDP port 53."
+    tdz_screen_title "INSTALL DNSTT" "Public DNS UDP $DNSTT_PUBLIC_PORT forwards to DNSTT UDP $DNSTT_LISTEN_PORT."
     if [ -f "$DNSTT_SERVICE_FILE" ]; then
+        if ! refresh_dnstt_runtime; then
+            tdz_message ERROR "Could not update the DNSTT listener. The previous setup was kept."
+            return 1
+        fi
         echo -e "\n${C_YELLOW}[INFO] DNSTT is already installed.${C_RESET}"
         show_dnstt_details
         return
     fi
-    
-    echo -e "\n${C_BLUE}Checking if port 53 (UDP) is available...${C_RESET}"
-    if ss -lunp | grep -q ':53\s'; then
-        if [[ $(ps -p $(ss -lunp | grep ':53\s' | grep -oP 'pid=\K[0-9]+') -o comm=) == "systemd-resolve" ]]; then
-            echo -e "${C_YELLOW}[WARNING] Port 53 is in use by 'systemd-resolved'.${C_RESET}"
-            echo -e "${C_YELLOW}This is the system's DNS stub resolver. It must be disabled to run DNSTT.${C_RESET}"
-            read -p "  Allow the script to automatically disable it and reconfigure DNS? (y/n): " resolve_confirm
-            if [[ "$resolve_confirm" == "y" || "$resolve_confirm" == "Y" ]]; then
-                # Defer the resolver change until every input, download and
-                # generated file is ready. Early cancellation then leaves DNS
-                # completely untouched.
-                disable_systemd_resolved=true
-            else
-                echo -e "${C_RED}[ERROR] Cannot proceed without freeing port 53. Aborting.${C_RESET}"
-                return
-            fi
-        else
-            check_and_free_ports "53" || return
-        fi
-    else
-        echo -e "${C_GREEN}[OK] Port 53 (UDP) is free to use.${C_RESET}"
-    fi
-
-    check_and_open_firewall_port 53 udp || return
-
-
+    dnstt_check_listener_port || return 1
+    tdz_message INFO "DNSTT listens on UDP $DNSTT_LISTEN_PORT; public DNS still requires UDP $DNSTT_PUBLIC_PORT."
+    tdz_message INFO "Incoming non-loopback UDP $DNSTT_PUBLIC_PORT is redirected to DNSTT. Local DNS resolver services can keep port 53."
+    tdz_message INFO "Allow UDP $DNSTT_PUBLIC_PORT in your VPS provider firewall. Another public DNS server cannot share this IP's incoming UDP $DNSTT_PUBLIC_PORT."
 
     local forward_port=""
     local forward_desc=""
@@ -7060,23 +7442,32 @@ install_dnstt() {
     echo
     tdz_section "INSTALLATION PROGRESS"
     tdz_progress_begin 1 4 "Preparing service package"
+    if ! command -v iptables >/dev/null 2>&1 && ! tdz_apt_install iptables; then
+        tdz_progress_failed
+        tdz_message ERROR "iptables is required for public DNS forwarding."
+        return 1
+    fi
+    mkdir -p "$(dirname "$DNSTT_BINARY")" "$DNSTT_KEYS_DIR" "$(dirname "$DNSTT_SERVICE_FILE")" || {
+        tdz_progress_failed
+        return 1
+    }
     if ! curl -fLsS "$binary_url" -o "$DNSTT_BINARY"; then
         tdz_progress_failed
         echo -e "${C_RED}[ERROR] The service package could not be prepared.${C_RESET}"
         rollback_dnstt_failed_install false
-        return
+        return 1
     fi
     chmod +x "$DNSTT_BINARY"
     tdz_progress_done
 
     tdz_progress_begin 2 4 "Configuring secure service"
-    mkdir -p "$DNSTT_KEYS_DIR"
-    "$DNSTT_BINARY" -gen-key -privkey-file "$DNSTT_KEYS_DIR/server.key" -pubkey-file "$DNSTT_KEYS_DIR/server.pub" >/dev/null 2>&1
+    chmod 700 "$DNSTT_KEYS_DIR"
+    (umask 077; "$DNSTT_BINARY" -gen-key -privkey-file "$DNSTT_KEYS_DIR/server.key" -pubkey-file "$DNSTT_KEYS_DIR/server.pub") >/dev/null 2>&1
     if [[ ! -s "$DNSTT_KEYS_DIR/server.key" || ! -s "$DNSTT_KEYS_DIR/server.pub" ]]; then
         tdz_progress_failed
         echo -e "${C_RED}[ERROR] Secure service configuration failed.${C_RESET}"
         rollback_dnstt_failed_install false
-        return
+        return 1
     fi
     tdz_progress_done
     
@@ -7084,70 +7475,46 @@ install_dnstt() {
     PUBLIC_KEY=$(cat "$DNSTT_KEYS_DIR/server.pub")
     
     tdz_progress_begin 3 4 "Applying service configuration"
+    if ! write_dnstt_network_service; then
+        tdz_progress_failed
+        rollback_dnstt_failed_install false
+        return 1
+    fi
     cat > "$DNSTT_SERVICE_FILE" <<-EOF
 [Unit]
 Description=DNSTT (DNS Tunnel) Server for $forward_desc
-After=network.target
+Requires=tdz-dnstt-network.service
+After=network.target tdz-dnstt-network.service
 [Service]
 Type=simple
 User=root
-ExecStart=$DNSTT_BINARY -udp :53$mtu_string -privkey-file $DNSTT_KEYS_DIR/server.key $TUNNEL_DOMAIN $FORWARD_TARGET
+ExecStart=$DNSTT_BINARY -udp :$DNSTT_LISTEN_PORT$mtu_string -privkey-file $DNSTT_KEYS_DIR/server.key $TUNNEL_DOMAIN $FORWARD_TARGET
 Restart=always
 RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-    cat > "$DNSTT_CONFIG_FILE" <<-EOF
-NS_SUBDOMAIN="$NS_SUBDOMAIN"
-TUNNEL_SUBDOMAIN="$TUNNEL_SUBDOMAIN"
-NS_DOMAIN="$NS_DOMAIN"
-TUNNEL_DOMAIN="$TUNNEL_DOMAIN"
-PUBLIC_KEY="$PUBLIC_KEY"
-FORWARD_DESC="$forward_desc"
-DNSTT_RECORDS_MANAGED="$DNSTT_RECORDS_MANAGED"
-HAS_IPV6="$HAS_IPV6"
-MTU_VALUE="$mtu_value"
-EOF
+    {
+        printf 'NS_DOMAIN=%q\nTUNNEL_DOMAIN=%q\nPUBLIC_KEY=%q\n' "$NS_DOMAIN" "$TUNNEL_DOMAIN" "$PUBLIC_KEY"
+        printf 'FORWARD_DESC=%q\nDNSTT_RECORDS_MANAGED=%q\nMTU_VALUE=%q\n' "$forward_desc" "$DNSTT_RECORDS_MANAGED" "$mtu_value"
+    } > "$DNSTT_CONFIG_FILE"
+    chmod 600 "$DNSTT_CONFIG_FILE"
     if [[ ! -s "$DNSTT_SERVICE_FILE" || ! -s "$DNSTT_CONFIG_FILE" ]]; then
         tdz_progress_failed
         echo -e "${C_RED}[ERROR] Service configuration could not be applied.${C_RESET}"
         rollback_dnstt_failed_install false
-        return
+        return 1
     fi
     tdz_progress_done
 
     tdz_progress_begin 4 4 "Starting and verifying service"
-    local resolver_changed=false
-    if $disable_systemd_resolved; then
-        if ! capture_dnstt_resolver_state; then
-            tdz_progress_failed
-            echo -e "${C_RED}[ERROR] Current resolver settings could not be preserved.${C_RESET}"
-            rollback_dnstt_failed_install false
-            return
-        fi
-        if ! systemctl stop systemd-resolved >/dev/null 2>&1 ||
-           ! systemctl disable systemd-resolved >/dev/null 2>&1; then
-            tdz_progress_failed
-            echo -e "${C_RED}[ERROR] The DNS service could not be prepared.${C_RESET}"
-            rollback_dnstt_failed_install true
-            return
-        fi
-        chattr -i "$TDZ_RESOLV_CONF" >/dev/null 2>&1 || true
-        rm -f "$TDZ_RESOLV_CONF"
-        if ! printf 'nameserver 8.8.8.8\n' > "$TDZ_RESOLV_CONF"; then
-            tdz_progress_failed
-            echo -e "${C_RED}[ERROR] The DNS service could not be prepared.${C_RESET}"
-            rollback_dnstt_failed_install true
-            return
-        fi
-        chattr +i "$TDZ_RESOLV_CONF" >/dev/null 2>&1 || true
-        resolver_changed=true
-    fi
-    systemctl daemon-reload >/dev/null 2>&1
-    systemctl enable dnstt.service >/dev/null 2>&1
-    systemctl start dnstt.service >/dev/null 2>&1
+    local start_failed=false
+    systemctl daemon-reload >/dev/null 2>&1 || start_failed=true
+    systemctl enable dnstt.service >/dev/null 2>&1 || start_failed=true
+    systemctl start dnstt.service >/dev/null 2>&1 || start_failed=true
     sleep 2
-    if systemctl is-active --quiet dnstt.service; then
+    if ! $start_failed && systemctl is-active --quiet dnstt.service &&
+       systemctl is-active --quiet tdz-dnstt-network.service; then
         tdz_progress_done
         echo -e "\n${C_GREEN}[OK] DNSTT has been installed and started!${C_RESET}"
         show_dnstt_details
@@ -7155,7 +7522,9 @@ EOF
         tdz_progress_failed
         echo -e "\n${C_RED}[ERROR] DNSTT service failed to start.${C_RESET}"
         tdz_capture_service_diagnostic dnstt.service
-        rollback_dnstt_failed_install "$resolver_changed"
+        tdz_capture_service_diagnostic tdz-dnstt-network.service
+        rollback_dnstt_failed_install false
+        return 1
     fi
 }
 
@@ -7163,9 +7532,10 @@ uninstall_dnstt() {
     local mode="${UNINSTALL_MODE:-interactive}" confirm="y" cleanup_failed=false step_failed=false
     local dns_notice=""
     [[ "$mode" == "silent" ]] || tdz_screen_title "UNINSTALL DNSTT"
-    if [[ ! -f "$DNSTT_SERVICE_FILE" && ! -f "$DNSTT_BINARY" &&
-          ! -d "$DNSTT_KEYS_DIR" && ! -f "$DNSTT_CONFIG_FILE" ]] &&
-       ! systemctl is-active --quiet dnstt.service; then
+    if [[ ! -f "$DNSTT_SERVICE_FILE" && ! -f "$DNSTT_NETWORK_SERVICE_FILE" && ! -f "$DNSTT_BINARY" &&
+           ! -d "$DNSTT_KEYS_DIR" && ! -f "$DNSTT_CONFIG_FILE" ]] &&
+       ! systemctl is-active --quiet dnstt.service &&
+       ! systemctl is-active --quiet tdz-dnstt-network.service; then
         [[ "$mode" == "silent" ]] || tdz_message INFO "DNSTT is not installed."
         return 0
     fi
@@ -7187,28 +7557,40 @@ uninstall_dnstt() {
     systemctl disable dnstt.service >/dev/null 2>&1 || true
     if systemctl is-active --quiet dnstt.service; then
         cleanup_failed=true; tdz_progress_failed
+        [[ "$mode" == "silent" ]] || tdz_message ERROR "DNSTT is still running. Retry stopping it before removal."
+        return 1
     else
         tdz_progress_done
     fi
 
-    tdz_progress_begin 2 3 "Restoring resolver settings"
-    if restore_dnstt_resolver_state; then
+    tdz_progress_begin 2 3 "Removing DNS forwarding"
+    step_failed=false
+    stop_dnstt_network || step_failed=true
+    # Only old direct-port installs changed the host's resolver configuration.
+    if [[ -r "$DNSTT_RESOLVER_STATE_FILE" ]] ||
+       { [[ ! -f "$DNSTT_NETWORK_SCRIPT" ]] && [[ "$(dnstt_current_listen_port)" == "$DNSTT_PUBLIC_PORT" ]]; }; then
+        restore_dnstt_resolver_state || step_failed=true
+    fi
+    if ! $step_failed; then
         tdz_progress_done
     else
         cleanup_failed=true; tdz_progress_failed
+        [[ "$mode" == "silent" ]] || tdz_message ERROR "DNS forwarding cleanup failed. Keep the saved DNSTT files and retry removal."
+        return 1
     fi
 
     tdz_progress_begin 3 3 "Removing and verifying files"
     step_failed=false
-    if rm -f "$DNSTT_SERVICE_FILE" "$DNSTT_BINARY" "$DNSTT_CONFIG_FILE" &&
+    if rm -f "$DNSTT_SERVICE_FILE" "$DNSTT_NETWORK_SERVICE_FILE" "$DNSTT_BINARY" "$DNSTT_CONFIG_FILE" &&
        rm -rf "$DNSTT_KEYS_DIR"; then
         systemctl daemon-reload >/dev/null 2>&1 || true
     else
         step_failed=true
     fi
-    if [[ -e "$DNSTT_SERVICE_FILE" || -e "$DNSTT_BINARY" ||
-          -e "$DNSTT_KEYS_DIR" || -e "$DNSTT_CONFIG_FILE" ]] ||
-       systemctl is-active --quiet dnstt.service; then
+    if [[ -e "$DNSTT_SERVICE_FILE" || -e "$DNSTT_NETWORK_SERVICE_FILE" || -e "$DNSTT_BINARY" ||
+           -e "$DNSTT_KEYS_DIR" || -e "$DNSTT_CONFIG_FILE" ]] ||
+       systemctl is-active --quiet dnstt.service ||
+       systemctl is-active --quiet tdz-dnstt-network.service; then
         step_failed=true
     fi
     if $step_failed; then
@@ -8081,7 +8463,7 @@ protocol_menu() {
         tdz_menu1 "[ 2]" "Uninstall badvpn"
         tdz_menu_status "[ 3]" "Install HAProxy (${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT})" "$ssl_tunnel_status" "$ssl_tunnel_color"
         tdz_menu1 "[ 4]" "Uninstall HAProxy Edge Stack"
-        tdz_menu_status "[ 5]" "Install or View DNSTT (Port 53)" "$dnstt_status" "$dnstt_color"
+        tdz_menu_status "[ 5]" "DNSTT / SlowDNS (DNS 53 -> UDP 54)" "$dnstt_status" "$dnstt_color"
         tdz_menu1 "[ 6]" "Uninstall DNSTT"
         tdz_menu_status "[ 7]" "Manage Nginx (${NGINX_INTERNAL_HTTP_PORT}/${NGINX_INTERNAL_TLS_PORT})" "$nginx_status" "$nginx_color"
         tdz_menu_status "[ 8]" "Install ZiVPN (UDP 5667)" "$zivpn_status" "$zivpn_color"
@@ -8238,7 +8620,7 @@ tdz_verify_uninstall_cleanup() {
         "$TRIAL_CLEANUP_SCRIPT" "$SSHD_TDZ_CONFIG" "$SSH_AUTH_SESSION_DIR" \
         "$SSH_BANNER_FILE" "$LOGIN_INFO_SCRIPT" \
         "$AUTO_BACKUP_CONF" "$AUTO_BACKUP_SCRIPT" "$AUTO_BACKUP_LOG" "$AUTO_BACKUP_DIR" \
-        "$BADVPN_SERVICE_FILE" "$BADVPN_BUILD_DIR" "$DNSTT_SERVICE_FILE" "$DNSTT_BINARY" \
+        "$BADVPN_SERVICE_FILE" "$BADVPN_BUILD_DIR" "$DNSTT_SERVICE_FILE" "$DNSTT_NETWORK_SERVICE_FILE" "$DNSTT_BINARY" \
         "$DNSTT_KEYS_DIR" "$ZIVPN_SERVICE_FILE" "$ZIVPN_BIN" "$ZIVPN_DIR" \
         "$WS_SSH_BRIDGE_SERVICE" "$WS_SSH_BRIDGE_SCRIPT" \
         "$LEGACY_UDP_DIR" "$LEGACY_UDP_SERVICE" "$LEGACY_UDPGW_BINARY" \
@@ -8261,7 +8643,7 @@ tdz_verify_uninstall_cleanup() {
         [[ -e "$path" || -L "$path" ]] && leftovers+=("$path")
     done
     for unit in tdztunnel-limiter tdztunnel-bandwidth tdz-ws-ssh-bridge \
-        badvpn dnstt zivpn haproxy nginx udp-custom udpgw tdzproxy \
+        badvpn dnstt tdz-dnstt-network zivpn haproxy nginx udp-custom udpgw tdzproxy \
         tdz-openvpn-network tdz-openvpn-tcp tdz-openvpn-udp tdz-openvpn-http \
         tdz-openvpn-wss tdz-openvpn-ssl tdz-openvpn-portal tdz-openvpn-accounting; do
         if systemctl is-active --quiet "$unit.service"; then
@@ -8779,7 +9161,10 @@ generate_client_config() {
         echo
         tdz_section "HAPROXY EDGE STACK"
         tdz_detail "Host" "$host_domain"
-        tdz_detail "HTTP / Raw SSH" "$EDGE_PUBLIC_HTTP_PORT"
+        tdz_detail "HTTP Payload / WS" "$EDGE_PUBLIC_HTTP_PORT"
+        tdz_detail "Raw SSH" "$EDGE_PUBLIC_HTTP_PORT"
+        tdz_detail "Payload Target" "127.0.0.1:22 (X-Real-Host)"
+        tdz_detail "Response" "101 Script By: tuhinbro.com"
         tdz_detail "TLS / SNI / SSL" "$EDGE_PUBLIC_TLS_PORT"
         tdz_detail "SNI / Bug Host" "$host_domain"
     elif systemctl is-active --quiet nginx; then
@@ -8788,15 +9173,19 @@ generate_client_config() {
         tdz_detail "Public Edge" "HAProxy ${EDGE_PUBLIC_HTTP_PORT}/${EDGE_PUBLIC_TLS_PORT}"
     fi
 
-    # 3. DNSTT
+    # 3. DNSTT belongs in this SSH account view only when it forwards to SSH.
     if systemctl is-active --quiet dnstt; then
         if [ -f "$DNSTT_CONFIG_FILE" ]; then
+            local FORWARD_DESC=""
             source "$DNSTT_CONFIG_FILE"
-            echo
-            tdz_section "DNSTT / SLOWDNS"
-            tdz_detail "Nameserver" "$TUNNEL_DOMAIN"
-            tdz_detail "Public Key" "$PUBLIC_KEY"
-            tdz_detail "DNS Resolver" "1.1.1.1 / 8.8.8.8"
+            if [[ "$FORWARD_DESC" == "SSH (port 22)" ]]; then
+                echo
+                tdz_section "DNSTT / SLOWDNS"
+                tdz_detail "Nameserver" "$TUNNEL_DOMAIN"
+                tdz_detail "Public Key" "$PUBLIC_KEY"
+                show_dnstt_port_details
+                tdz_detail "DNS Resolver" "1.1.1.1:53 / 8.8.8.8:53"
+            fi
         fi
     fi
 

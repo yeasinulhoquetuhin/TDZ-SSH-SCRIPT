@@ -260,15 +260,16 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("15 3 * * 1 systemctl reboot", remaining)
             self.assertIn("/usr/local/bin/health-check", remaining)
 
-    def test_dnstt_defers_resolver_changes_and_has_failure_rollback(self):
+    def test_dnstt_uses_managed_forwarding_without_changing_the_resolver(self):
         menu = MENU.read_text()
         start = menu.index("install_dnstt() {")
         end = menu.index("uninstall_dnstt() {", start)
         install = menu[start:end]
-        activation = install.index('tdz_progress_begin 4 4 "Starting and verifying service"')
-        resolver_capture = install.index("capture_dnstt_resolver_state")
-        self.assertGreater(resolver_capture, activation)
-        self.assertIn('rollback_dnstt_failed_install "$resolver_changed"', install)
+        self.assertNotIn("capture_dnstt_resolver_state", install)
+        self.assertNotIn("ps -p", install)
+        self.assertNotIn("systemctl stop systemd-resolved", install)
+        self.assertIn('rollback_dnstt_failed_install false', install)
+        self.assertIn('systemctl is-active --quiet tdz-dnstt-network.service', install)
 
     def test_mobile_terminal_layout_stays_inside_requested_width(self):
         result = self.run_menu_bash(
@@ -499,6 +500,7 @@ class ModuleTests(unittest.TestCase):
                 BADVPN_SERVICE_FILE={root}/systemd/badvpn.service
                 BADVPN_BUILD_DIR={root}/badvpn-build
                 DNSTT_SERVICE_FILE={root}/systemd/dnstt.service
+                DNSTT_NETWORK_SERVICE_FILE={root}/systemd/tdz-dnstt-network.service
                 DNSTT_BINARY={root}/bin/dnstt
                 DNSTT_KEYS_DIR={root}/dnstt
                 ZIVPN_SERVICE_FILE={root}/systemd/zivpn.service
@@ -2125,7 +2127,10 @@ TEST TLS KEY
             root = Path(temp)
             pam_config = root / "sshd"
             session_dir = root / "ssh-auth-sessions"
-            helper = REPO / "tdz_ssh_auth_session.py"
+            # Shared Android storage does not preserve executable file modes.
+            helper = root / "tdz_ssh_auth_session.py"
+            shutil.copyfile(REPO / "tdz_ssh_auth_session.py", helper)
+            helper.chmod(0o755)
             pam_config.write_text(
                 "# PAM configuration for sshd\n"
                 "@include common-auth\n"
@@ -2162,7 +2167,9 @@ TEST TLS KEY
             root = Path(temp)
             pam_config = root / "sshd"
             session_dir = root / "ssh-auth-sessions"
-            helper = REPO / "tdz_ssh_auth_session.py"
+            helper = root / "tdz_ssh_auth_session.py"
+            shutil.copyfile(REPO / "tdz_ssh_auth_session.py", helper)
+            helper.chmod(0o755)
             pam_config.write_text(
                 "auth required pam_unix.so\n"
                 "account required pam_unix.so\n"

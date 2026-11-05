@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TDZ SSH TUNNEL WebSocket-to-SSH Bridge v2 (with branding support)."""
+"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3."""
 import socket, select, threading, sys, os, signal, time
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
@@ -9,11 +9,13 @@ SSH_PORT    = int(os.environ.get("TDZ_WS_BRIDGE_SSH_PORT", "22"))
 BRANDING_FILE = os.environ.get("TDZ_WS_BRIDGE_BRANDING", "/etc/tdztunnel/ws_branding.conf")
 
 SWITCHING_RESPONSE_BASE = (
-b'HTTP/1.1 101 <b><font color="red" size="7">Script By:</font> <font color="#0057B7" size="7">tuhinbro.com</font></b>\r\n'
+b'HTTP/1.1 101 Script By: tuhinbro.com\r\n'
 b"Upgrade: websocket\r\n"
 b"Connection: Upgrade\r\n"
 )
 MAX_HEADER_BYTES = 65536
+HTTP_METHODS = (b"GET ", b"CONNECT ", b"POST ", b"HEAD ", b"PUT ",
+                b"OPTIONS ", b"DELETE ", b"PATCH ", b"TRACE ")
 RECV_CHUNK = 256 * 1024
 # Kernel socket buffers. Default Linux SO_RCVBUF is ~200KB which is WAY too
 # small for high-BDP paths (BD <-> SG at 80ms RTT × 100Mbps = 1MB BDP).
@@ -111,7 +113,118 @@ def load_branding_headers():
 def build_switching_response():
     return SWITCHING_RESPONSE_BASE + load_branding_headers() + b"\r\n"
 
-def bridge_socks(c, s):
+class HandshakeError(Exception):
+    def __init__(self, status, reason):
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
+def read_handshake(client):
+    """Read fragmented headers, or stop immediately at a direct SSH prefix."""
+    buf = b""
+    deadline = time.monotonic() + HANDSHAKE_TIMEOUT
+    while True:
+        if buf.startswith(b"SSH-"):
+            return None, buf
+        end = buf.find(b"\r\n\r\n")
+        if end >= 0:
+            if end + 4 > MAX_HEADER_BYTES:
+                raise HandshakeError(431, "Request Header Fields Too Large")
+            return buf[:end], buf[end + 4:]
+        if len(buf) >= MAX_HEADER_BYTES:
+            raise HandshakeError(431, "Request Header Fields Too Large")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise socket.timeout("handshake timeout")
+        client.settimeout(remaining)
+        chunk = client.recv(min(4096, MAX_HEADER_BYTES - len(buf)))
+        if not chunk:
+            raise EOFError("incomplete handshake")
+        buf += chunk
+
+
+def parse_payload_headers(header):
+    request, *lines = header.split(b"\r\n")
+    parts = request.split()
+    if len(parts) != 3 or parts[0] + b" " not in HTTP_METHODS or parts[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
+        raise HandshakeError(400, "Bad Request")
+    headers = {}
+    for line in lines:
+        name, separator, value = line.partition(b":")
+        if not separator or not name.strip():
+            raise HandshakeError(400, "Bad Request")
+        name = name.strip().lower()
+        value = value.strip()
+        if name in (b"x-real-host", b"x-split") and name in headers:
+            raise HandshakeError(400, "Bad Request")
+        headers[name] = value
+    target = headers.get(b"x-real-host", b"")
+    if target:
+        # The ws-http header is accepted only for the configured SSH service.
+        # It cannot select another local service or an arbitrary remote host.
+        allowed_hosts = {SSH_HOST.lower(), "localhost", "127.0.0.1", "::1"}
+        try:
+            target = target.decode("ascii")
+            if target.startswith("["):
+                host, suffix = target[1:].split("]", 1)
+                if not suffix.startswith(":"):
+                    raise ValueError("missing port")
+                port = suffix[1:]
+            else:
+                host, port = target.rsplit(":", 1)
+            valid = host.lower() in allowed_hosts and port.isdigit() and int(port) == SSH_PORT
+        except (UnicodeError, ValueError):
+            valid = False
+        if not valid:
+            raise HandshakeError(403, "Forbidden")
+    return bool(headers.get(b"x-split"))
+
+
+class SplitPayload:
+    """Strip optional extra HTTP prefaces without discarding SSH stream bytes."""
+    def __init__(self):
+        self.pending = b""
+        self.finished = False
+        self.discarded = 0
+
+    def feed(self, data):
+        if self.finished:
+            return data
+        self.pending += data
+        while self.pending:
+            candidate = self.pending.lstrip(b"\r\n")
+            if not candidate:
+                if len(self.pending) > MAX_HEADER_BYTES:
+                    raise HandshakeError(431, "Request Header Fields Too Large")
+                return b""
+            if any(candidate.startswith(method) for method in HTTP_METHODS):
+                end = candidate.find(b"\r\n\r\n")
+                if end < 0:
+                    if self.discarded + len(self.pending) >= MAX_HEADER_BYTES:
+                        raise HandshakeError(431, "Request Header Fields Too Large")
+                    return b""
+                self.discarded += len(self.pending) - len(candidate) + end + 4
+                if self.discarded > MAX_HEADER_BYTES:
+                    raise HandshakeError(431, "Request Header Fields Too Large")
+                self.pending = candidate[end + 4:]
+                continue
+            if any(method.startswith(candidate) for method in HTTP_METHODS):
+                return b""
+            # Once the actual stream begins, forward every byte unchanged.
+            result = candidate
+            self.pending = b""
+            self.finished = True
+            return result
+        return b""
+
+
+def send_error(client, error):
+    response = "HTTP/1.1 {} {}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".format(error.status, error.reason)
+    client.sendall(response.encode("ascii"))
+
+
+def bridge_socks(c, s, split_payload=None):
     """High-throughput bidirectional TCP bridge.
     Optimizations vs. naive version:
       - TCP_NODELAY on BOTH sockets (was client-only)
@@ -151,6 +264,13 @@ def bridge_socks(c, s):
                 if not n:
                     return
                 try:
+                    if sock is c and split_payload is not None:
+                        data = split_payload.feed(bytes(memoryview(buf)[:n]))
+                        if data:
+                            other.sendall(data)
+                        if split_payload.finished:
+                            split_payload = None
+                        continue
                     # sendall with memoryview of exactly the bytes we got —
                     # avoids creating a sliced copy.
                     other.sendall(memoryview(buf)[:n])
@@ -164,38 +284,44 @@ def bridge_socks(c, s):
             except OSError: pass
 
 def handle(client, addr):
+    ssh = None
+    response_sent = False
     try:
         # Increased handshake timeout: mobile networks (especially on first
         # TLS+WS handshake through HAProxy) can take 15-25s on slow links.
-        client.settimeout(HANDSHAKE_TIMEOUT)
-        buf = b""
-        while b"\r\n\r\n" not in buf and len(buf) < MAX_HEADER_BYTES:
-            try: chunk = client.recv(4096)
-            except socket.timeout: return
-            if not chunk: return
-            buf += chunk
-        if buf.startswith(b"SSH-"):
-            client.settimeout(None)
-            try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
-            except Exception as e: log(f"ssh connect fail: {e}"); return
-            ssh.sendall(buf)
-            bridge_socks(client, ssh); return
-        header, sep, leftover = buf.partition(b"\r\n\r\n")
-        try: client.sendall(build_switching_response())
-        except OSError: return
-        try: ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
-        except Exception as e: log(f"ssh connect fail: {e}"); return
-        if leftover:
-            try: ssh.sendall(leftover)
-            except OSError: return
+        header, leftover = read_handshake(client)
+        split_payload = SplitPayload() if header is not None and parse_payload_headers(header) else None
+        try:
+            ssh = socket.create_connection((SSH_HOST, SSH_PORT), timeout=SSH_CONNECT_TIMEOUT)
+        except OSError:
+            if header is not None:
+                send_error(client, HandshakeError(502, "Bad Gateway"))
+            return
+        # The connect timeout is only for establishment, not active SSH traffic.
+        ssh.settimeout(None)
         client.settimeout(None)
+        if header is not None:
+            client.sendall(build_switching_response())
+            response_sent = True
+        if split_payload is not None:
+            leftover = split_payload.feed(leftover)
+        if leftover:
+            ssh.sendall(leftover)
         log(f"bridged {addr[0]}:{addr[1]} -> SSH {SSH_HOST}:{SSH_PORT}")
-        bridge_socks(client, ssh)
+        bridge_socks(client, ssh, split_payload)
+    except HandshakeError as error:
+        if not response_sent:
+            try: send_error(client, error)
+            except OSError: pass
+    except (socket.timeout, EOFError):
+        pass
     except Exception as e:
         log(f"err {addr}: {e}")
     finally:
-        try: client.close()
-        except OSError: pass
+        for sock in (client, ssh):
+            if sock is not None:
+                try: sock.close()
+                except OSError: pass
 
 def main():
     log(f"starting on {LISTEN_HOST}:{LISTEN_PORT} -> SSH {SSH_HOST}:{SSH_PORT}")

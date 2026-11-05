@@ -285,6 +285,9 @@ EOF
             "$PAYLOAD_OVPN_GATEWAY" "$PAYLOAD_OVPN_PORTAL" "$PAYLOAD_OVPN_RUNTIME" \
             "$PAYLOAD_SSH_AUTH_SESSION"
     fi
+    if [[ -s "$PAYLOAD_BRIDGE" ]] && command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import sys; p = sys.argv[1]; compile(open(p, "rb").read(), p, "exec")' "$PAYLOAD_BRIDGE"
+    fi
 }
 
 backup_current_state() {
@@ -303,7 +306,9 @@ backup_current_state() {
 
 install_core() {
     install -m 755 "$PAYLOAD_MENU" "$TARGET_MENU"
-    if [[ -s "$PAYLOAD_BRIDGE" ]]; then
+    # Managed bridge services are refreshed transactionally by menu.sh so the
+    # running version remains available for rollback until validation succeeds.
+    if [[ -s "$PAYLOAD_BRIDGE" && ! -f /etc/systemd/system/tdz-ws-ssh-bridge.service ]]; then
         install -m 755 "$PAYLOAD_BRIDGE" "$TARGET_BRIDGE"
     fi
     install -d -m 755 "$TARGET_LIB_DIR"
