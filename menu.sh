@@ -7410,7 +7410,7 @@ install_dnstt() {
         
     elif [[ "$fwd_choice" == "2" ]]; then
         while true; do
-            read -r -p "  Choose a local V2Ray backend port (1-65535) [8787]: " forward_port || return 1
+            read -r -p "  Choose a local V2Ray backend port (1-65535) - Default [8787]: " forward_port || return 1
             forward_port=${forward_port:-8787}
             if [[ "$forward_port" =~ ^[0-9]{1,5}$ ]] &&
                (( 10#$forward_port >= 1 && 10#$forward_port <= 65535 )); then
