@@ -180,6 +180,27 @@ class BridgeTests(unittest.TestCase):
         client.sendall(data)
         self.assertEqual(reader.exact(len(data)), data)
 
+    def test_legacy_nonstandard_http_prefaces_keep_working(self):
+        requests = (
+            b"\r\nGET wss://ssh.example.com/ HTTP/1.1\r\nHost: ssh.example.com\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHost: ssh.example.com\r\nCustom-Payload-Line\r\n\r\n",
+            b"CONNECT ssh.example.com:22 HTTP/1.1 extra\r\nHost: ssh.example.com\r\n\r\n",
+        )
+        for request in requests:
+            with self.subTest(request=request):
+                client, reader = self.connect()
+                client.sendall(request + CLIENT_BANNER)
+                self.assert_upgrade(reader)
+                self.assertEqual(reader.exact(len(CLIENT_BANNER)), CLIENT_BANNER)
+
+    def test_leading_empty_preface_and_lf_headers_preserve_stream_data(self):
+        client, reader = self.connect()
+        for fragment in (b"\r\n\r\n", b"GET / HTTP/1.1\nHost: ssh.example.com\n", b"\n" + CLIENT_BANNER):
+            client.sendall(fragment)
+            time.sleep(0.01)
+        self.assert_upgrade(reader)
+        self.assertEqual(reader.exact(len(CLIENT_BANNER)), CLIENT_BANNER)
+
     def test_x_split_coalesced_http_preface_does_not_enter_ssh_stream(self):
         client, reader = self.connect()
         client.sendall(b"GET / HTTP/1.1\r\nX-Split: 1\r\n\r\n"
@@ -199,6 +220,13 @@ class BridgeTests(unittest.TestCase):
     def test_x_split_without_extra_request_keeps_first_ssh_bytes(self):
         client, reader = self.connect()
         client.sendall(b"GET / HTTP/1.1\r\nX-Split: 1\r\n\r\n" + CLIENT_BANNER)
+        self.assert_upgrade(reader)
+        self.assertEqual(reader.exact(len(CLIENT_BANNER)), CLIENT_BANNER)
+
+    def test_x_split_lf_preface_preserves_ssh_stream(self):
+        client, reader = self.connect()
+        client.sendall(b"GET / HTTP/1.1\nX-Split: 1\n\n"
+                       b"GET /split HTTP/1.1\nHost: ssh.example.com\n\n" + CLIENT_BANNER)
         self.assert_upgrade(reader)
         self.assertEqual(reader.exact(len(CLIENT_BANNER)), CLIENT_BANNER)
 
@@ -234,8 +262,8 @@ class BridgeTests(unittest.TestCase):
             client.sendall(b"GET / HTTP/1.1\r\n\r\n")
             self.assertTrue(reader.until(b"\r\n\r\n").startswith(b"HTTP/1.1 502 Bad Gateway\r\n"))
 
-    def test_oversized_and_malformed_headers_do_not_open_backend(self):
-        for request, status in ((b"GET / HTTP/1.1\r\nBrokenHeader\r\n\r\n", 400),
+    def test_oversized_and_conflicting_control_headers_do_not_open_backend(self):
+        for request, status in ((b"GET / HTTP/1.1\r\nX-Split: 1\r\nX-Split: 2\r\n\r\n", 400),
                                 (b"GET / HTTP/1.1\r\nX-Long: " + b"x" * 65512, 431)):
             with self.subTest(status=status):
                 client, reader = self.connect()
@@ -316,7 +344,7 @@ class BridgeDeploymentTests(unittest.TestCase):
                         case "$1" in
                             is-active) $running ;;
                             restart)
-                                if $fail_new && grep -Fq 'bridge v3.' "$WS_SSH_BRIDGE_SCRIPT"; then
+                                if $fail_new && grep -Fq 'HTTP payload / WS-style SSH bridge' "$WS_SSH_BRIDGE_SCRIPT"; then
                                     running=false; return 1
                                 fi
                                 running=true ;;

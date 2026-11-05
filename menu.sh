@@ -5983,8 +5983,8 @@ write_ws_ssh_bridge_script() {
     candidate=$(mktemp "${WS_SSH_BRIDGE_SCRIPT}.XXXXXX") || return 1
     cat > "$candidate" <<'PYEOF'
 #!/usr/bin/env python3
-"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3."""
-import socket, select, threading, sys, os, signal, time
+"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3.1."""
+import socket, select, threading, sys, os, signal, time, re
 
 LISTEN_HOST = os.environ.get("TDZ_WS_BRIDGE_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("TDZ_WS_BRIDGE_PORT", "8890"))
@@ -6107,40 +6107,48 @@ class HandshakeError(Exception):
 def read_handshake(client):
     """Read fragmented headers, or stop immediately at a direct SSH prefix."""
     buf = b""
+    skipped = 0
     deadline = time.monotonic() + HANDSHAKE_TIMEOUT
     while True:
+        # Injector payloads may start with empty lines or an empty split block.
+        trimmed = buf.lstrip(b"\r\n")
+        skipped += len(buf) - len(trimmed)
+        buf = trimmed
+        if skipped + len(buf) >= MAX_HEADER_BYTES and not buf:
+            raise HandshakeError(431, "Request Header Fields Too Large")
         if buf.startswith(b"SSH-"):
             return None, buf
-        end = buf.find(b"\r\n\r\n")
-        if end >= 0:
-            if end + 4 > MAX_HEADER_BYTES:
+        end = re.search(br"\r?\n\r?\n", buf)
+        if end is not None:
+            if skipped + end.end() > MAX_HEADER_BYTES:
                 raise HandshakeError(431, "Request Header Fields Too Large")
-            return buf[:end], buf[end + 4:]
-        if len(buf) >= MAX_HEADER_BYTES:
+            return buf[:end.start()], buf[end.end():]
+        if skipped + len(buf) >= MAX_HEADER_BYTES:
             raise HandshakeError(431, "Request Header Fields Too Large")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise socket.timeout("handshake timeout")
         client.settimeout(remaining)
-        chunk = client.recv(min(4096, MAX_HEADER_BYTES - len(buf)))
+        chunk = client.recv(min(4096, MAX_HEADER_BYTES - skipped - len(buf)))
         if not chunk:
             raise EOFError("incomplete handshake")
         buf += chunk
 
 
 def parse_payload_headers(header):
-    request, *lines = header.split(b"\r\n")
-    parts = request.split()
-    if len(parts) != 3 or parts[0] + b" " not in HTTP_METHODS or parts[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
-        raise HandshakeError(400, "Bad Request")
+    # This is a raw SSH transport, not a general HTTP server. Older TDZ and
+    # ws-http versions accepted non-standard request lines and payload headers.
+    # Parse only the transport controls; other preface lines are disposable.
     headers = {}
-    for line in lines:
+    for line in header.splitlines():
         name, separator, value = line.partition(b":")
         if not separator or not name.strip():
-            raise HandshakeError(400, "Bad Request")
+            continue
         name = name.strip().lower()
         value = value.strip()
-        if name in (b"x-real-host", b"x-split") and name in headers:
+        if name not in (b"x-real-host", b"x-split"):
+            continue
+        if name in headers and headers[name] != value:
             raise HandshakeError(400, "Bad Request")
         headers[name] = value
     target = headers.get(b"x-real-host", b"")
@@ -6183,15 +6191,15 @@ class SplitPayload:
                     raise HandshakeError(431, "Request Header Fields Too Large")
                 return b""
             if any(candidate.startswith(method) for method in HTTP_METHODS):
-                end = candidate.find(b"\r\n\r\n")
-                if end < 0:
+                end = re.search(br"\r?\n\r?\n", candidate)
+                if end is None:
                     if self.discarded + len(self.pending) >= MAX_HEADER_BYTES:
                         raise HandshakeError(431, "Request Header Fields Too Large")
                     return b""
-                self.discarded += len(self.pending) - len(candidate) + end + 4
+                self.discarded += len(self.pending) - len(candidate) + end.end()
                 if self.discarded > MAX_HEADER_BYTES:
                     raise HandshakeError(431, "Request Header Fields Too Large")
-                self.pending = candidate[end + 4:]
+                self.pending = candidate[end.end():]
                 continue
             if any(method.startswith(candidate) for method in HTTP_METHODS):
                 return b""
@@ -6294,6 +6302,7 @@ def handle(client, addr):
         log(f"bridged {addr[0]}:{addr[1]} -> SSH {SSH_HOST}:{SSH_PORT}")
         bridge_socks(client, ssh, split_payload)
     except HandshakeError as error:
+        log(f"payload rejected from {addr[0]}:{addr[1]}: {error.status} {error.reason}")
         if not response_sent:
             try: send_error(client, error)
             except OSError: pass
@@ -6376,7 +6385,7 @@ refresh_ws_ssh_bridge_runtime() {
     local force="${1:-}" backup was_active=false failed=false
     [[ -f "$WS_SSH_BRIDGE_SERVICE" ]] || return 0
     if [[ "$force" != force ]] &&
-       grep -Fqx '"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3."""' "$WS_SSH_BRIDGE_SCRIPT" 2>/dev/null; then
+       grep -Fqx '"""TDZ SSH TUNNEL HTTP payload / WS-style SSH bridge v3.1."""' "$WS_SSH_BRIDGE_SCRIPT" 2>/dev/null; then
         return 0
     fi
     backup=$(mktemp -d) || return 1
