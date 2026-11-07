@@ -291,7 +291,7 @@ class BridgeTests(unittest.TestCase):
 
 
 class BridgeDeploymentTests(unittest.TestCase):
-    def test_client_details_show_payload_port_target_and_branding(self):
+    def test_client_details_show_original_edge_stack(self):
         result = subprocess.run(
             ["bash", "-c", f'''
             source {shlex.quote(str(MENU))} --source-only
@@ -301,14 +301,18 @@ class BridgeDeploymentTests(unittest.TestCase):
             detect_preferred_host() {{ printf 'ssh.example.com\n'; }}
             systemctl() {{ [[ "$*" == 'is-active --quiet haproxy' ]]; }}
             EDGE_PUBLIC_HTTP_PORT=2080
+            EDGE_PUBLIC_TLS_PORT=2443
             generate_client_config testuser testpass
             '''], text=True, capture_output=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("HTTP Payload / WS", result.stdout)
+        self.assertIn("HTTP / Raw SSH", result.stdout)
         self.assertIn("2080", result.stdout)
-        self.assertIn("127.0.0.1:22 (X-Real-Host)", result.stdout)
-        self.assertIn("101 Script By: tuhinbro.com", result.stdout)
+        self.assertIn("TLS / SNI / SSL", result.stdout)
+        self.assertIn("2443", result.stdout)
+        self.assertIn("SNI / Bug Host", result.stdout)
+        self.assertNotIn("Payload Target", result.stdout)
+        self.assertNotIn("Response", result.stdout)
 
     def test_failed_python_validation_keeps_previous_bridge(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -9185,10 +9185,7 @@ generate_client_config() {
         echo
         tdz_section "HAPROXY EDGE STACK"
         tdz_detail "Host" "$host_domain"
-        tdz_detail "HTTP Payload / WS" "$EDGE_PUBLIC_HTTP_PORT"
-        tdz_detail "Raw SSH" "$EDGE_PUBLIC_HTTP_PORT"
-        tdz_detail "Payload Target" "127.0.0.1:22 (X-Real-Host)"
-        tdz_detail "Response" "101 Script By: tuhinbro.com"
+        tdz_detail "HTTP / Raw SSH" "$EDGE_PUBLIC_HTTP_PORT"
         tdz_detail "TLS / SNI / SSL" "$EDGE_PUBLIC_TLS_PORT"
         tdz_detail "SNI / Bug Host" "$host_domain"
     elif systemctl is-active --quiet nginx; then
